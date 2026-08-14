@@ -22,6 +22,12 @@ import type {
   RequirementInput,
   SessionState,
   SessionStateInput,
+  Tool,
+  ToolInput,
+  ToolRequest,
+  ToolRequestInput,
+  ToolResult,
+  ToolResultInput,
   WorldModelState
 } from "./types.js";
 import {
@@ -36,6 +42,9 @@ import {
   assertProject,
   assertRequirement,
   assertSessionState,
+  assertTool,
+  assertToolRequest,
+  assertToolResult,
   assertWorldModelState
 } from "./validators.js";
 
@@ -195,7 +204,7 @@ export function createChangeCause(input: ChangeCauseInput = {}): ChangeCause {
     description: input.description ?? ""
   };
   assertChangeCause(cause);
-  return cause;
+  return Object.freeze(cause);
 }
 
 /**
@@ -203,6 +212,15 @@ export function createChangeCause(input: ChangeCauseInput = {}): ChangeCause {
  * default (see ChangeInput's doc comment) — this factory's job is to fill
  * in the few that do (id/source/cause/createdAt/metadata) and validate the
  * result, not to make a Change out of thin air.
+ *
+ * The returned Change (and its `cause`/`target` sub-objects) is frozen: a
+ * Change is a recorded fact, not a working draft, and `ChangeHistory`
+ * stores this exact object by reference — an unfrozen Change would let a
+ * caller silently corrupt history after the fact by mutating a reference
+ * it still holds. `before`/`after`/`transition`/`metadata` are left
+ * unfrozen deliberately: they hold arbitrary caller-shaped data that
+ * doesn't belong to this factory to lock down beyond the JSON-safety
+ * `assertChange` already enforces.
  */
 export function createChange(input: ChangeInput): Change {
   const change: Change = {
@@ -215,7 +233,7 @@ export function createChange(input: ChangeInput): Change {
     cause: createChangeCause(input.cause ?? {}),
     transitionKind: input.transitionKind,
     transition: input.transition,
-    target: input.target,
+    target: Object.freeze({ ...input.target }),
     before: input.before ?? null,
     after: input.after ?? null,
     resultingProjectVersion: input.resultingProjectVersion,
@@ -223,5 +241,54 @@ export function createChange(input: ChangeInput): Change {
     metadata: input.metadata ?? {}
   };
   assertChange(change);
-  return change;
+  return Object.freeze(change);
+}
+
+/** Builds a Tool definition. `id` is generated (an opaque internal
+ * reference); `name` is caller-chosen and is what a ToolRequest/registry
+ * lookup actually uses — see Tool's doc comment in types.ts. */
+export function createTool(input: ToolInput): Tool {
+  const tool: Tool = {
+    id: input.id ?? createId("tool"),
+    name: input.name,
+    description: input.description ?? "",
+    version: input.version ?? "0.1.0",
+    target: input.target,
+    mutation: input.mutation,
+    inputSchema: input.inputSchema,
+    outputSchema: input.outputSchema,
+    source: input.source ?? "system",
+    metadata: input.metadata ?? {}
+  };
+  assertTool(tool);
+  return Object.freeze(tool);
+}
+
+export function createToolRequest(input: ToolRequestInput): ToolRequest {
+  const request: ToolRequest = {
+    id: input.id ?? createId("treq"),
+    toolName: input.toolName,
+    input: input.input,
+    source: input.source ?? "system",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertToolRequest(request);
+  return Object.freeze(request);
+}
+
+export function createToolResult(input: ToolResultInput): ToolResult {
+  const result: ToolResult = {
+    id: input.id ?? createId("tres"),
+    requestId: input.requestId,
+    toolName: input.toolName,
+    status: input.status,
+    output: input.output ?? null,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertToolResult(result);
+  return Object.freeze(result);
 }

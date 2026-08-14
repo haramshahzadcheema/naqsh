@@ -58,19 +58,22 @@ describe("dependency direction: core depends on schemas, never the reverse", () 
     // validators were hand-maintained in three places (core .cjs, core
     // .mjs, and an orphaned copy in schemas that nothing imported). This
     // asserts core has no local re-implementation of entity validation,
-    // including Change (added in P2) -- the exact same risk applies to it.
+    // including Change (P2) and Tool/ToolRequest/ToolResult (P3) -- the
+    // exact same risk applies to every one of them.
     const coreSourceFiles = [
       "src/transitions.ts",
       "src/bootstrap.ts",
       "src/change-history.ts",
       "src/record-transition.ts",
+      "src/tool-registry.ts",
+      "src/execute-tool.ts",
       "src/index.ts"
     ];
     for (const relativePath of coreSourceFiles) {
       const contents = readFileSync(join(repoRoot, "packages/core", relativePath), "utf8");
       assert.doesNotMatch(
         contents,
-        /function\s+(assert|validate)(Requirement|Constraint|EngineeringObject|Decision|Experiment|Preference|Change|ChangeCause|ChangeTarget)/,
+        /function\s+(assert|validate)(Requirement|Constraint|EngineeringObject|Decision|Experiment|Preference|Change|ChangeCause|ChangeTarget|Tool|ToolRequest|ToolResult)\b/,
         `${relativePath} must import validators from @naqsh/schemas instead of redefining them`
       );
     }
@@ -88,5 +91,44 @@ describe("dependency direction: core depends on schemas, never the reverse", () 
       /^export interface \w+Transition/m,
       "packages/core/src/transitions.ts must import transition interfaces from @naqsh/schemas instead of redefining them"
     );
+  });
+});
+
+describe("P3 tool system: no arbitrary code execution", () => {
+  it("contains no eval, Function constructor, or subprocess/dynamic-import execution paths", () => {
+    // Static guard for the P3 brief's hard requirement: the tool system
+    // must be an explicit allowlist (register() + a known handler), never
+    // a path to running arbitrary code. Checked by source-text inspection
+    // rather than runtime behavior because there is no runtime input that
+    // could prove a negative -- this proves the CAPABILITY doesn't exist
+    // in the source at all, not just that today's tests don't trigger it.
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/ // dynamic import of a runtime-computed (non-literal) specifier
+    ];
+    const toolSourceFiles = ["src/tool-registry.ts", "src/execute-tool.ts"];
+    for (const relativePath of toolSourceFiles) {
+      const contents = readFileSync(join(repoRoot, "packages/core", relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("Tool never carries a handler field -- handlers exist only in ToolRegistry's private closure", () => {
+    // A Tool that could serialize a function would defeat the "no
+    // arbitrary execution" guarantee the moment it crossed a process
+    // boundary. This is enforced structurally (Tool's type has no handler
+    // field) and by isJsonSafeValue rejecting functions in every field
+    // that IS free-form (metadata); this test guards the structural half.
+    const typesContents = readFileSync(join(repoRoot, "packages/schemas/src/types.ts"), "utf8");
+    const toolInterfaceMatch = typesContents.match(/export interface Tool \{[\s\S]*?\n\}/);
+    assert.ok(toolInterfaceMatch, "expected to find the Tool interface in packages/schemas/src/types.ts");
+    assert.doesNotMatch(toolInterfaceMatch![0], /handler/i);
   });
 });

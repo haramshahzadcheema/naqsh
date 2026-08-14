@@ -336,3 +336,219 @@ export interface ChangeInput {
   createdAt?: string;
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * The Typed Tool System (P3).
+ *
+ * A `Tool` is pure metadata — identity, contracts, classification. It never
+ * carries a handler function (handlers are behavior, not data: they live
+ * only in @naqsh/core's ToolRegistry, exactly like `apply()` for
+ * transitions never left core in P1). This is what keeps a Tool
+ * serializable and keeps the "no arbitrary execution" boundary real: a
+ * Tool cannot smuggle code across a process/network boundary because it
+ * has none to smuggle.
+ *
+ * `inputSchema`/`outputSchema` are `ToolValueSchema` — a small, self-hosted
+ * JSON-Schema-compatible subset (type/properties/required/items/enum/
+ * description), not a hand-written imperative assert function. Two reasons:
+ * it is the ONE declarative definition that both (a) this package's own
+ * generic validator enforces at P3's execution boundary, and (b) P7 hands
+ * to Gemini's function-calling `parameters` field later, unchanged — the
+ * JSON-Schema bridge the P2 audit flagged as a future risk is closed by
+ * construction rather than deferred again.
+ */
+export type ToolValueSchemaType = "string" | "number" | "boolean" | "null" | "array" | "object";
+
+interface ToolValueSchemaBase {
+  description?: string;
+}
+
+export interface ToolStringSchema extends ToolValueSchemaBase {
+  type: "string";
+  enum?: string[];
+}
+
+export interface ToolNumberSchema extends ToolValueSchemaBase {
+  type: "number";
+}
+
+export interface ToolBooleanSchema extends ToolValueSchemaBase {
+  type: "boolean";
+}
+
+export interface ToolNullSchema extends ToolValueSchemaBase {
+  type: "null";
+}
+
+export interface ToolArraySchema extends ToolValueSchemaBase {
+  type: "array";
+  items: ToolValueSchema;
+}
+
+export interface ToolObjectSchema extends ToolValueSchemaBase {
+  type: "object";
+  properties: Record<string, ToolValueSchema>;
+  required?: string[];
+  /** Whether keys not listed in `properties` are allowed. Defaults to
+   * `true` (permissive, matching JSON Schema's own default and Gemini/
+   * OpenAI function-calling conventions) when omitted — explicit here so
+   * "unknown fields" behavior is a documented choice per schema, not an
+   * accident of whatever the validator happens to do. */
+  additionalProperties?: boolean;
+}
+
+export type ToolValueSchema =
+  | ToolStringSchema
+  | ToolNumberSchema
+  | ToolBooleanSchema
+  | ToolNullSchema
+  | ToolArraySchema
+  | ToolObjectSchema;
+
+/**
+ * What domain a tool acts on. Deliberately NOT "freecad" / "gemini" /
+ * anything vendor-specific — these are the generic categories the P3 brief
+ * names, matching `EntitySource`'s "closed but additive" convention:
+ * extend this list only when a real producer exists (an EnvironmentAdapter
+ * for a new target, a verification engine, etc.), never speculatively.
+ */
+export type ToolTarget =
+  | "world_model"
+  | "environment"
+  | "verification"
+  | "research"
+  | "simulation"
+  | "robotics"
+  | "eda";
+
+export const TOOL_TARGETS: readonly ToolTarget[] = [
+  "world_model",
+  "environment",
+  "verification",
+  "research",
+  "simulation",
+  "robotics",
+  "eda"
+];
+
+/**
+ * Classifies what KIND of effect invoking a tool has — the axis P4
+ * (autonomy/approval) will gate on. This is P3's only concession to P4:
+ * a classification, not an enforcement mechanism. No policy logic exists
+ * anywhere in this package or in @naqsh/core's tool execution boundary.
+ */
+export type ToolMutationKind = "observe" | "suggest" | "mutate" | "verify";
+
+export const TOOL_MUTATION_KINDS: readonly ToolMutationKind[] = ["observe", "suggest", "mutate", "verify"];
+
+export interface Tool {
+  id: string;
+  /** The stable, callable identifier (e.g. "inspect_project") — what a
+   * ToolRequest names and what the registry is keyed by. Unlike `id`
+   * (generated), this is caller-chosen and must be unique in a registry. */
+  name: string;
+  description: string;
+  version: string;
+  target: ToolTarget;
+  mutation: ToolMutationKind;
+  inputSchema: ToolValueSchema;
+  outputSchema: ToolValueSchema;
+  /** Provenance: where this tool definition came from (who registered it).
+   * Reuses EntitySource rather than inventing a parallel concept. */
+  source: EntitySource;
+  metadata: Record<string, unknown>;
+}
+
+export interface ToolInput {
+  id?: string;
+  name: string;
+  description?: string;
+  version?: string;
+  target: ToolTarget;
+  mutation: ToolMutationKind;
+  inputSchema: ToolValueSchema;
+  outputSchema: ToolValueSchema;
+  source?: EntitySource;
+  metadata?: Record<string, unknown>;
+}
+
+/** A single call attempt against a named tool, before it's known whether
+ * the input is even valid. Constructed by @naqsh/core's `executeTool`
+ * before validation runs, so a ToolRequest can exist even for a request
+ * that gets rejected. */
+export interface ToolRequest {
+  id: string;
+  toolName: string;
+  input: unknown;
+  source: EntitySource;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ToolRequestInput {
+  id?: string;
+  toolName: string;
+  input: unknown;
+  source?: EntitySource;
+  createdAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type ToolResultStatus = "success" | "error";
+
+/**
+ * Distinguishes every rejection/failure mode named in the P3 brief, plus
+ * `duplicate_registration` for the registry's own "prevent duplicate
+ * IDs/names" requirement (a registration-time failure, not an
+ * execution-time one, but the same taxonomy of "be specific, not
+ * Error('failed')" applies).
+ */
+export type ToolErrorKind =
+  | "invalid_input"
+  | "unknown_tool"
+  | "execution_failure"
+  | "invalid_output"
+  | "policy_rejected"
+  | "unavailable"
+  | "duplicate_registration";
+
+export const TOOL_ERROR_KINDS: readonly ToolErrorKind[] = [
+  "invalid_input",
+  "unknown_tool",
+  "execution_failure",
+  "invalid_output",
+  "policy_rejected",
+  "unavailable",
+  "duplicate_registration"
+];
+
+export interface ToolResultError {
+  kind: ToolErrorKind;
+  message: string;
+}
+
+export interface ToolResult {
+  id: string;
+  requestId: string;
+  toolName: string;
+  status: ToolResultStatus;
+  /** Present (non-null) iff status is "success". */
+  output: unknown;
+  /** Present (non-null) iff status is "error". */
+  error: ToolResultError | null;
+  startedAt: string;
+  completedAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ToolResultInput {
+  id?: string;
+  requestId: string;
+  toolName: string;
+  status: ToolResultStatus;
+  output?: unknown;
+  error?: ToolResultError | null;
+  startedAt: string;
+  completedAt?: string;
+  metadata?: Record<string, unknown>;
+}

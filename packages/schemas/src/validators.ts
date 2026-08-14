@@ -1,6 +1,10 @@
 import { isIsoTimestamp } from "./ids.js";
+import { assertValidToolValueSchema } from "./tool-schema.js";
 import {
   CHANGE_CAUSE_KINDS,
+  TOOL_ERROR_KINDS,
+  TOOL_MUTATION_KINDS,
+  TOOL_TARGETS,
   ENTITY_SOURCES,
   type Change,
   type ChangeCause,
@@ -14,19 +18,21 @@ import {
   type Project,
   type Requirement,
   type SessionState,
+  type Tool,
+  type ToolRequest,
+  type ToolResult,
+  type ToolResultError,
   type WorldModelState
 } from "./types.js";
 
-/** Thrown by every assert* function below. A dedicated class lets callers
- * (e.g. a future P16 verification layer, or a P7 gate on agent-authored
- * state) distinguish "this violates the World Model contract" from any
- * other kind of failure without string-matching a message. */
-export class WorldModelValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WorldModelValidationError";
-  }
-}
+import { WorldModelValidationError } from "./errors.js";
+
+// Re-exported so every existing `import { WorldModelValidationError } from
+// "@naqsh/schemas"` (or from "./validators.js") keeps working unchanged.
+// The classes themselves live in errors.js, a dependency-free leaf module,
+// specifically so this file and tool-schema.ts can both throw them without
+// an import cycle between the two.
+export { ToolError, WorldModelValidationError } from "./errors.js";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -44,6 +50,27 @@ function isEntitySource(value: unknown): value is (typeof ENTITY_SOURCES)[number
 
 function isChangeCauseKind(value: unknown): value is (typeof CHANGE_CAUSE_KINDS)[number] {
   return typeof value === "string" && (CHANGE_CAUSE_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Deep check that `value` survives a JSON.stringify/parse round-trip with
+ * no semantic loss: no functions, symbols, bigints, `undefined`, `NaN`/
+ * `Infinity`, or Date/Map/Set/RegExp instances (all of which either vanish
+ * silently or silently change type under JSON). Used specifically for
+ * Change's `before`/`after`/`metadata`/`transition` fields — a Change
+ * claims to be first-class serializable data, so that claim is enforced
+ * here rather than merely assumed of callers.
+ */
+function isJsonSafeValue(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => isJsonSafeValue(item));
+  if (value instanceof Date || value instanceof Map || value instanceof Set || value instanceof RegExp) {
+    return false;
+  }
+  if (isPlainObject(value)) return Object.values(value).every((item) => isJsonSafeValue(item));
+  return false;
 }
 
 export function assertObjective(value: unknown): asserts value is Objective {
@@ -274,6 +301,7 @@ export function assertChange(value: unknown): asserts value is Change {
       value.transition.kind.length > 0,
     "change.transition must be an object with a non-empty kind"
   );
+  invariant(isJsonSafeValue(value.transition), "change.transition must be JSON-serializable");
   assertChangeTarget(value.target);
   invariant(
     typeof value.resultingProjectVersion === "number" &&
@@ -282,7 +310,94 @@ export function assertChange(value: unknown): asserts value is Change {
     "change.resultingProjectVersion must be a positive integer"
   );
   invariant(isIsoTimestamp(value.createdAt), "change.createdAt must be an ISO timestamp");
-  invariant(isPlainObject(value.metadata), "change.metadata must be an object");
+  invariant(isJsonSafeValue(value.before), "change.before must be JSON-serializable");
+  invariant(isJsonSafeValue(value.after), "change.after must be JSON-serializable");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "change.metadata must be a JSON-serializable object"
+  );
+}
+
+function isToolTarget(value: unknown): value is (typeof TOOL_TARGETS)[number] {
+  return typeof value === "string" && (TOOL_TARGETS as readonly string[]).includes(value);
+}
+
+function isToolMutationKind(value: unknown): value is (typeof TOOL_MUTATION_KINDS)[number] {
+  return typeof value === "string" && (TOOL_MUTATION_KINDS as readonly string[]).includes(value);
+}
+
+function isToolErrorKind(value: unknown): value is (typeof TOOL_ERROR_KINDS)[number] {
+  return typeof value === "string" && (TOOL_ERROR_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a Tool's own shape is well-formed, including recursively
+ * validating that `inputSchema`/`outputSchema` are themselves well-formed
+ * `ToolValueSchema` definitions (see tool-schema.ts) — so a malformed
+ * schema is rejected at REGISTRATION time, not discovered later when a
+ * tool call silently fails to validate against a broken schema.
+ */
+export function assertTool(value: unknown): asserts value is Tool {
+  invariant(isPlainObject(value), "tool must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "tool.id is required");
+  invariant(typeof value.name === "string" && value.name.length > 0, "tool.name is required");
+  invariant(typeof value.description === "string", "tool.description must be a string");
+  invariant(typeof value.version === "string" && value.version.length > 0, "tool.version is required");
+  invariant(isToolTarget(value.target), "invalid tool target");
+  invariant(isToolMutationKind(value.mutation), "invalid tool mutation kind");
+  assertValidToolValueSchema(value.inputSchema, "tool.inputSchema");
+  assertValidToolValueSchema(value.outputSchema, "tool.outputSchema");
+  invariant(isEntitySource(value.source), "invalid tool source");
+  invariant(isPlainObject(value.metadata), "tool.metadata must be an object");
+}
+
+export function assertToolRequest(value: unknown): asserts value is ToolRequest {
+  invariant(isPlainObject(value), "tool request must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "toolRequest.id is required");
+  invariant(
+    typeof value.toolName === "string" && value.toolName.length > 0,
+    "toolRequest.toolName is required"
+  );
+  invariant(isEntitySource(value.source), "invalid tool request source");
+  invariant(isIsoTimestamp(value.createdAt), "toolRequest.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata), "toolRequest.metadata must be an object");
+  // `input` is deliberately NOT shape-checked here -- it's raw, pre-
+  // validation caller input; matching it against a specific tool's
+  // inputSchema is executeTool's job in @naqsh/core, not this structural
+  // check (a ToolRequest can legitimately exist for a request that turns
+  // out to be invalid, so it can still be recorded as an error result).
+}
+
+function assertToolResultError(value: unknown): asserts value is ToolResultError {
+  invariant(isPlainObject(value), "tool result error must be an object");
+  invariant(isToolErrorKind(value.kind), "invalid tool result error kind");
+  invariant(typeof value.message === "string", "tool result error message must be a string");
+}
+
+export function assertToolResult(value: unknown): asserts value is ToolResult {
+  invariant(isPlainObject(value), "tool result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "toolResult.id is required");
+  invariant(
+    typeof value.requestId === "string" && value.requestId.length > 0,
+    "toolResult.requestId is required"
+  );
+  invariant(
+    typeof value.toolName === "string" && value.toolName.length > 0,
+    "toolResult.toolName is required"
+  );
+  invariant(value.status === "success" || value.status === "error", "invalid tool result status");
+  invariant(isJsonSafeValue(value.output), "toolResult.output must be JSON-serializable");
+  if (value.status === "success") {
+    invariant(value.error === null, "toolResult.error must be null when status is success");
+  } else {
+    assertToolResultError(value.error);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "toolResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "toolResult.completedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "toolResult.metadata must be a JSON-serializable object"
+  );
 }
 
 /**

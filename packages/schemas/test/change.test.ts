@@ -171,6 +171,76 @@ describe("Change: rejects invalid data", () => {
   });
 });
 
+describe("Change: JSON-safety (no silent semantic loss on serialize)", () => {
+  it("rejects a function hidden inside metadata", () => {
+    assert.throws(
+      () => createChange(buildChangeInput({ metadata: { onDone: () => {} } })),
+      /change.metadata must be a JSON-serializable object/
+    );
+  });
+
+  it("rejects a function hidden inside after", () => {
+    assert.throws(
+      () => createChange(buildChangeInput({ after: { id: "req_1", handler: () => {} } })),
+      /change.before must be JSON-serializable|change.after must be JSON-serializable/
+    );
+  });
+
+  it("rejects a Date instance (would silently become a string on round-trip)", () => {
+    assert.throws(
+      () => createChange(buildChangeInput({ after: { id: "req_1", capturedAt: new Date() } })),
+      /change.after must be JSON-serializable/
+    );
+  });
+
+  it("rejects NaN and Infinity (JSON.stringify silently turns them into null)", () => {
+    assert.throws(
+      () => createChange(buildChangeInput({ after: { id: "req_1", value: Number.NaN } })),
+      /change.after must be JSON-serializable/
+    );
+    assert.throws(
+      () => createChange(buildChangeInput({ after: { id: "req_1", value: Number.POSITIVE_INFINITY } })),
+      /change.after must be JSON-serializable/
+    );
+  });
+
+  it("rejects undefined nested inside before/after (JSON.stringify silently drops it)", () => {
+    assert.throws(
+      () => createChange(buildChangeInput({ after: { id: "req_1", note: undefined } })),
+      /change.after must be JSON-serializable/
+    );
+  });
+
+  it("accepts ordinary nested plain data: strings, numbers, booleans, null, arrays, objects", () => {
+    assert.doesNotThrow(() =>
+      createChange(
+        buildChangeInput({
+          after: { id: "req_1", tags: ["a", "b"], count: 3, active: true, note: null, nested: { ok: true } }
+        })
+      )
+    );
+  });
+});
+
+describe("Change: immutability", () => {
+  it("freezes the returned Change", () => {
+    const change = createChange(buildChangeInput());
+    assert.throws(() => {
+      (change as { source: string }).source = "human";
+    }, TypeError);
+  });
+
+  it("freezes the returned Change's cause and target", () => {
+    const change = createChange(buildChangeInput());
+    assert.throws(() => {
+      (change.cause as { kind: string }).kind = "user_request";
+    }, TypeError);
+    assert.throws(() => {
+      (change.target as { entityType: string }).entityType = "other";
+    }, TypeError);
+  });
+});
+
 describe("Change: serialization", () => {
   it("round-trips through JSON with full fidelity", () => {
     const change = createChange(

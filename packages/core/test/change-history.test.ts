@@ -213,8 +213,29 @@ describe("ChangeHistory: ordering and appending", () => {
     const state = buildState();
     const first = recordTransition(history, state, { kind: "observe" });
     assert.throws(
-      () => history.append({ ...first.change, sequence: history.nextSequence(), id: first.change.id }),
+      () =>
+        history.append({
+          ...first.change,
+          sequence: history.nextSequence(),
+          parentChangeId: first.change.id,
+          id: first.change.id
+        }),
       /Duplicate change id/
+    );
+  });
+
+  it("rejects appending a change with an incorrect parentChangeId", () => {
+    const history = createChangeHistory();
+    const first = recordTransition(history, buildState(), { kind: "observe" });
+    assert.throws(
+      () =>
+        history.append({
+          ...first.change,
+          id: "chg_different",
+          sequence: history.nextSequence(),
+          parentChangeId: "chg_not_the_real_head"
+        }),
+      /incorrect parentChangeId/
     );
   });
 

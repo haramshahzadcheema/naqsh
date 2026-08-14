@@ -23,15 +23,19 @@ export interface ChangeHistory {
    * value a caller should pass as the next Change's `parentChangeId`. */
   headId(): string | null;
   /** Validates and appends. Throws if `change.sequence` is not exactly
-   * `nextSequence()`, or if `change.id` already exists in this history. */
+   * `nextSequence()`, if `change.parentChangeId` does not equal `headId()`,
+   * or if `change.id` already exists in this history. Sequence AND parent
+   * are both checked — a chain with the right sequence but a wrong/stale
+   * parent pointer is exactly the kind of corruption P15 (checkpoints)
+   * would otherwise inherit silently. */
   append(change: Change): void;
   getById(id: string): Change | undefined;
   /** All changes in application order (index 0 = sequence 1). */
   list(): readonly Change[];
   latest(): Change | undefined;
-  listForProject(projectId: string): Change[];
-  listForSession(sessionId: string): Change[];
-  listForTarget(entityType: string, entityId: string): Change[];
+  listForProject(projectId: string): readonly Change[];
+  listForSession(sessionId: string): readonly Change[];
+  listForTarget(entityType: string, entityId: string): readonly Change[];
   serialize(): string;
 }
 
@@ -48,6 +52,12 @@ export function createChangeHistory(): ChangeHistory {
       if (change.sequence !== nextSeq) {
         throw new WorldModelValidationError(
           `Change out of order: expected sequence ${nextSeq}, got ${change.sequence}`
+        );
+      }
+      const expectedParentId = changes[changes.length - 1]?.id ?? null;
+      if (change.parentChangeId !== expectedParentId) {
+        throw new WorldModelValidationError(
+          `Change has an incorrect parentChangeId: expected ${JSON.stringify(expectedParentId)}, got ${JSON.stringify(change.parentChangeId)}`
         );
       }
       if (byId.has(change.id)) {
