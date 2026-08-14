@@ -1,4 +1,4 @@
-import { createApproval, ToolError, type Approval, type ApprovalInput, type EntitySource } from "@naqsh/schemas";
+import { AuthorizationError, createApproval, type Approval, type ApprovalInput, type EntitySource } from "@naqsh/schemas";
 
 export type CreateApprovalInput = Pick<ApprovalInput, "toolName" | "targetType" | "targetId" | "reason" | "requestedBy" | "expiresAt" | "metadata">;
 
@@ -17,11 +17,9 @@ export interface ApprovalStore {
   getById(id: string): Approval | undefined;
   listForTool(toolName: string): readonly Approval[];
   list(): readonly Approval[];
-  /** Throws ToolError("unknown_tool")-shaped errors are NOT used here —
-   * these throw a plain ToolError with kind "execution_failure" for a
-   * missing/already-decided id, since acting on a nonexistent or
-   * already-resolved approval is a caller/programmer error, not a
-   * tool-execution outcome. */
+  /** Throws AuthorizationError("not_found") for a missing id, or
+   * AuthorizationError("invalid_state_transition") for a decided/consumed
+   * one — not ToolError, since no tool execution is involved. */
   approve(id: string, decidedBy: EntitySource, reason?: string): Approval;
   reject(id: string, decidedBy: EntitySource, reason?: string): Approval;
   revoke(id: string, decidedBy: EntitySource, reason?: string): Approval;
@@ -34,7 +32,7 @@ export interface ApprovalStore {
 function requireApproval(approvals: Map<string, Approval>, id: string): Approval {
   const approval = approvals.get(id);
   if (!approval) {
-    throw new ToolError("execution_failure", `No approval with id "${id}" exists`);
+    throw new AuthorizationError("not_found", `No approval with id "${id}" exists`);
   }
   return approval;
 }
@@ -54,7 +52,7 @@ export function createApprovalStore(): ApprovalStore {
     approve(id, decidedBy, reason) {
       const current = requireApproval(approvals, id);
       if (current.status !== "pending") {
-        throw new ToolError("execution_failure", `Approval "${id}" is already ${current.status}, cannot approve`);
+        throw new AuthorizationError("invalid_state_transition", `Approval "${id}" is already ${current.status}, cannot approve`);
       }
       const updated = createApproval({
         ...current,
@@ -69,7 +67,7 @@ export function createApprovalStore(): ApprovalStore {
     reject(id, decidedBy, reason) {
       const current = requireApproval(approvals, id);
       if (current.status !== "pending") {
-        throw new ToolError("execution_failure", `Approval "${id}" is already ${current.status}, cannot reject`);
+        throw new AuthorizationError("invalid_state_transition", `Approval "${id}" is already ${current.status}, cannot reject`);
       }
       const updated = createApproval({
         ...current,
@@ -84,7 +82,7 @@ export function createApprovalStore(): ApprovalStore {
     revoke(id, decidedBy, reason) {
       const current = requireApproval(approvals, id);
       if (current.status !== "approved") {
-        throw new ToolError("execution_failure", `Approval "${id}" is not approved, cannot revoke`);
+        throw new AuthorizationError("invalid_state_transition", `Approval "${id}" is not approved, cannot revoke`);
       }
       const updated = createApproval({
         ...current,
@@ -99,10 +97,10 @@ export function createApprovalStore(): ApprovalStore {
     consume(id) {
       const current = requireApproval(approvals, id);
       if (current.status !== "approved") {
-        throw new ToolError("execution_failure", `Approval "${id}" is not approved, cannot consume`);
+        throw new AuthorizationError("invalid_state_transition", `Approval "${id}" is not approved, cannot consume`);
       }
       if (current.consumedAt !== null) {
-        throw new ToolError("execution_failure", `Approval "${id}" was already consumed`);
+        throw new AuthorizationError("invalid_state_transition", `Approval "${id}" was already consumed`);
       }
       const updated = createApproval({ ...current, consumedAt: new Date().toISOString() });
       approvals.set(id, updated);

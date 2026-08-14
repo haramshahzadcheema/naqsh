@@ -657,6 +657,11 @@ export interface AutonomyGrant {
   expiresAt: string | null;
   /** When revoke() was called; null unless status is "revoked". */
   revokedAt: string | null;
+  /** Who/what revoked it; null unless status is "revoked". Mirrors
+   * Approval.decidedBy -- a grant with `status: "revoked"` and no record
+   * of who revoked it would be exactly the kind of unauditable state
+   * transition the P0-P4 foundation audit exists to catch. */
+  revokedBy: EntitySource | null;
   /** Optional cap on total uses; null means unbounded by count (still
    * bounded by expiresAt/revocation). */
   maxUses: number | null;
@@ -675,6 +680,7 @@ export interface AutonomyGrantInput {
   createdAt?: string;
   expiresAt?: string | null;
   revokedAt?: string | null;
+  revokedBy?: EntitySource | null;
   maxUses?: number | null;
   useCount?: number;
   metadata?: Record<string, unknown>;

@@ -38,7 +38,7 @@ import { WorldModelValidationError } from "./errors.js";
 // The classes themselves live in errors.js, a dependency-free leaf module,
 // specifically so this file and tool-schema.ts can both throw them without
 // an import cycle between the two.
-export { ToolError, WorldModelValidationError } from "./errors.js";
+export { AuthorizationError, ToolError, WorldModelValidationError } from "./errors.js";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -482,6 +482,10 @@ export function assertAutonomyGrant(value: unknown): asserts value is AutonomyGr
   invariant(isIsoTimestamp(value.createdAt), "autonomyGrant.createdAt must be an ISO timestamp");
   assertNullableTimestamp(value.expiresAt, "autonomyGrant.expiresAt must be an ISO timestamp or null");
   assertNullableTimestamp(value.revokedAt, "autonomyGrant.revokedAt must be an ISO timestamp or null");
+  invariant(
+    value.revokedBy === null || isEntitySource(value.revokedBy),
+    "autonomyGrant.revokedBy must be a valid source or null"
+  );
   invariant(
     value.maxUses === null || (typeof value.maxUses === "number" && Number.isInteger(value.maxUses) && value.maxUses >= 1),
     "autonomyGrant.maxUses must be a positive integer or null"

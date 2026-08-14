@@ -1,6 +1,6 @@
 import {
+  AuthorizationError,
   createAutonomyGrant,
-  ToolError,
   type AutonomyGrant,
   type AutonomyGrantInput,
   type EntitySource
@@ -28,9 +28,13 @@ export interface AutonomyGrantStore {
   getById(id: string): AutonomyGrant | undefined;
   listActive(): readonly AutonomyGrant[];
   list(): readonly AutonomyGrant[];
-  revoke(id: string, reason?: string): AutonomyGrant;
-  /** Increments useCount by one. Throws if the grant is revoked, expired,
-   * or already at maxUses -- callers should only call this after
+  /** `revokedBy` is required, not optional -- mirrors ApprovalStore's
+   * approve/reject/revoke, which all require `decidedBy`. A revocation
+   * with no recorded actor would be an unauditable state transition. */
+  revoke(id: string, revokedBy: EntitySource, reason?: string): AutonomyGrant;
+  /** Increments useCount by one. Throws AuthorizationError
+   * ("invalid_state_transition") if the grant is revoked, expired, or
+   * already at maxUses -- callers should only call this after
    * evaluateToolAuthorization has already confirmed the grant covers the
    * call, but this guards against a stale reference being reused anyway. */
   recordUse(id: string): AutonomyGrant;
@@ -39,7 +43,7 @@ export interface AutonomyGrantStore {
 function requireGrant(grants: Map<string, AutonomyGrant>, id: string): AutonomyGrant {
   const grant = grants.get(id);
   if (!grant) {
-    throw new ToolError("execution_failure", `No autonomy grant with id "${id}" exists`);
+    throw new AuthorizationError("not_found", `No autonomy grant with id "${id}" exists`);
   }
   return grant;
 }
@@ -63,13 +67,14 @@ export function createAutonomyGrantStore(): AutonomyGrantStore {
       return Array.from(grants.values()).filter((grant) => grant.status === "active" && !isExpired(grant, now));
     },
     list: () => Array.from(grants.values()),
-    revoke(id, reason) {
+    revoke(id, revokedBy, reason) {
       const current = requireGrant(grants, id);
       const updated = createAutonomyGrant({
         ...current,
         status: "revoked",
         reason: reason ?? current.reason,
-        revokedAt: new Date().toISOString()
+        revokedAt: new Date().toISOString(),
+        revokedBy
       });
       grants.set(id, updated);
       return updated;
@@ -77,13 +82,13 @@ export function createAutonomyGrantStore(): AutonomyGrantStore {
     recordUse(id) {
       const current = requireGrant(grants, id);
       if (current.status !== "active") {
-        throw new ToolError("execution_failure", `Autonomy grant "${id}" is not active`);
+        throw new AuthorizationError("invalid_state_transition", `Autonomy grant "${id}" is not active`);
       }
       if (isExpired(current, new Date())) {
-        throw new ToolError("execution_failure", `Autonomy grant "${id}" has expired`);
+        throw new AuthorizationError("invalid_state_transition", `Autonomy grant "${id}" has expired`);
       }
       if (current.maxUses !== null && current.useCount >= current.maxUses) {
-        throw new ToolError("execution_failure", `Autonomy grant "${id}" has reached its maximum uses`);
+        throw new AuthorizationError("invalid_state_transition", `Autonomy grant "${id}" has reached its maximum uses`);
       }
       const updated = createAutonomyGrant({ ...current, useCount: current.useCount + 1 });
       grants.set(id, updated);

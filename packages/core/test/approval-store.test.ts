@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ToolError } from "@naqsh/schemas";
+import { AuthorizationError } from "@naqsh/schemas";
 import { createApprovalStore } from "../src/approval-store.js";
 
 describe("ApprovalStore: creation", () => {
@@ -45,14 +45,17 @@ describe("ApprovalStore: approve/reject/revoke lifecycle", () => {
     const store = createApprovalStore();
     const approval = store.create({ toolName: "x" });
     store.approve(approval.id, "human");
-    assert.throws(() => store.approve(approval.id, "human"), ToolError);
+    assert.throws(
+      () => store.approve(approval.id, "human"),
+      (error: unknown) => error instanceof AuthorizationError && error.kind === "invalid_state_transition"
+    );
   });
 
   it("cannot reject an already-approved approval", () => {
     const store = createApprovalStore();
     const approval = store.create({ toolName: "x" });
     store.approve(approval.id, "human");
-    assert.throws(() => store.reject(approval.id, "human"), ToolError);
+    assert.throws(() => store.reject(approval.id, "human"), AuthorizationError);
   });
 
   it("revokes an approved approval", () => {
@@ -66,12 +69,15 @@ describe("ApprovalStore: approve/reject/revoke lifecycle", () => {
   it("cannot revoke a pending (never-approved) approval", () => {
     const store = createApprovalStore();
     const approval = store.create({ toolName: "x" });
-    assert.throws(() => store.revoke(approval.id, "human"), ToolError);
+    assert.throws(() => store.revoke(approval.id, "human"), AuthorizationError);
   });
 
   it("throws for an unknown approval id", () => {
     const store = createApprovalStore();
-    assert.throws(() => store.approve("appr_does_not_exist", "human"), ToolError);
+    assert.throws(
+      () => store.approve("appr_does_not_exist", "human"),
+      (error: unknown) => error instanceof AuthorizationError && error.kind === "not_found"
+    );
   });
 });
 
@@ -89,12 +95,12 @@ describe("ApprovalStore: consumption (single-use)", () => {
     const approval = store.create({ toolName: "x" });
     store.approve(approval.id, "human");
     store.consume(approval.id);
-    assert.throws(() => store.consume(approval.id), ToolError);
+    assert.throws(() => store.consume(approval.id), AuthorizationError);
   });
 
   it("cannot consume a pending (not yet approved) approval", () => {
     const store = createApprovalStore();
     const approval = store.create({ toolName: "x" });
-    assert.throws(() => store.consume(approval.id), ToolError);
+    assert.throws(() => store.consume(approval.id), AuthorizationError);
   });
 });

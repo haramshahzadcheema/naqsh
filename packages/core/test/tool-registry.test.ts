@@ -64,6 +64,22 @@ describe("ToolRegistry: register/lookup/list", () => {
       (error: unknown) => error instanceof ToolError && error.kind === "execution_failure"
     );
   });
+
+  it("a rejected registration is atomic: it leaves no trace under either name or id", () => {
+    const registry = createToolRegistry();
+    const first = createTool(buildToolInput());
+    registry.register(first, () => ({}));
+
+    const second = createTool(buildToolInput()); // same name as `first`, different generated id
+    assert.throws(() => registry.register(second, () => ({})));
+
+    // The registry must still resolve to the FIRST tool, not a half-applied
+    // second registration -- the duplicate-name check happens before any
+    // map mutation, so a rejected register() call must be a true no-op.
+    assert.deepEqual(registry.getByName("inspect_project"), first);
+    assert.equal(registry.getById(second.id), undefined);
+    assert.equal(registry.list().length, 1);
+  });
 });
 
 describe("ToolRegistry: invokeRegisteredTool (internal dispatch primitive)", () => {

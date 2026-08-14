@@ -1,10 +1,8 @@
 import {
   AUTONOMY_LEVELS,
   createAuthorizationDecision,
-  type Approval,
   type AuthorizationDecision,
   type AuthorizationDenialReason,
-  type AutonomyGrant,
   type AutonomyLevel,
   type ChangeTarget,
   type EntitySource,
@@ -39,15 +37,41 @@ function isAutonomyLevel(value: string): value is AutonomyLevel {
   return (AUTONOMY_LEVELS as readonly string[]).includes(value);
 }
 
+interface TargetScope {
+  targetType: string | null;
+  targetId: string | null;
+}
+
 /** Shared target-matching rule for both Approval and AutonomyGrant: `null`
  * targetType covers any target; a set targetType with `null` targetId
  * covers any target of that type; both set requires an exact match. */
-function coversTarget(scope: { targetType: string | null; targetId: string | null }, target: ChangeTarget | null): boolean {
+function coversTarget(scope: TargetScope, target: ChangeTarget | null): boolean {
   if (scope.targetType === null) return true;
   if (target === null) return false;
   if (scope.targetType !== target.entityType) return false;
   if (scope.targetId === null) return true;
   return scope.targetId === target.entityId;
+}
+
+/** 0 = covers any target, 1 = scoped to a target type, 2 = scoped to one
+ * exact target. Used to pick the MOST SPECIFIC covering approval/grant
+ * when more than one matches, not merely the first one found -- otherwise
+ * a broad approved scope could authorize a call even when a narrower,
+ * explicitly REJECTED approval exists for that exact target, which is
+ * backwards for a permission system (specific denials/approvals should
+ * always be able to override a broader default, never be shadowed by it). */
+function specificity(scope: TargetScope): number {
+  if (scope.targetType === null) return 0;
+  if (scope.targetId === null) return 1;
+  return 2;
+}
+
+/** Stable sort: Array.prototype.sort has been spec-guaranteed stable since
+ * ES2019, so candidates tied on specificity keep their original (creation)
+ * order -- the earliest-created one among equally-specific matches wins,
+ * a simple and deterministic tie-break. */
+function pickMostSpecific<T extends TargetScope>(candidates: T[]): T {
+  return candidates.sort((a, b) => specificity(b) - specificity(a))[0] as T;
 }
 
 function isExpired(expiresAt: string | null, now: Date): boolean {
@@ -92,7 +116,7 @@ function evaluateApproval(tool: Tool, target: ChangeTarget | null, approvals: Ap
       `An approval exists for tool "${tool.name}" but none cover the requested target`
     );
   }
-  const approval = forTarget[0] as Approval;
+  const approval = pickMostSpecific(forTarget);
   if (approval.status === "pending") {
     return deny("approval_required", `Approval "${approval.id}" for "${tool.name}" is still pending`);
   }
@@ -127,7 +151,7 @@ function evaluateAutonomyGrant(
       `An autonomy grant covers tool "${tool.name}" but none cover the requested target`
     );
   }
-  const grant = forTarget[0] as AutonomyGrant;
+  const grant = pickMostSpecific(forTarget);
   if (grant.status === "revoked") {
     return deny("autonomy_grant_revoked", `Autonomy grant "${grant.id}" for "${tool.name}" was revoked`);
   }

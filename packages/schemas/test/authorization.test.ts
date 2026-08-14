@@ -132,6 +132,35 @@ describe("AutonomyGrant: creation and defaults", () => {
     });
     assert.deepEqual(deserializeAutonomyGrant(serializeAutonomyGrant(grant)), grant);
   });
+
+  it("defaults revokedBy to null and preserves it once set (mirrors Approval.decidedBy)", () => {
+    const grant = createAutonomyGrant({ toolNames: ["x"] });
+    assert.equal(grant.revokedBy, null);
+
+    const revoked = createAutonomyGrant({ ...grant, status: "revoked", revokedBy: "human" });
+    assert.equal(revoked.revokedBy, "human");
+  });
+
+  it("rejects an invalid revokedBy value", () => {
+    assert.throws(
+      () => createAutonomyGrant({ toolNames: ["x"], revokedBy: "not_a_real_source" as never }),
+      /autonomyGrant.revokedBy must be a valid source or null/
+    );
+  });
+});
+
+describe("Direct assertApproval / assertAutonomyGrant validation", () => {
+  it("assertApproval accepts a well-formed approval and rejects a malformed one", () => {
+    const approval = createApproval({ toolName: "x" });
+    assert.doesNotThrow(() => assertApproval(approval));
+    assert.throws(() => assertApproval({ ...approval, status: "bogus" }), /invalid approval status/);
+  });
+
+  it("assertAutonomyGrant accepts a well-formed grant and rejects a malformed one", () => {
+    const grant = createAutonomyGrant({ toolNames: ["x"] });
+    assert.doesNotThrow(() => assertAutonomyGrant(grant));
+    assert.throws(() => assertAutonomyGrant({ ...grant, toolNames: [] }), /toolNames must be a non-empty array/);
+  });
 });
 
 describe("AuthorizationDecision: creation and validation", () => {

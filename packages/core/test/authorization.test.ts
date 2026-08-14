@@ -168,6 +168,24 @@ describe("evaluateToolAuthorization: permission tests", () => {
     assert.equal(decision.allowed, false);
     assert.equal(decision.denialReason, "unknown_autonomy_level");
   });
+
+  it("denies missing authorization context (empty autonomy level) the same deterministic way", () => {
+    // A caller that forgets to supply a real autonomy level (e.g. reading
+    // an unset session field) ends up here rather than in a silent
+    // fallthrough -- "" is just as unrecognized as "godmode".
+    const { approvals, autonomyGrants } = freshStores();
+    const decision = evaluateToolAuthorization({
+      tool: buildTool(),
+      target: null,
+      source: "agent",
+      requestId: "treq_1",
+      autonomyLevel: "",
+      approvals,
+      autonomyGrants
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.denialReason, "unknown_autonomy_level");
+  });
 });
 
 describe("evaluateToolAuthorization: approval tests", () => {
@@ -321,6 +339,57 @@ describe("evaluateToolAuthorization: approval tests", () => {
     });
     assert.equal(decision.allowed, true);
     assert.equal(decision.matchedApprovalId, approval.id);
+  });
+
+  it("a specific REJECTED approval overrides a broader APPROVED one for the same tool (most-specific-match, not first-match)", () => {
+    const { approvals, autonomyGrants } = freshStores();
+    const broad = approvals.create({ toolName: "modify_parameter" }); // targetType/targetId both null: covers anything
+    approvals.approve(broad.id, "human");
+    const specific = approvals.create({
+      toolName: "modify_parameter",
+      targetType: OBJECT_TARGET.entityType,
+      targetId: OBJECT_TARGET.entityId
+    });
+    approvals.reject(specific.id, "human", "not for this object");
+
+    const decision = evaluateToolAuthorization({
+      tool,
+      target: OBJECT_TARGET,
+      source: "agent",
+      requestId: "treq_1",
+      autonomyLevel: "approved_modify",
+      approvals,
+      autonomyGrants
+    });
+
+    // Without most-specific-match, the broad approved approval (created
+    // first) would win and this call would be wrongly allowed.
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.denialReason, "approval_rejected");
+  });
+
+  it("a specific APPROVED approval authorizes even when a broader one for the same tool is still pending", () => {
+    const { approvals, autonomyGrants } = freshStores();
+    approvals.create({ toolName: "modify_parameter" }); // broad, left pending
+    const specific = approvals.create({
+      toolName: "modify_parameter",
+      targetType: OBJECT_TARGET.entityType,
+      targetId: OBJECT_TARGET.entityId
+    });
+    approvals.approve(specific.id, "human");
+
+    const decision = evaluateToolAuthorization({
+      tool,
+      target: OBJECT_TARGET,
+      source: "agent",
+      requestId: "treq_1",
+      autonomyLevel: "approved_modify",
+      approvals,
+      autonomyGrants
+    });
+
+    assert.equal(decision.allowed, true);
+    assert.equal(decision.matchedApprovalId, specific.id);
   });
 });
 

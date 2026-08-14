@@ -362,6 +362,7 @@ export function createAutonomyGrant(input: AutonomyGrantInput): AutonomyGrant {
     createdAt: input.createdAt ?? toIsoTimestamp(),
     expiresAt: input.expiresAt ?? null,
     revokedAt: input.revokedAt ?? null,
+    revokedBy: input.revokedBy ?? null,
     maxUses: input.maxUses ?? null,
     useCount: input.useCount ?? 0,
     metadata: input.metadata ?? {}

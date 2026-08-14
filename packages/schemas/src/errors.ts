@@ -33,3 +33,26 @@ export class ToolError extends Error {
     this.kind = kind;
   }
 }
+
+/**
+ * Thrown by ApprovalStore/AutonomyGrantStore for THEIR OWN invariant
+ * violations — a missing id, or an invalid state transition (approving an
+ * already-decided approval, consuming one that isn't approved, recording
+ * use of a revoked/expired/exhausted grant). Deliberately NOT a ToolError:
+ * these aren't tool-execution outcomes (no tool ran), they're "state
+ * transition failure" in the sense the P0-P4 audit calls out as its own
+ * category, distinct from execution_failure. A caller catching ToolError
+ * should be able to assume a tool handler was actually invoked; conflating
+ * store-lifecycle misuse into that same type would break that assumption.
+ */
+export type AuthorizationErrorKind = "not_found" | "invalid_state_transition";
+
+export class AuthorizationError extends Error {
+  readonly kind: AuthorizationErrorKind;
+
+  constructor(kind: AuthorizationErrorKind, message: string) {
+    super(message);
+    this.name = "AuthorizationError";
+    this.kind = kind;
+  }
+}

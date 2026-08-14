@@ -76,7 +76,29 @@ execution.
   `Approval` authorizes exactly one `(toolName, target)` pair and is
   single-use (`consumedAt`); `AutonomyGrant` authorizes a bounded set of
   future calls (explicit `toolNames` allowlist, optional target scope,
-  optional `expiresAt`/`maxUses`) and is revocable.
+  optional `expiresAt`/`maxUses`) and is revocable. Both record who acted
+  on them (`Approval.decidedBy`, `AutonomyGrant.revokedBy`) — no state
+  transition happens without a recorded actor. When more than one
+  approval/grant covers a call, the MOST SPECIFIC one wins (exact target >
+  target-type-only > fully open), not merely the first one found, so a
+  narrow rejection can't be shadowed by a broader approval created earlier.
+
+## Error model
+
+Three error classes, one per layer, so a caller can branch on `.kind`
+instead of string-matching a message: `WorldModelValidationError` (schemas)
+for data-shape/domain-contract violations across P0–P2 — malformed
+entities, unsupported transition kinds, out-of-order/mismatched-parent
+Change appends. `ToolError` (P3) for the tool execution pipeline's own
+outcomes — `invalid_input` / `unknown_tool` / `execution_failure` /
+`invalid_output` / `policy_rejected` / `unavailable` /
+`duplicate_registration`. `AuthorizationError` (P4) for
+`ApprovalStore`/`AutonomyGrantStore` lifecycle violations —
+`not_found` / `invalid_state_transition` — deliberately NOT `ToolError`,
+since no tool execution is involved in e.g. approving an already-decided
+approval. Authorization *denials* (as opposed to store misuse) are not
+exceptions at all — see `AuthorizationDecision.denialReason`, one of
+fourteen named values.
 
 ## What's intentionally not implemented yet
 
@@ -86,11 +108,12 @@ persistence/database of any kind, no background jobs. `ApprovalStore` and
 `AutonomyGrantStore` are in-memory only — nothing survives a process
 restart. There is no orchestration loop that actually creates approvals,
 grants autonomy, or wires `AuthorizationDecision`s into a persisted audit
-trail; P4 provides the primitives those would be built from, not the
-loop itself (that's P11). `AutonomyGrant`/`Approval` target-matching
-picks the first covering match rather than the most specific one when
-several overlap — correct for the single-match cases every current test
-exercises, worth revisiting if overlapping scopes become common.
+trail; P4 provides the primitives those would be built from, not the loop
+itself (that's P11). No lint/formatter is configured — `strict` TypeScript
+with `noUnusedLocals`/`noUnusedParameters` catches a meaningful subset of
+what a linter would (verified during the P0–P4 foundation audit, which
+found and fixed two real dead-import cases this way); style enforcement
+beyond that is deferred.
 
 ## Tooling
 
