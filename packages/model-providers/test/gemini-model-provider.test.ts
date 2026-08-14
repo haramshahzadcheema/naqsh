@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ApiError } from "@google/genai";
-import { createModelContext, createModelRequest, type ModelContext } from "@naqsh/schemas";
+import { createModelContext, createModelRequest, ModelError, type ModelContext } from "@naqsh/schemas";
 import {
   classifyGeminiError,
   createGeminiModelProvider,
   mapGeminiResponseToModelResponseInput,
   mapModelRequestToGeminiParams,
-  summarizeContextForPrompt
+  summarizeContextForPrompt,
+  type RawGeminiResponseLike
 } from "../src/gemini-model-provider.js";
 import type { GeminiProviderConfig } from "../src/config.js";
 
@@ -112,8 +113,18 @@ describe("mapModelRequestToGeminiParams: pure request mapping", () => {
 });
 
 describe("mapGeminiResponseToModelResponseInput: pure response mapping, no network", () => {
-  it("maps a plain text response", () => {
-    const mapped = mapGeminiResponseToModelResponseInput({ text: "The mass is 340g." }, "req_1");
+  function req(outputSchema?: Parameters<typeof createModelRequest>[0]["outputSchema"]): ReturnType<typeof createModelRequest> {
+    return createModelRequest({
+      id: "req_1",
+      context: {},
+      instruction: "x",
+      outputSchema,
+      config: { modelId: "gemini-2.5-flash" }
+    });
+  }
+
+  it("maps a plain text response when no outputSchema was requested", () => {
+    const mapped = mapGeminiResponseToModelResponseInput({ text: "The mass is 340g." }, req());
     assert.equal(mapped.kind, "text");
     assert.equal(mapped.text, "The mass is 340g.");
     assert.equal(mapped.requestId, "req_1");
@@ -122,7 +133,7 @@ describe("mapGeminiResponseToModelResponseInput: pure response mapping, no netwo
   it("maps a function-call response into a tool_call", () => {
     const mapped = mapGeminiResponseToModelResponseInput(
       { functionCalls: [{ name: "inspect_project", args: { projectId: "proj_1" } }] },
-      "req_1"
+      req()
     );
     assert.equal(mapped.kind, "tool_call");
     assert.equal(mapped.toolCall?.toolName, "inspect_project");
@@ -130,19 +141,89 @@ describe("mapGeminiResponseToModelResponseInput: pure response mapping, no netwo
   });
 
   it("prefers a function call over text when both are somehow present", () => {
-    const mapped = mapGeminiResponseToModelResponseInput(
-      { text: "ignored", functionCalls: [{ name: "x", args: {} }] },
-      "req_1"
-    );
+    const mapped = mapGeminiResponseToModelResponseInput({ text: "ignored", functionCalls: [{ name: "x", args: {} }] }, req());
     assert.equal(mapped.kind, "tool_call");
   });
 
-  it("throws on a response with neither text nor a function call -- caught by generate(), never silently accepted", () => {
-    assert.throws(() => mapGeminiResponseToModelResponseInput({}, "req_1"));
+  it("throws ModelError(malformed_response) on a response with neither text nor a function call -- caught by generate(), never silently accepted", () => {
+    assert.throws(() => mapGeminiResponseToModelResponseInput({}, req()), (error: unknown) => {
+      assert.ok(error instanceof ModelError);
+      assert.equal(error.kind, "malformed_response");
+      return true;
+    });
   });
 
-  it("throws on a function call with no name", () => {
-    assert.throws(() => mapGeminiResponseToModelResponseInput({ functionCalls: [{ args: {} }] }, "req_1"));
+  it("throws ModelError(tool_call_schema_failure) on a function call with no name", () => {
+    assert.throws(() => mapGeminiResponseToModelResponseInput({ functionCalls: [{ args: {} }] }, req()), (error: unknown) => {
+      assert.ok(error instanceof ModelError);
+      assert.equal(error.kind, "tool_call_schema_failure");
+      return true;
+    });
+  });
+
+  it("throws ModelError(tool_call_schema_failure) on a function call with non-object arguments", () => {
+    assert.throws(
+      () => mapGeminiResponseToModelResponseInput({ functionCalls: [{ name: "x", args: ["not", "an", "object"] as never }] }, req()),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelError);
+        assert.equal(error.kind, "tool_call_schema_failure");
+        return true;
+      }
+    );
+  });
+
+  it("accepts a function call with no args at all (defaults to {})", () => {
+    const mapped = mapGeminiResponseToModelResponseInput({ functionCalls: [{ name: "list_objects" }] }, req());
+    assert.equal(mapped.kind, "tool_call");
+    assert.deepEqual(mapped.toolCall?.arguments, {});
+  });
+
+  it("throws ModelError(unexpected_output) when Gemini returns MULTIPLE function calls in one turn -- never silently keeps only the first", () => {
+    assert.throws(
+      () =>
+        mapGeminiResponseToModelResponseInput(
+          { functionCalls: [{ name: "delete_object", args: { id: "a" } }, { name: "delete_object", args: { id: "b" } }] },
+          req()
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelError);
+        assert.equal(error.kind, "unexpected_output");
+        return true;
+      }
+    );
+  });
+
+  describe("structured output: when request.outputSchema is set, text becomes structured_result, not text", () => {
+    const outputSchema = { type: "object" as const, properties: { ok: { type: "boolean" as const } }, required: ["ok"] };
+
+    it("parses JSON text into a structured_result response", () => {
+      const mapped = mapGeminiResponseToModelResponseInput({ text: '{"ok": true}' }, req(outputSchema));
+      assert.equal(mapped.kind, "structured_result");
+      assert.deepEqual(mapped.structuredResult, { ok: true });
+      assert.equal(mapped.text, undefined);
+    });
+
+    it("throws malformed_response when the text is not valid JSON", () => {
+      assert.throws(() => mapGeminiResponseToModelResponseInput({ text: "not json at all" }, req(outputSchema)), (error: unknown) => {
+        assert.ok(error instanceof ModelError);
+        assert.equal(error.kind, "malformed_response");
+        return true;
+      });
+    });
+
+    it("throws malformed_response when the JSON parses to an array or primitive, not an object", () => {
+      assert.throws(() => mapGeminiResponseToModelResponseInput({ text: "[1,2,3]" }, req(outputSchema)), (error: unknown) => {
+        assert.ok(error instanceof ModelError);
+        assert.equal(error.kind, "malformed_response");
+        return true;
+      });
+      assert.throws(() => mapGeminiResponseToModelResponseInput({ text: "42" }, req(outputSchema)));
+    });
+
+    it("does NOT affect a tool_call response even when outputSchema is set", () => {
+      const mapped = mapGeminiResponseToModelResponseInput({ functionCalls: [{ name: "x", args: {} }] }, req(outputSchema));
+      assert.equal(mapped.kind, "tool_call");
+    });
   });
 });
 
@@ -178,5 +259,177 @@ describe("classifyGeminiError: pure error classification, no network", () => {
   it("classifies an unrecognized error as provider_error rather than crashing", () => {
     assert.equal(classifyGeminiError("not even an Error instance").kind, "provider_error");
     assert.equal(classifyGeminiError(new Error("something else")).kind, "provider_error");
+  });
+});
+
+describe("createGeminiModelProvider: generate() control flow with an injected fake network call", () => {
+  // These tests exercise generate()'s actual orchestration (including the
+  // retry loop) via the injectable `generateContent` dependency -- no
+  // network call, no real GoogleGenAI client construction, fully
+  // deterministic. This is what closes the gap left by the
+  // construction-only / pure-mapping-only tests above: before this, the
+  // retry logic had zero test coverage.
+  function textOnlyRequest(): ReturnType<typeof createModelRequest> {
+    return createModelRequest({ context: {}, instruction: "hi", config: { modelId: "gemini-2.5-flash" } });
+  }
+
+  it("succeeds on the first attempt when generateContent succeeds -- attempts recorded as 1", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContent: async () => {
+        calls++;
+        return { text: "hello" };
+      }
+    });
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "success");
+    assert.equal(calls, 1);
+    assert.equal(result.metadata.attempts, 1);
+  });
+
+  it("retries a retryable failure (rate_limit) and succeeds on a later attempt", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(
+      { ...fakeConfig, maxRetries: 2 },
+      {
+        generateContent: async () => {
+          calls++;
+          if (calls < 3) {
+            throw new ApiError({ message: "rate limited", status: 429 });
+          }
+          return { text: "third time's the charm" };
+        }
+      }
+    );
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "success");
+    assert.equal(calls, 3);
+    assert.equal(result.metadata.attempts, 3);
+  });
+
+  it("stops after maxRetries is exhausted and returns the last classified error", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(
+      { ...fakeConfig, maxRetries: 2 },
+      {
+        generateContent: async () => {
+          calls++;
+          throw new ApiError({ message: "still limited", status: 429 });
+        }
+      }
+    );
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "rate_limit");
+    assert.equal(calls, 3, "1 initial attempt + 2 retries = 3 calls");
+    assert.equal(result.metadata.attempts, 3);
+  });
+
+  it("does NOT retry a non-retryable failure (authentication_failure) -- fails immediately", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(
+      { ...fakeConfig, maxRetries: 3 },
+      {
+        generateContent: async () => {
+          calls++;
+          throw new ApiError({ message: "bad key", status: 401 });
+        }
+      }
+    );
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "authentication_failure");
+    assert.equal(calls, 1, "a non-retryable error must not be retried");
+    assert.equal(result.metadata.attempts, 1);
+  });
+
+  it("maxRetries: 0 means exactly one attempt, no retries", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(
+      { ...fakeConfig, maxRetries: 0 },
+      {
+        generateContent: async () => {
+          calls++;
+          throw new ApiError({ message: "limited", status: 429 });
+        }
+      }
+    );
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "error");
+    assert.equal(calls, 1);
+  });
+
+  it("a malformed response shape is never retried (only network-level failures are)", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(
+      { ...fakeConfig, maxRetries: 3 },
+      {
+        generateContent: async (): Promise<RawGeminiResponseLike> => {
+          calls++;
+          return {};
+        }
+      }
+    );
+    const result = await provider.generate(textOnlyRequest());
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "malformed_response");
+    assert.equal(calls, 1, "a successfully-returned-but-malformed response must not trigger a retry");
+  });
+
+  it("end-to-end: requesting structured output and getting a schema-conforming reply succeeds as kind:structured_result", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContent: async () => {
+        calls++;
+        return { text: JSON.stringify({ ok: true }) };
+      }
+    });
+    const request = createModelRequest({
+      context: {},
+      instruction: "status",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      config: { modelId: "gemini-2.5-flash" }
+    });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "success");
+    assert.equal(result.response?.kind, "structured_result");
+    assert.deepEqual(result.response?.structuredResult, { ok: true });
+    assert.equal(calls, 1);
+  });
+
+  it("end-to-end: requesting structured output and getting a schema-VIOLATING reply is rejected with schema_validation_failed, never retried", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContent: async () => {
+        calls++;
+        // Valid JSON, valid object -- but "ok" is a string, not a boolean.
+        return { text: JSON.stringify({ ok: "not-a-boolean" }) };
+      }
+    });
+    const request = createModelRequest({
+      context: {},
+      instruction: "status",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      config: { modelId: "gemini-2.5-flash" }
+    });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "schema_validation_failed");
+    assert.equal(calls, 1, "a schema-violating (but successfully-returned) reply must not trigger a retry");
+  });
+
+  it("a plain text reply still succeeds as kind:text when no outputSchema was requested", async () => {
+    let calls = 0;
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContent: async () => {
+        calls++;
+        return { text: "hello there" };
+      }
+    });
+    const request = createModelRequest({ context: {}, instruction: "status", config: { modelId: "gemini-2.5-flash" } });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "success");
+    assert.equal(result.response?.kind, "text");
+    assert.equal(calls, 1);
   });
 });

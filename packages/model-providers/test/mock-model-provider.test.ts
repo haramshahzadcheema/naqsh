@@ -129,6 +129,44 @@ describe("Mock model provider: configurable respond callback", () => {
     assert.equal(result.status, "error");
     assert.equal(result.error?.kind, "schema_validation_failed");
   });
+
+  it("rejects a structured_result response that is JSON-safe but does NOT match the request's outputSchema", async () => {
+    const provider = createMockModelProvider({
+      // JSON-safe, and a valid ModelResponse shape on its own -- but the
+      // request asked for {ok: boolean} and this returns {ok: "yes"}.
+      respond: () => ({ response: { kind: "structured_result", structuredResult: { ok: "yes" } } })
+    });
+    const request = createModelRequest({
+      context: {},
+      instruction: "Report status as structured JSON.",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      config: { modelId: "mock-v1" }
+    });
+
+    let result;
+    try {
+      result = await provider.generate(request);
+    } catch {
+      assert.fail("generate() must never throw for a schema-mismatched structured_result");
+    }
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "schema_validation_failed");
+  });
+
+  it("accepts a structured_result response that DOES match the request's outputSchema", async () => {
+    const provider = createMockModelProvider({
+      respond: () => ({ response: { kind: "structured_result", structuredResult: { ok: true } } })
+    });
+    const request = createModelRequest({
+      context: {},
+      instruction: "Report status as structured JSON.",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      config: { modelId: "mock-v1" }
+    });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "success");
+    assert.deepEqual(result.response?.structuredResult, { ok: true });
+  });
 });
 
 describe("Mock model provider: security boundary -- Gemini cannot directly mutate state", () => {

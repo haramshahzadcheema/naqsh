@@ -212,7 +212,13 @@ scanned across every `.ts` file in `core/src`, `schemas/src`,
   A model's turn is a typed `ModelResponse` (`text` /
   `structured_result` / `tool_call` / `clarification_request` / `error`,
   exactly the field matching `kind` populated, every other field null —
-  validated, not merely typed). A `tool_call` response carries a
+  validated, not merely typed). A `structured_result` is additionally
+  checked with `validateStructuredResult` (core) against
+  `ModelRequest.outputSchema` — JSON-safety alone does not prove a model's
+  structured answer matches the shape NAQSH actually asked for, so both
+  providers call this before returning `status: "success"`; a shape that's
+  valid JSON but the wrong shape comes back as `schema_validation_failed`,
+  never a silently-accepted mismatch. A `tool_call` response carries a
   `ModelToolCallIntent` — a name and JSON-safe arguments, structurally
   incapable of holding executable code, exactly like `Tool` never carries a
   handler. Gemini never receives a `ToolRegistry` or `WorldModelState`
@@ -220,12 +226,39 @@ scanned across every `.ts` file in `core/src`, `schemas/src`,
   `executeModelToolCall` (core) is the one sanctioned path from an intent
   to an actual invocation, and it does nothing but unpack the intent and
   hand it to the EXISTING `executeTool` boundary — the same input
-  validation, the same `authorize` policy hook, the same handler. This is
-  proven, not merely asserted: `execute-model-tool-call.test.ts` shows an
-  unknown tool name, mismatched arguments, and a denying `authorize` hook
-  all reject the call before any handler runs, and
+  validation, the same `authorize` policy hook, the same handler. It also
+  requires the originating `ModelRequest` and rejects any `toolName` that
+  wasn't among the tools actually DECLARED to the model for that request —
+  `executeTool` alone resolves names against the full registry, which can
+  legitimately hold tools the model was never offered this turn, so this
+  check runs first and short-circuits with `unknown_tool` before
+  `authorize` is ever consulted. This is proven, not merely asserted:
+  `execute-model-tool-call.test.ts` shows an unknown tool name, a real but
+  UNDECLARED tool name, mismatched arguments, and a denying `authorize`
+  hook all reject the call before any handler runs, and
   `repo-boundaries.test.ts` statically guards that no other file in core
   combines `executeTool` with `ModelToolCallIntent`.
+
+  The Gemini adapter treats model output as hostile input throughout: more
+  than one function call in a single turn is rejected outright
+  (`unexpected_output`) rather than silently keeping only the first and
+  discarding the rest; a function call with no name or non-object arguments
+  is rejected as `tool_call_schema_failure`; and structured-output text
+  that fails to parse as JSON is `malformed_response` — all via the
+  previously-unused `ModelError` class (schemas), which now actually
+  carries the precise `ModelErrorKind` through `mapGeminiResponseToModelResponseInput`
+  instead of collapsing every failure into one generic bucket.
+  `createGeminiModelProvider` retries a bounded number of times
+  (`GeminiProviderConfig.maxRetries`, previously loaded from the
+  environment but never consulted) — but only for classified-retryable
+  failures (`rate_limit`/`timeout`/`api_unavailable`); an authentication
+  failure or a malformed response is never retried, and the number of
+  attempts made is always recorded in `ModelInvocationResult.metadata`.
+  The provider's actual network call is injectable
+  (`GeminiModelProviderDependencies.generateContent`, defaulting to the
+  real SDK client), which is what makes this retry control flow directly
+  testable without live credentials — before this, `generate()`'s
+  orchestration had zero test coverage beyond its pure helper functions.
 
 ## Error model
 

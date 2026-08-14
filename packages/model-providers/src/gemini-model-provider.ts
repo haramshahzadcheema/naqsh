@@ -4,6 +4,7 @@ import {
   createModelInvocationResult,
   createModelProviderDescriptor,
   createModelResponse,
+  ModelError,
   toIsoTimestamp,
   type ModelContext,
   type ModelErrorKind,
@@ -11,7 +12,7 @@ import {
   type ModelRequest,
   type ModelResponseInput
 } from "@naqsh/schemas";
-import type { ModelProvider } from "@naqsh/core";
+import { validateStructuredResult, type ModelProvider } from "@naqsh/core";
 import type { GeminiProviderConfig } from "./config.js";
 import { toGeminiFunctionDeclaration, toGeminiJsonSchema } from "./schema-bridge.js";
 
@@ -27,13 +28,15 @@ import { toGeminiFunctionDeclaration, toGeminiJsonSchema } from "./schema-bridge
  * UNVERIFIED against the live Gemini API: no credentials are available in
  * this environment (confirmed — no `GEMINI_API_KEY`, no `.env`), so this
  * has been typechecked against the SDK's own published types and unit
- * tested at the pure request/response-MAPPING level (see
- * gemini-model-provider.test.ts), but `generate()`'s actual network call
- * has never been exercised end-to-end. Do not treat this as proven working
- * against the real API until it has been.
+ * tested at the pure request/response-MAPPING and retry-CONTROL-FLOW level
+ * (see gemini-model-provider.test.ts, which injects a fake
+ * `generateContent` — see `GeminiModelProviderDependencies` below), but the
+ * real network call has never been exercised end-to-end. Do not treat this
+ * as proven working against the real API until it has been.
  */
 
 const AUTH_STATUS_CODES = new Set([401, 403]);
+const RETRYABLE_KINDS = new Set<ModelErrorKind>(["rate_limit", "timeout", "api_unavailable"]);
 
 export function summarizeContextForPrompt(context: ModelContext): string {
   const lines: string[] = [];
@@ -88,16 +91,60 @@ export interface RawGeminiResponseLike {
   functionCalls?: FunctionCall[];
 }
 
-/** Pure: raw Gemini output -> `ModelResponseInput`. Throws a plain `Error`
- * on a shape this provider cannot interpret (neither text nor a function
- * call, or a function call with no name) — `generate()` catches this and
- * turns it into a structured `malformed_response` result; it is never
- * allowed to escape as an unhandled rejection. */
-export function mapGeminiResponseToModelResponseInput(raw: RawGeminiResponseLike, requestId: string): ModelResponseInput {
+function isPlainArgsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Pure: raw Gemini output -> `ModelResponseInput`. Takes the full
+ * `ModelRequest` (not just its id) because Gemini's structured-output
+ * feature (`responseMimeType: "application/json"` + `responseJsonSchema`,
+ * wired in `mapModelRequestToGeminiParams` whenever `request.outputSchema`
+ * is set) returns its JSON payload through the ORDINARY `text` field, not
+ * as a distinguishable "structured" field on the raw response — so
+ * whether a text reply should become `kind: "text"` or `kind:
+ * "structured_result"` depends on whether structured output was actually
+ * requested. Getting this wrong would mean `ModelRequest.outputSchema`
+ * silently did nothing on the response side even though it was wired into
+ * the request: exactly the kind of half-finished feature this audit exists
+ * to catch.
+ *
+ * Throws `ModelError` (never a bare `Error`) with a precise `kind` on any
+ * shape this provider cannot interpret — `generate()` catches this and
+ * reuses `error.kind` directly rather than collapsing every failure into
+ * one generic "malformed_response" bucket:
+ *   - more than one function call in a single turn -> "unexpected_output"
+ *     (P7's `ModelResponse.toolCall` supports exactly one; silently
+ *     keeping only the first would discard information the model thinks
+ *     it sent, which is exactly the "multiple conflicting actions" hazard
+ *     the P7 audit calls out)
+ *   - a function call with no name, or non-object arguments ->
+ *     "tool_call_schema_failure"
+ *   - structured output was requested but the text isn't valid JSON, or
+ *     doesn't parse to an object -> "malformed_response" (schema
+ *     CONFORMANCE, once parsed, is `validateStructuredResult`'s job --
+ *     this only guards that it is even parseable, structured data)
+ *   - neither text nor a function call -> "malformed_response"
+ * None of these are allowed to escape as an unhandled rejection.
+ */
+export function mapGeminiResponseToModelResponseInput(raw: RawGeminiResponseLike, request: ModelRequest): ModelResponseInput {
+  const requestId = request.id;
+  if (raw.functionCalls && raw.functionCalls.length > 1) {
+    throw new ModelError(
+      "unexpected_output",
+      `Gemini returned ${raw.functionCalls.length} function calls in one turn; NAQSH's ModelResponse supports at most one tool call per turn`
+    );
+  }
   const call = raw.functionCalls?.[0];
   if (call) {
     if (!call.name) {
-      throw new Error("Gemini returned a function call with no name");
+      throw new ModelError("tool_call_schema_failure", "Gemini returned a function call with no name");
+    }
+    if (call.args !== undefined && !isPlainArgsObject(call.args)) {
+      throw new ModelError(
+        "tool_call_schema_failure",
+        `Gemini returned function call "${call.name}" with non-object arguments`
+      );
     }
     return {
       requestId,
@@ -106,9 +153,21 @@ export function mapGeminiResponseToModelResponseInput(raw: RawGeminiResponseLike
     };
   }
   if (raw.text !== undefined && raw.text.length > 0) {
+    if (request.outputSchema) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw.text);
+      } catch {
+        throw new ModelError("malformed_response", "Gemini's structured-output text was not valid JSON");
+      }
+      if (!isPlainArgsObject(parsed)) {
+        throw new ModelError("malformed_response", "Gemini's structured-output JSON did not parse to an object");
+      }
+      return { requestId, kind: "structured_result", structuredResult: parsed };
+    }
     return { requestId, kind: "text", text: raw.text };
   }
-  throw new Error("Gemini response contained neither text nor a function call");
+  throw new ModelError("malformed_response", "Gemini response contained neither text nor a function call");
 }
 
 /** Pure: classifies whatever `generateContent` threw into one of this
@@ -136,8 +195,24 @@ export function classifyGeminiError(error: unknown): { kind: ModelErrorKind; mes
   return { kind: "provider_error", message: error instanceof Error ? error.message : String(error) };
 }
 
-export function createGeminiModelProvider(config: GeminiProviderConfig): ModelProvider {
+/** Injectable seam for the actual network call, so `generate()`'s full
+ * control flow (including the retry loop below) can be exercised by a
+ * test with a hand-written fake, never a live API call. Defaults to the
+ * real `@google/genai` client — production code never needs to pass this. */
+export interface GeminiModelProviderDependencies {
+  generateContent?: (params: GenerateContentParameters) => Promise<RawGeminiResponseLike>;
+}
+
+function defaultGenerateContent(config: GeminiProviderConfig): (params: GenerateContentParameters) => Promise<RawGeminiResponseLike> {
   const client = new GoogleGenAI({ apiKey: config.apiKey });
+  return (params) => client.models.generateContent(params);
+}
+
+export function createGeminiModelProvider(
+  config: GeminiProviderConfig,
+  dependencies: GeminiModelProviderDependencies = {}
+): ModelProvider {
+  const generateContent = dependencies.generateContent ?? defaultGenerateContent(config);
   const descriptor = createModelProviderDescriptor({
     providerId: "gemini",
     modelId: config.modelId,
@@ -150,12 +225,28 @@ export function createGeminiModelProvider(config: GeminiProviderConfig): ModelPr
 
     async generate(request: ModelRequest): Promise<ModelInvocationResult> {
       const startedAt = toIsoTimestamp();
+      const maxAttempts = 1 + Math.max(0, config.maxRetries);
+      const params = mapModelRequestToGeminiParams(request, config);
 
-      let raw: RawGeminiResponseLike;
-      try {
-        raw = await client.models.generateContent(mapModelRequestToGeminiParams(request, config));
-      } catch (error) {
-        const classified = classifyGeminiError(error);
+      let raw: RawGeminiResponseLike | undefined;
+      let classified: { kind: ModelErrorKind; message: string } | undefined;
+      let attempts = 0;
+
+      for (attempts = 1; attempts <= maxAttempts; attempts++) {
+        try {
+          raw = await generateContent(params);
+          classified = undefined;
+          break;
+        } catch (error) {
+          classified = classifyGeminiError(error);
+          if (RETRYABLE_KINDS.has(classified.kind) && attempts < maxAttempts) {
+            continue;
+          }
+          break;
+        }
+      }
+
+      if (classified) {
         return createModelInvocationResult({
           id: createId("modelinv"),
           requestId: request.id,
@@ -165,12 +256,30 @@ export function createGeminiModelProvider(config: GeminiProviderConfig): ModelPr
           status: "error",
           error: classified,
           startedAt,
-          completedAt: toIsoTimestamp()
+          completedAt: toIsoTimestamp(),
+          metadata: { attempts }
         });
       }
 
       try {
-        const response = createModelResponse(mapGeminiResponseToModelResponseInput(raw, request.id));
+        // `raw` is guaranteed defined here: the loop only exits without
+        // `classified` set after a successful `generateContent` call.
+        const response = createModelResponse(mapGeminiResponseToModelResponseInput(raw!, request));
+        const schemaErrors = validateStructuredResult(response, request);
+        if (schemaErrors.length > 0) {
+          return createModelInvocationResult({
+            id: createId("modelinv"),
+            requestId: request.id,
+            providerId: descriptor.providerId,
+            modelId: config.modelId,
+            sessionId: request.sessionId,
+            status: "error",
+            error: { kind: "schema_validation_failed", message: schemaErrors.join("; ") },
+            startedAt,
+            completedAt: toIsoTimestamp(),
+            metadata: { attempts }
+          });
+        }
         return createModelInvocationResult({
           id: createId("modelinv"),
           requestId: request.id,
@@ -180,9 +289,11 @@ export function createGeminiModelProvider(config: GeminiProviderConfig): ModelPr
           status: "success",
           response,
           startedAt,
-          completedAt: toIsoTimestamp()
+          completedAt: toIsoTimestamp(),
+          metadata: { attempts }
         });
       } catch (error) {
+        const kind = error instanceof ModelError ? error.kind : "malformed_response";
         return createModelInvocationResult({
           id: createId("modelinv"),
           requestId: request.id,
@@ -191,11 +302,12 @@ export function createGeminiModelProvider(config: GeminiProviderConfig): ModelPr
           sessionId: request.sessionId,
           status: "error",
           error: {
-            kind: "malformed_response",
+            kind,
             message: error instanceof Error ? error.message : String(error)
           },
           startedAt,
-          completedAt: toIsoTimestamp()
+          completedAt: toIsoTimestamp(),
+          metadata: { attempts }
         });
       }
     }

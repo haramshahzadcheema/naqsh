@@ -7,7 +7,7 @@ import {
   type ModelRequest,
   type ModelResponseInput
 } from "@naqsh/schemas";
-import type { ModelProvider } from "@naqsh/core";
+import { validateStructuredResult, type ModelProvider } from "@naqsh/core";
 import { createDeterministicClock, createDeterministicIdGenerator } from "./deterministic.js";
 
 /** What a `respond` callback returns for one `generate()` call: either the
@@ -125,6 +125,20 @@ export function createMockModelProvider(options: MockModelProviderOptions = {}):
           requestId: request.id,
           createdAt: now()
         });
+        const schemaErrors = validateStructuredResult(response, request);
+        if (schemaErrors.length > 0) {
+          return createModelInvocationResult({
+            id: generateId("modelinv"),
+            requestId: request.id,
+            providerId: descriptor.providerId,
+            modelId,
+            sessionId: request.sessionId,
+            status: "error",
+            error: { kind: "schema_validation_failed", message: schemaErrors.join("; ") },
+            startedAt,
+            completedAt: now()
+          });
+        }
         return createModelInvocationResult({
           id: generateId("modelinv"),
           requestId: request.id,
