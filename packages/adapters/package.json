@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test test/mock-cad-environment.test.ts test/mock-simulation-environment.test.ts",
+    "test": "node --import tsx --test test/mock-cad-environment.test.ts test/mock-simulation-environment.test.ts test/mock-environment.test.ts test/deterministic.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

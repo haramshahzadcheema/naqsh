@@ -119,17 +119,43 @@ subprocess/dynamic-import execution.
   `save`/`checkpoint` — reading is always assumed baseline). This is what
   lets ONE reusable suite, `runEnvironmentAdapterContractTests` (core),
   run unmodified against adapters with entirely different capability
-  profiles — proven today by `packages/adapters`' two mocks
+  profiles — proven today by `packages/adapters`' mocks
   (`createMockCadEnvironment`: full capability set;
-  `createMockSimulationEnvironment`: `modify` only, fixed topology) and
-  intended to run against a real `FreeCADAdapter` in P12+ the exact same
-  way. `EnvironmentObject` is deliberately NOT `EngineeringObject`: an
-  adapter reports a raw environment fact, not NAQSH's interpreted domain
-  belief — nothing in `environment-adapter.ts` or any mock ever touches
+  `createMockSimulationEnvironment`: `modify` only, fixed topology;
+  `createMockEnvironment`: P6's deterministic lab, see below) and intended
+  to run against a real `FreeCADAdapter` in P12+ the exact same way.
+  `EnvironmentObject` is deliberately NOT `EngineeringObject`: an adapter
+  reports a raw environment fact, not NAQSH's interpreted domain belief —
+  nothing in `environment-adapter.ts` or any mock ever touches
   `WorldModelState`/`ChangeHistory`/`updateWorldModel` (enforced as a
   repo-boundaries regression test). Reconciling environment observations
   into the World Model (Environment → observation → interpretation →
-  World Model update) is P8's job, not P5's.
+  World Model update) is P8's job, not P5's. `connect()` takes an optional,
+  environment-specific `options` bag (e.g. which document to open) — the
+  one write-shaped parameter every adapter needs but whose shape can never
+  be fixed by the contract itself.
+- **Deterministic mock environment** (P6) — `createMockEnvironment`
+  (`packages/adapters/src/mock-environment.ts`) is the canonical laboratory
+  later phases build and test against, distinct from the two P5 example
+  mocks (which exist only to prove the contract tolerates different
+  capability profiles). It returns a plain `EnvironmentAdapter` — no
+  parallel mock interface — built on the same
+  `createInMemoryEnvironmentAdapter` engine as every other mock, so
+  `Core/Tool → EnvironmentAdapter → createMockEnvironment → in-memory
+  state` is a real call chain, not a diagram. `describe().kind` is the
+  literal string `"mock"`, never a real environment's name. Deterministic
+  *by default*: every instance gets its own fresh
+  `createDeterministicIdGenerator()`/`createDeterministicClock()`
+  (`packages/adapters/src/deterministic.ts`) — a per-prefix counter and a
+  logical clock that only ever advances when called, never touching
+  `Math.random()`/wall-clock time — so the same sequence of operations
+  against two independent instances produces byte-identical
+  `EnvironmentOperationResult`s, ids and timestamps included, while two
+  instances never share state. `generateId`/`now` are injectable on both
+  `createMockEnvironment` and the underlying engine for callers that need
+  specific values. Full capability set, two seeded objects with one
+  seeded relationship between them (proving `EnvironmentObject`'s
+  relationship field is actually exercised, not just typed).
 
 ## Error model
 
@@ -165,12 +191,15 @@ nothing survives a process restart, and the same is true of every
 creates approvals, grants autonomy, or wires `AuthorizationDecision`s or
 `EnvironmentOperationResult`s into a persisted audit trail; P4/P5 provide
 the primitives those would be built from, not the loop itself (that's
-P11). The two mock adapters in `packages/adapters` are deliberately
+P11). The mock adapters in `packages/adapters` are deliberately
 simplistic — proving the `EnvironmentAdapter` contract works, not
 simulating a real CAD/simulation application; no geometry kernel, no
 FEA/CFD, no real persistence to disk. `FreeCADAdapter` does not exist yet
 (P12–P14) — nothing in `packages/adapters` imports FreeCAD, a Python
-runtime, or any vendor SDK. No lint/formatter is configured — `strict`
+runtime, or any vendor SDK. There is no agent, no tool that calls an
+adapter, and no Gemini structured tool calling (P7) — P6 only proves the
+environment side of that future chain works in isolation. No
+lint/formatter is configured — `strict`
 TypeScript with `noUnusedLocals`/`noUnusedParameters` catches a meaningful
 subset of what a linter would (verified during the P0–P4 foundation audit,
 which found and fixed two real dead-import cases this way); style

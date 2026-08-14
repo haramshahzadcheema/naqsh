@@ -18,17 +18,23 @@ import {
 import type { EnvironmentAdapter } from "@naqsh/core";
 
 /**
- * Shared, deterministic in-memory engine behind both mock adapters
- * (mock-cad-environment.ts, mock-simulation-environment.ts). Everything
- * genuinely CAD/simulation-specific — capability set, seed data, domain
- * vocabulary — is supplied by the caller; this file owns only the generic
- * mechanics (session tracking, capability gating, error construction,
- * checkpoint/restore) that any deterministic mock adapter needs, so the
- * two mocks stay thin, honest configuration rather than two copies of the
- * same plumbing. Not exported from the package's public index.ts on
+ * Shared engine behind every mock adapter (mock-cad-environment.ts,
+ * mock-simulation-environment.ts, mock-environment.ts). Everything
+ * genuinely domain-specific — capability set, seed data, vocabulary — is
+ * supplied by the caller; this file owns only the generic mechanics
+ * (session tracking, capability gating, error construction,
+ * checkpoint/restore, id/timestamp assignment) that any in-memory adapter
+ * needs, so the mocks stay thin, honest configuration rather than copies
+ * of the same plumbing. Not exported from the package's public index.ts on
  * purpose — a consumer should reach for a NAMED environment
- * (createMockCadEnvironment / createMockSimulationEnvironment), not this
- * generic builder.
+ * (createMockCadEnvironment / createMockSimulationEnvironment /
+ * createMockEnvironment), not this generic builder.
+ *
+ * "Deterministic" is a property of the CALLER's choice of `generateId`/
+ * `now`, not of this engine inherently — the engine itself never reaches
+ * for `Math.random()`/`Date.now()` directly, it only ever calls whichever
+ * generator/clock it was given (defaulting to real randomness/wall-clock
+ * so the P5 mocks keep their original behavior unchanged).
  */
 export interface InMemoryEnvironmentAdapterOptions {
   descriptor: EnvironmentDescriptorInput;
@@ -36,15 +42,31 @@ export interface InMemoryEnvironmentAdapterOptions {
    * the contract-test suite), so every test starts from the same
    * deterministic, isolated seed state. */
   seedObjects?: () => EnvironmentObjectInput[];
+  /** Injectable id generator, applied to every id this engine assigns
+   * (sessions, created objects, checkpoints, operation results -- seed
+   * objects included). Defaults to `createId` from @naqsh/schemas
+   * (random UUID per call), matching this engine's original behavior. Pass
+   * `createDeterministicIdGenerator()` (./deterministic.js) for a mock
+   * whose ids must be reproducible run-to-run. */
+  generateId?: (prefix: string) => string;
+  /** Injectable clock, applied to every timestamp this engine assigns.
+   * Defaults to `toIsoTimestamp()` from @naqsh/schemas (real wall clock),
+   * matching this engine's original behavior. Pass
+   * `createDeterministicClock()` (./deterministic.js) for a mock whose
+   * timestamps must be reproducible run-to-run. */
+  now?: () => string;
 }
 
 export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAdapterOptions): EnvironmentAdapter {
+  const generateId = options.generateId ?? ((prefix: string) => createId(prefix));
+  const now = options.now ?? (() => toIsoTimestamp());
+
   const descriptor = createEnvironmentDescriptor(options.descriptor);
   const capabilities = new Set(descriptor.capabilities);
 
   let objects = new Map<EnvironmentObjectId, EnvironmentObject>();
   for (const input of (options.seedObjects ?? (() => []))()) {
-    const object = createEnvironmentObject(input);
+    const object = createEnvironmentObject({ ...input, id: input.id ?? generateId("envobj") });
     objects.set(object.id, object);
   }
 
@@ -57,13 +79,16 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     objectId: EnvironmentObjectId | null,
     data: unknown
   ): EnvironmentOperationResult {
+    const startedAt = now();
     return createEnvironmentOperationResult({
+      id: generateId("envop"),
       operation,
       sessionId,
       objectId,
       status: "success",
       data,
-      startedAt: toIsoTimestamp()
+      startedAt,
+      completedAt: now()
     });
   }
 
@@ -74,13 +99,16 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     kind: EnvironmentErrorKind,
     message: string
   ): EnvironmentOperationResult {
+    const startedAt = now();
     return createEnvironmentOperationResult({
+      id: generateId("envop"),
       operation,
       sessionId,
       objectId,
       status: "error",
       error: { kind, message },
-      startedAt: toIsoTimestamp()
+      startedAt,
+      completedAt: now()
     });
   }
 
@@ -117,15 +145,22 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     describe: () => descriptor,
 
     async health() {
-      return success("health", null, null, createEnvironmentHealth({ status: "healthy", message: "mock environment" }));
+      return success(
+        "health",
+        null,
+        null,
+        createEnvironmentHealth({ status: "healthy", message: "mock environment", checkedAt: now() })
+      );
     },
 
     async connect(options) {
       const documentName = typeof options?.documentName === "string" ? options.documentName : null;
       const session = createEnvironmentSession({
+        id: generateId("envsess"),
         environmentKind: descriptor.kind,
         status: "connected",
-        documentName
+        documentName,
+        openedAt: now()
       });
       connectedSessionIds.add(session.id);
       return success("connect", session.id, null, session);
@@ -159,7 +194,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (guard) return guard;
       const capabilityGuard = requireCapability("create", "create_object", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      const object = createEnvironmentObject(input);
+      const object = createEnvironmentObject({ ...input, id: input.id ?? generateId("envobj") });
       objects.set(object.id, object);
       return success("create_object", session.id, object.id, object);
     },
@@ -221,7 +256,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (guard) return guard;
       const capabilityGuard = requireCapability("checkpoint", "checkpoint", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      const checkpointId = createId("chkpt");
+      const checkpointId = generateId("chkpt");
       checkpoints.set(checkpointId, new Map(objects));
       return success("checkpoint", session.id, null, { checkpointId });
     },
