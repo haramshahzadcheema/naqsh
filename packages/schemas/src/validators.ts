@@ -1,6 +1,10 @@
 import { isIsoTimestamp } from "./ids.js";
 import {
+  CHANGE_CAUSE_KINDS,
   ENTITY_SOURCES,
+  type Change,
+  type ChangeCause,
+  type ChangeTarget,
   type Constraint,
   type Decision,
   type EngineeringObject,
@@ -36,6 +40,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isEntitySource(value: unknown): value is (typeof ENTITY_SOURCES)[number] {
   return typeof value === "string" && (ENTITY_SOURCES as readonly string[]).includes(value);
+}
+
+function isChangeCauseKind(value: unknown): value is (typeof CHANGE_CAUSE_KINDS)[number] {
+  return typeof value === "string" && (CHANGE_CAUSE_KINDS as readonly string[]).includes(value);
 }
 
 export function assertObjective(value: unknown): asserts value is Objective {
@@ -208,6 +216,73 @@ export function assertWorldModelState(value: unknown): asserts value is WorldMod
   invariant(isPlainObject(value), "world model state must be an object");
   assertProject(value.project);
   assertSessionState(value.session);
+}
+
+export function assertChangeCause(value: unknown): asserts value is ChangeCause {
+  invariant(isPlainObject(value), "change cause must be an object");
+  invariant(isChangeCauseKind(value.kind), "invalid change cause kind");
+  invariant(typeof value.description === "string", "change cause description must be a string");
+}
+
+export function assertChangeTarget(value: unknown): asserts value is ChangeTarget {
+  invariant(isPlainObject(value), "change target must be an object");
+  invariant(
+    typeof value.entityType === "string" && value.entityType.length > 0,
+    "change target.entityType is required"
+  );
+  invariant(
+    value.entityId === null || typeof value.entityId === "string",
+    "change target.entityId must be a string or null"
+  );
+}
+
+/**
+ * Deliberately does NOT re-validate `transition` against the full
+ * transition-interface shapes, and does NOT check `transitionKind` against
+ * the current set of registered kinds. A Change is an immutable historical
+ * record — it must stay valid even after a future phase removes or
+ * reshapes a transition kind that a much older Change referenced. Checking
+ * the outer shape (an object with a non-empty string `kind`) is enough;
+ * whether a kind is currently supported is @naqsh/core's registry's
+ * concern, not this validator's.
+ */
+export function assertChange(value: unknown): asserts value is Change {
+  invariant(isPlainObject(value), "change must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "change.id is required");
+  invariant(
+    typeof value.sequence === "number" && Number.isInteger(value.sequence) && value.sequence >= 1,
+    "change.sequence must be a positive integer"
+  );
+  invariant(
+    value.parentChangeId === null || typeof value.parentChangeId === "string",
+    "change.parentChangeId must be a string or null"
+  );
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "change.projectId is required");
+  invariant(
+    value.sessionId === null || typeof value.sessionId === "string",
+    "change.sessionId must be a string or null"
+  );
+  invariant(isEntitySource(value.source), "invalid change source");
+  assertChangeCause(value.cause);
+  invariant(
+    typeof value.transitionKind === "string" && value.transitionKind.length > 0,
+    "change.transitionKind is required"
+  );
+  invariant(
+    isPlainObject(value.transition) &&
+      typeof value.transition.kind === "string" &&
+      value.transition.kind.length > 0,
+    "change.transition must be an object with a non-empty kind"
+  );
+  assertChangeTarget(value.target);
+  invariant(
+    typeof value.resultingProjectVersion === "number" &&
+      Number.isInteger(value.resultingProjectVersion) &&
+      value.resultingProjectVersion >= 1,
+    "change.resultingProjectVersion must be a positive integer"
+  );
+  invariant(isIsoTimestamp(value.createdAt), "change.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata), "change.metadata must be an object");
 }
 
 /**

@@ -57,15 +57,36 @@ describe("dependency direction: core depends on schemas, never the reverse", () 
     // Regression guard for the exact bug found in the P0/P1 audit: identical
     // validators were hand-maintained in three places (core .cjs, core
     // .mjs, and an orphaned copy in schemas that nothing imported). This
-    // asserts core has no local re-implementation of entity validation.
-    const coreSourceFiles = ["src/transitions.ts", "src/bootstrap.ts", "src/index.ts"];
+    // asserts core has no local re-implementation of entity validation,
+    // including Change (added in P2) -- the exact same risk applies to it.
+    const coreSourceFiles = [
+      "src/transitions.ts",
+      "src/bootstrap.ts",
+      "src/change-history.ts",
+      "src/record-transition.ts",
+      "src/index.ts"
+    ];
     for (const relativePath of coreSourceFiles) {
       const contents = readFileSync(join(repoRoot, "packages/core", relativePath), "utf8");
       assert.doesNotMatch(
         contents,
-        /function\s+(assert|validate)(Requirement|Constraint|EngineeringObject|Decision|Experiment|Preference)/,
+        /function\s+(assert|validate)(Requirement|Constraint|EngineeringObject|Decision|Experiment|Preference|Change|ChangeCause|ChangeTarget)/,
         `${relativePath} must import validators from @naqsh/schemas instead of redefining them`
       );
     }
+  });
+
+  it("does not redefine WorldModelTransition or its member interfaces in core", () => {
+    // Regression guard for the P2 correction: transition type CONTRACTS
+    // moved from core to schemas so Change could reference them without
+    // schemas depending on core. This asserts core's transitions.ts only
+    // adds behavior (the registry/reducer), not a second copy of the
+    // transition interfaces themselves.
+    const contents = readFileSync(join(repoRoot, "packages/core/src/transitions.ts"), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /^export interface \w+Transition/m,
+      "packages/core/src/transitions.ts must import transition interfaces from @naqsh/schemas instead of redefining them"
+    );
   });
 });

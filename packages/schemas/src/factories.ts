@@ -1,5 +1,9 @@
 import { createId, toIsoTimestamp } from "./ids.js";
 import type {
+  Change,
+  ChangeCause,
+  ChangeCauseInput,
+  ChangeInput,
   Constraint,
   ConstraintInput,
   Decision,
@@ -21,6 +25,8 @@ import type {
   WorldModelState
 } from "./types.js";
 import {
+  assertChange,
+  assertChangeCause,
   assertConstraint,
   assertDecision,
   assertEngineeringObject,
@@ -181,4 +187,41 @@ export function createWorldModelState(input: {
   const state: WorldModelState = { project, session };
   assertWorldModelState(state);
   return state;
+}
+
+export function createChangeCause(input: ChangeCauseInput = {}): ChangeCause {
+  const cause: ChangeCause = {
+    kind: input.kind ?? "system",
+    description: input.description ?? ""
+  };
+  assertChangeCause(cause);
+  return cause;
+}
+
+/**
+ * Unlike every other createX above, most fields here have no sensible
+ * default (see ChangeInput's doc comment) — this factory's job is to fill
+ * in the few that do (id/source/cause/createdAt/metadata) and validate the
+ * result, not to make a Change out of thin air.
+ */
+export function createChange(input: ChangeInput): Change {
+  const change: Change = {
+    id: input.id ?? createId("chg"),
+    sequence: input.sequence,
+    parentChangeId: input.parentChangeId,
+    projectId: input.projectId,
+    sessionId: input.sessionId,
+    source: input.source ?? "system",
+    cause: createChangeCause(input.cause ?? {}),
+    transitionKind: input.transitionKind,
+    transition: input.transition,
+    target: input.target,
+    before: input.before ?? null,
+    after: input.after ?? null,
+    resultingProjectVersion: input.resultingProjectVersion,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertChange(change);
+  return change;
 }
