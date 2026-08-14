@@ -1,0 +1,10 @@
+{
+  "name": "@naqsh/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"console.log('api build placeholder')\"",
+    "test": "node -e \"console.log('api tests placeholder')\""
+  }
+}

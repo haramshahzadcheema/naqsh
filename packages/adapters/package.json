@@ -1,0 +1,10 @@
+{
+  "name": "@naqsh/adapters",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"console.log('adapters build placeholder')\"",
+    "test": "node -e \"console.log('adapters tests placeholder')\""
+  }
+}
