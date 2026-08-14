@@ -120,8 +120,13 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       return success("health", null, null, createEnvironmentHealth({ status: "healthy", message: "mock environment" }));
     },
 
-    async connect() {
-      const session = createEnvironmentSession({ environmentKind: descriptor.kind, status: "connected" });
+    async connect(options) {
+      const documentName = typeof options?.documentName === "string" ? options.documentName : null;
+      const session = createEnvironmentSession({
+        environmentKind: descriptor.kind,
+        status: "connected",
+        documentName
+      });
       connectedSessionIds.add(session.id);
       return success("connect", session.id, null, session);
     },

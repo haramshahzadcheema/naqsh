@@ -59,4 +59,29 @@ describe("Mock CAD environment: adapter-specific behavior", () => {
     assert.equal(result.status, "error");
     assert.equal(result.error?.kind, "invalid_operation");
   });
+
+  it("connect(options) with a documentName threads through to the session; connect() with no args still works", async () => {
+    const adapter = createMockCadEnvironment();
+
+    const withTarget = await adapter.connect({ documentName: "bracket_v2.FCStd" });
+    assert.equal(withTarget.status, "success");
+    assert.equal((withTarget.data as EnvironmentSession).documentName, "bracket_v2.FCStd");
+
+    const withoutTarget = await adapter.connect();
+    assert.equal(withoutTarget.status, "success");
+    assert.equal((withoutTarget.data as EnvironmentSession).documentName, null);
+  });
+
+  it("two sessions on the same adapter instance observe each other's mutations (shared document, not isolated)", async () => {
+    const adapter = createMockCadEnvironment();
+    const sessionA = await connect(adapter);
+    const sessionB = await connect(adapter);
+
+    const created = await adapter.createObject(sessionA, { type: "part", name: "seen-by-b" });
+    assert.equal(created.status, "success");
+
+    const listedFromB = await adapter.listObjects(sessionB);
+    const names = (listedFromB.data as EnvironmentObject[]).map((object) => object.name);
+    assert.ok(names.includes("seen-by-b"), "session B must see an object created via session A on the same adapter");
+  });
 });

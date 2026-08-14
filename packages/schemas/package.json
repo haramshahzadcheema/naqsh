@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test test/entities.test.ts test/change.test.ts test/tool.test.ts test/authorization.test.ts",
+    "test": "node --import tsx --test test/entities.test.ts test/change.test.ts test/tool.test.ts test/authorization.test.ts test/environment.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   }
 }

@@ -46,6 +46,17 @@ import type {
  * (Environment → observation → interpretation → World Model update) is a
  * later phase's job (P8), deliberately not this one's — enforced as a
  * regression test alongside the dependency-direction ones.
+ *
+ * Authorization boundary: this interface has no concept of `AutonomyLevel`,
+ * `Approval`, or `AutonomyGrant`, and no implementation of it may import
+ * P4's authorization machinery (enforced in repo-boundaries.test.ts) — an
+ * adapter is a dumb, uniformly-callable mechanism, never a policy decision
+ * point. That is deliberate, not a gap: P6+ orchestration must call an
+ * adapter method ONLY from inside a `Tool` handler, so the call is subject
+ * to `executeTool`'s `authorize` hook first. Any future code that holds an
+ * `EnvironmentAdapter` reference outside of a tool handler and calls it
+ * directly bypasses P4 authorization entirely — that is a misuse of this
+ * interface, not a supported integration path.
  */
 export interface EnvironmentAdapter {
   /** Static identity + capabilities. Cannot fail. */
@@ -59,8 +70,16 @@ export interface EnvironmentAdapter {
    * is `status: "error"` (kind "environment_failure"). */
   health(): Promise<EnvironmentOperationResult>;
 
-  /** `data` is an `EnvironmentSession` on success. */
-  connect(): Promise<EnvironmentOperationResult>;
+  /** `data` is an `EnvironmentSession` on success. `options` is an
+   * environment-specific, JSON-safe bag (e.g. which document/file to open,
+   * or a remote endpoint to reach) — optional and ignorable by an adapter
+   * that only ever has one implicit target, but required for a real
+   * environment to know WHAT to connect to. Unlike every other write
+   * parameter on this interface (`input`, `changes`), this one has no
+   * fixed shape, because "what identifies a target" is inherently
+   * environment-specific (a file path for FreeCAD, a URL for a remote
+   * simulator, nothing at all for a fixed in-memory mock). */
+  connect(options?: Record<string, unknown>): Promise<EnvironmentOperationResult>;
 
   /** `data` is null on success. Operating on a disconnected/unknown
    * session afterward resolves to kind "not_connected". */

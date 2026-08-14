@@ -228,6 +228,39 @@ describe("P5 environment adapter: dependency direction and World Model boundary"
     }
   });
 
+  it("environment-adapter files never import P4's authorization machinery", () => {
+    // Preserves the P5 brief's security requirement: EnvironmentAdapter
+    // must not become a backdoor around the typed tool/permission system.
+    // An adapter has no concept of AutonomyLevel/Approval/AutonomyGrant --
+    // enforcement happens one layer up, in executeTool's authorize hook,
+    // when a future (P6+) tool handler wraps an adapter call. If any
+    // adapter file ever imports authorization.ts/approval-store.ts/
+    // autonomy-grant-store.ts, that means an adapter has started making its
+    // OWN policy decisions, which is exactly the bypass this boundary
+    // guards against.
+    const forbiddenImports = [
+      "./authorization.js",
+      "./approval-store.js",
+      "./autonomy-grant-store.js",
+      "@naqsh/core/authorization"
+    ];
+    const filesToCheck = [
+      "packages/core/src/environment-adapter.ts",
+      "packages/core/src/environment-adapter-contract.ts",
+      ...listTsFiles("packages/adapters/src")
+    ];
+    for (const relativePath of filesToCheck) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- an adapter is a mechanism, never its own policy decision point`
+        );
+      }
+    }
+  });
+
   it("EnvironmentAdapter's optional methods are real methods on every implementation, not conditionally present", () => {
     // Regression guard for the capability-vs-interface design decision:
     // the P5 brief asks for "capability-oriented design" AND "fail
