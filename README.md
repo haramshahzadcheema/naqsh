@@ -155,7 +155,17 @@ subprocess/dynamic-import execution.
   `createMockEnvironment` and the underlying engine for callers that need
   specific values. Full capability set, two seeded objects with one
   seeded relationship between them (proving `EnvironmentObject`'s
-  relationship field is actually exercised, not just typed).
+  relationship field is actually exercised, not just typed). Every mock
+  built on the shared engine (`createInMemoryEnvironmentAdapter`) honors
+  the contract's own "never throw for an expected failure" discipline for
+  `createObject`/`modifyObject`: a shape-invalid input (found during the P6
+  audit — the engine originally let the schemas layer's validation
+  exception escape as a rejected promise) now always comes back as
+  `{status:"error", error:{kind:"invalid_operation"}}`; a `createObject`
+  call whose id collides with an existing object comes back as
+  `kind:"conflict"` rather than silently overwriting it; and a batch
+  `modifyObject` call is all-or-nothing — one invalid key in the batch
+  applies none of the changes, valid keys included.
 
 ## Error model
 

@@ -92,6 +92,17 @@ describe("Mock environment: object creation and modification", () => {
     assert.equal(created.id, "envobj_0001", "the first generated (non-seeded) object id must be deterministic");
   });
 
+  it("creating an object with an explicit id that collides with an existing one fails with conflict, never silently overwriting", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const result = await adapter.createObject(session, { id: "widget_a", type: "component", name: "Impostor" });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "conflict");
+
+    const stillOriginal = await adapter.inspectObject(session, "widget_a");
+    assert.equal((stillOriginal.data as EnvironmentObject).name, "Widget A", "the original object must be untouched");
+  });
+
   it("modifies a writable property and leaves the change observable on re-inspection", async () => {
     const adapter = createMockEnvironment();
     const session = await connect(adapter);
@@ -143,6 +154,54 @@ describe("Mock environment: invalid operations fail through the P5 error model",
     assert.equal(result.status, "error");
     assert.equal(result.error?.kind, "not_connected");
   });
+
+  it("createObject with a shape violation (empty type) returns a structured error, never throws/rejects", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const result = await adapter.createObject(session, { type: "", name: "bad" });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+  });
+
+  it("createObject with a non-JSON-safe property value returns a structured error, never throws/rejects", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const result = await adapter.createObject(session, {
+      type: "component",
+      name: "Bad Widget",
+      properties: [{ key: "score", value: Number.NaN, readOnly: false }]
+    });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+  });
+
+  it("modifyObject with a non-JSON-safe new value returns a structured error, never throws/rejects", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const result = await adapter.modifyObject(session, "widget_a", { status: Number.POSITIVE_INFINITY });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+  });
+
+  it("modifyObject with a MIXED batch (one valid key, one invalid key) applies NEITHER change -- atomic, not partial", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+
+    const result = await adapter.modifyObject(session, "widget_a", {
+      status: "should_not_apply_either",
+      serialNumber: "HACKED"
+    });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+
+    const reinspected = await adapter.inspectObject(session, "widget_a");
+    const status = (reinspected.data as EnvironmentObject).properties.find((property) => property.key === "status");
+    const serialNumber = (reinspected.data as EnvironmentObject).properties.find(
+      (property) => property.key === "serialNumber"
+    );
+    assert.equal(status?.value, "active", "the otherwise-valid key must NOT have been applied");
+    assert.equal(serialNumber?.value, "WA-001", "the read-only key must not have been applied either");
+  });
 });
 
 describe("Mock environment: lifecycle", () => {
@@ -163,6 +222,16 @@ describe("Mock environment: lifecycle", () => {
     const afterDisconnect = await adapter.listObjects(session);
     assert.equal(afterDisconnect.status, "error");
     assert.equal(afterDisconnect.error?.kind, "not_connected");
+  });
+
+  it("disconnecting an already-disconnected session fails with not_connected, not a second success", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const first = await adapter.disconnect(session);
+    assert.equal(first.status, "success");
+    const second = await adapter.disconnect(session);
+    assert.equal(second.status, "error");
+    assert.equal(second.error?.kind, "not_connected");
   });
 });
 

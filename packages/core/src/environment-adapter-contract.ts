@@ -159,6 +159,32 @@ export function runEnvironmentAdapterContractTests(
         assert.equal(result.status, "error");
         assert.equal(result.error?.kind, "object_not_found");
       });
+
+      it("a shape-invalid new value (non-JSON-safe) returns a structured error result and never throws/rejects, when modify IS supported", async () => {
+        // Every EnvironmentAdapter method's whole contract is "never throw
+        // for an expected failure" (see environment-adapter.ts). Malformed
+        // input is an expected failure for ANY adapter, not just the
+        // in-memory mocks -- this belongs in the reusable suite so a
+        // future FreeCADAdapter is held to the same discipline, not just
+        // whichever mock happened to get a hand-written test for it.
+        const adapter = await createAdapter();
+        const session = await connectOrThrow(adapter);
+        const descriptor = adapter.describe();
+        if (!supportsCapability(descriptor, "modify")) return;
+        const listed = await adapter.listObjects(session);
+        const objects = listed.data as EnvironmentObject[];
+        const target = objects[0] as EnvironmentObject;
+        const writable = target.properties.find((property) => !property.readOnly);
+        assert.ok(writable, "fixture adapters must seed at least one writable property for this test");
+
+        let result: Awaited<ReturnType<typeof adapter.modifyObject>>;
+        try {
+          result = await adapter.modifyObject(session, target.id, { [writable.key]: Number.NaN });
+        } catch {
+          assert.fail("modifyObject must return a structured error result for malformed input, not throw/reject");
+        }
+        assert.equal(result.status, "error");
+      });
     });
 
     describe("delete capability", () => {

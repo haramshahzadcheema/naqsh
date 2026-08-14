@@ -112,6 +112,30 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     });
   }
 
+  /**
+   * `createEnvironmentObject` THROWS `WorldModelValidationError` for any
+   * shape violation (empty type, non-JSON-safe property value, malformed
+   * relationship, ...) -- correct for a schemas-layer factory, but an
+   * adapter method must never let that escape as a rejected promise: the
+   * ENTIRE point of `EnvironmentOperationResult` is that a caller branches
+   * on `result.status`/`result.error.kind` and never needs a try/catch
+   * around an adapter call (see environment-adapter.ts's own doc comment).
+   * Malformed `createObject`/`modifyObject` input is an entirely expected
+   * failure mode (a tool or agent can easily construct it), not a truly
+   * exceptional one, so it is caught here and turned into the same
+   * structured "invalid_operation" result every other input-validation
+   * failure in this engine already produces (unknown property, read-only
+   * property) -- one consistent bucket for "the requested change doesn't
+   * apply as specified," not a second, throw-shaped error channel.
+   */
+  function tryBuildObject(input: EnvironmentObjectInput): EnvironmentObject | { message: string } {
+    try {
+      return createEnvironmentObject(input);
+    } catch (error) {
+      return { message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   function requireConnected(
     session: EnvironmentSession,
     operation: EnvironmentOperationKind,
@@ -194,9 +218,21 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (guard) return guard;
       const capabilityGuard = requireCapability("create", "create_object", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      const object = createEnvironmentObject({ ...input, id: input.id ?? generateId("envobj") });
-      objects.set(object.id, object);
-      return success("create_object", session.id, object.id, object);
+      const id = input.id ?? generateId("envobj");
+      if (objects.has(id)) {
+        // A caller-supplied id (EnvironmentObjectInput.id is optional but
+        // not forbidden) that collides with an existing object must never
+        // silently clobber it -- "conflict" is exactly this engine's
+        // existing vocabulary for "the requested change can't apply given
+        // current state," not a new error kind invented for this case.
+        return failure("create_object", session.id, id, "conflict", `An object with id "${id}" already exists`);
+      }
+      const built = tryBuildObject({ ...input, id });
+      if ("message" in built) {
+        return failure("create_object", session.id, null, "invalid_operation", built.message);
+      }
+      objects.set(built.id, built);
+      return success("create_object", session.id, built.id, built);
     },
 
     async modifyObject(session, objectId, changes) {
@@ -217,7 +253,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
           return failure("modify_object", session.id, objectId, "invalid_operation", `Property "${key}" is read-only`);
         }
       }
-      const updated = createEnvironmentObject({
+      const built = tryBuildObject({
         id: existing.id,
         type: existing.type,
         name: existing.name,
@@ -227,8 +263,11 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
         relationships: existing.relationships,
         metadata: existing.metadata
       });
-      objects.set(objectId, updated);
-      return success("modify_object", session.id, objectId, updated);
+      if ("message" in built) {
+        return failure("modify_object", session.id, objectId, "invalid_operation", built.message);
+      }
+      objects.set(objectId, built);
+      return success("modify_object", session.id, objectId, built);
     },
 
     async deleteObject(session, objectId) {
