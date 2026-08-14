@@ -13,3 +13,8 @@ export * from "./autonomy-grant-store.js";
 export * from "./authorization.js";
 export * from "./environment-adapter.js";
 export * from "./environment-adapter-contract.js";
+export * from "./model-provider.js";
+export * from "./model-provider-contract.js";
+export * from "./context-builder.js";
+export * from "./model-tool-declarations.js";
+export * from "./execute-model-tool-call.js";

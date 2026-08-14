@@ -44,6 +44,8 @@ describe("repository layout", () => {
       "packages/core/src",
       "packages/adapters/package.json",
       "packages/adapters/src",
+      "packages/model-providers/package.json",
+      "packages/model-providers/src",
       "packages/schemas/package.json",
       "packages/schemas/src"
     ];
@@ -142,7 +144,8 @@ describe("P3 tool system: no arbitrary code execution", () => {
     const sourceFiles = [
       ...listTsFiles("packages/core/src"),
       ...listTsFiles("packages/schemas/src"),
-      ...listTsFiles("packages/adapters/src")
+      ...listTsFiles("packages/adapters/src"),
+      ...listTsFiles("packages/model-providers/src")
     ];
     assert.ok(sourceFiles.length > 10, "expected to find a substantial number of source files to scan");
     for (const relativePath of sourceFiles) {
@@ -290,6 +293,122 @@ describe("P5 environment adapter: dependency direction and World Model boundary"
         contents,
         new RegExp(`${method}\\?\\s*[(:]`),
         `EnvironmentAdapter.${method} must not be an optional ("${method}?:") member`
+      );
+    }
+  });
+});
+
+describe("P7 model provider: dependency direction, vendor SDK isolation, and authorization boundary", () => {
+  it("declares @naqsh/core and @naqsh/schemas as dependencies of @naqsh/model-providers", () => {
+    const modelProvidersPackageJson = readJson("packages/model-providers/package.json");
+    const dependencies = modelProvidersPackageJson.dependencies as Record<string, string> | undefined;
+    assert.ok(dependencies?.["@naqsh/core"], "@naqsh/model-providers must depend on @naqsh/core");
+    assert.ok(dependencies?.["@naqsh/schemas"], "@naqsh/model-providers must depend on @naqsh/schemas");
+  });
+
+  it("does not let @naqsh/core depend on @naqsh/model-providers", () => {
+    const corePackageJson = readJson("packages/core/package.json");
+    const dependencies = (corePackageJson.dependencies ?? {}) as Record<string, string>;
+    assert.equal(
+      "@naqsh/model-providers" in dependencies,
+      false,
+      "@naqsh/core must stay dependency-free of @naqsh/model-providers -- core defines the ModelProvider contract, it never depends on a concrete implementation"
+    );
+  });
+
+  it("no source file under packages/core/src imports from @naqsh/model-providers", () => {
+    const actualImportPattern = /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/;
+    for (const relativePath of listTsFiles("packages/core/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, actualImportPattern, `${relativePath} must not import @naqsh/model-providers`);
+    }
+  });
+
+  it("no source file under packages/core/src imports @google/genai or any other provider SDK", () => {
+    // The P7 brief's central rule: "core must not become `import {
+    // GoogleGenAI } from ...` throughout business logic." The ModelProvider
+    // INTERFACE lives in core; the concrete Gemini SDK usage lives strictly
+    // in packages/model-providers.
+    const forbiddenImportPattern = /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/;
+    for (const relativePath of listTsFiles("packages/core/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenImportPattern, `${relativePath} must not import @google/genai`);
+    }
+  });
+
+  it("model-provider files never import P4's authorization machinery", () => {
+    // Mirrors the identical P5/P6 guard: a ModelProvider has no concept of
+    // AutonomyLevel/Approval/AutonomyGrant. Authorization happens one layer
+    // up, in executeTool's authorize hook, when a tool-call intent reaches
+    // executeModelToolCall. If a model-provider file ever imports
+    // authorization.ts/approval-store.ts/autonomy-grant-store.ts, that
+    // means it has started making its own policy decisions.
+    const forbiddenImports = ["./authorization.js", "./approval-store.js", "./autonomy-grant-store.js", "@naqsh/core/authorization"];
+    const filesToCheck = [
+      "packages/core/src/model-provider.ts",
+      "packages/core/src/model-provider-contract.ts",
+      ...listTsFiles("packages/model-providers/src")
+    ];
+    for (const relativePath of filesToCheck) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- a model provider is a mechanism, never its own policy decision point`
+        );
+      }
+    }
+  });
+
+  it("model-provider files never import World Model transition/change machinery", () => {
+    // A ModelProvider returns data; it never touches WorldModelState,
+    // ChangeHistory, or updateWorldModel directly -- exactly the same
+    // boundary already enforced for EnvironmentAdapter.
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    const filesToCheck = [
+      "packages/core/src/model-provider.ts",
+      "packages/core/src/model-provider-contract.ts",
+      ...listTsFiles("packages/model-providers/src")
+    ];
+    for (const relativePath of filesToCheck) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- a model provider reports/produces data, it does not mutate the World Model itself`
+        );
+      }
+    }
+  });
+
+  it("ModelProvider's methods are real methods, not conditionally present", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/model-provider.ts"), "utf8");
+    for (const method of ["describe", "generate"]) {
+      assert.doesNotMatch(
+        contents,
+        new RegExp(`${method}\\?\\s*[(:]`),
+        `ModelProvider.${method} must not be an optional ("${method}?:") member`
+      );
+    }
+  });
+
+  it("executeModelToolCall is the only core function that hands a ModelToolCallIntent to executeTool", () => {
+    // Regression guard against a future shortcut: if some OTHER file in
+    // core starts importing executeTool alongside a ModelToolCallIntent
+    // type, that is a second, unaudited path from a model's intent to
+    // actual execution -- exactly the bypass this boundary exists to
+    // prevent.
+    for (const relativePath of listTsFiles("packages/core/src")) {
+      if (relativePath.endsWith("/execute-model-tool-call.ts") || relativePath.endsWith("/execute-tool.ts")) continue;
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      const importsExecuteTool = /from\s+["'`]\.\/execute-tool\.js["'`]/.test(contents);
+      const importsToolCallIntent = /ModelToolCallIntent/.test(contents);
+      assert.equal(
+        importsExecuteTool && importsToolCallIntent,
+        false,
+        `${relativePath} must not combine executeTool with ModelToolCallIntent -- executeModelToolCall is the one sanctioned path`
       );
     }
   });

@@ -16,6 +16,19 @@ import {
   type EnvironmentSession
 } from "./environment-types.js";
 import {
+  MODEL_ERROR_KINDS,
+  MODEL_RESPONSE_KINDS,
+  type ModelContext,
+  type ModelInvocationError,
+  type ModelInvocationResult,
+  type ModelProviderDescriptor,
+  type ModelRequest,
+  type ModelRequestConfig,
+  type ModelResponse,
+  type ModelToolCallIntent,
+  type ModelToolDeclaration
+} from "./model-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
@@ -53,7 +66,7 @@ import { WorldModelValidationError } from "./errors.js";
 // The classes themselves live in errors.js, a dependency-free leaf module,
 // specifically so this file and tool-schema.ts can both throw them without
 // an import cycle between the two.
-export { AuthorizationError, EnvironmentError, ToolError, WorldModelValidationError } from "./errors.js";
+export { AuthorizationError, EnvironmentError, ModelError, ToolError, WorldModelValidationError } from "./errors.js";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -694,6 +707,220 @@ export function assertEnvironmentOperationResult(value: unknown): asserts value 
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "environmentOperationResult.metadata must be a JSON-serializable object"
+  );
+}
+
+function isModelResponseKind(value: unknown): value is (typeof MODEL_RESPONSE_KINDS)[number] {
+  return typeof value === "string" && (MODEL_RESPONSE_KINDS as readonly string[]).includes(value);
+}
+
+function isModelErrorKind(value: unknown): value is (typeof MODEL_ERROR_KINDS)[number] {
+  return typeof value === "string" && (MODEL_ERROR_KINDS as readonly string[]).includes(value);
+}
+
+export function assertModelRequestConfig(value: unknown): asserts value is ModelRequestConfig {
+  invariant(isPlainObject(value), "model request config must be an object");
+  invariant(typeof value.modelId === "string" && value.modelId.length > 0, "modelRequestConfig.modelId is required");
+  invariant(
+    value.temperature === null || typeof value.temperature === "number",
+    "modelRequestConfig.temperature must be a number or null"
+  );
+  invariant(
+    value.maxOutputTokens === null ||
+      (typeof value.maxOutputTokens === "number" && Number.isInteger(value.maxOutputTokens) && value.maxOutputTokens > 0),
+    "modelRequestConfig.maxOutputTokens must be a positive integer or null"
+  );
+  invariant(
+    value.timeoutMs === null || (typeof value.timeoutMs === "number" && Number.isInteger(value.timeoutMs) && value.timeoutMs > 0),
+    "modelRequestConfig.timeoutMs must be a positive integer or null"
+  );
+}
+
+export function assertModelToolDeclaration(value: unknown): asserts value is ModelToolDeclaration {
+  invariant(isPlainObject(value), "model tool declaration must be an object");
+  invariant(typeof value.name === "string" && value.name.length > 0, "modelToolDeclaration.name is required");
+  invariant(typeof value.description === "string", "modelToolDeclaration.description must be a string");
+  assertValidToolValueSchema(value.inputSchema, "modelToolDeclaration.inputSchema");
+  invariant(isToolMutationKind(value.mutation), "invalid model tool declaration mutation kind");
+  invariant(isToolTarget(value.target), "invalid model tool declaration target");
+}
+
+export function assertModelContext(value: unknown): asserts value is ModelContext {
+  invariant(isPlainObject(value), "model context must be an object");
+  assertNullableString(value.projectId, "modelContext.projectId must be a string or null");
+  assertNullableString(value.projectName, "modelContext.projectName must be a string or null");
+  assertNullableString(value.projectSummary, "modelContext.projectSummary must be a string or null");
+  assertNullableString(value.objectiveSummary, "modelContext.objectiveSummary must be a string or null");
+  for (const [key, val] of [
+    ["requirementCount", value.requirementCount],
+    ["constraintCount", value.constraintCount],
+    ["objectCount", value.objectCount],
+    ["decisionCount", value.decisionCount]
+  ] as const) {
+    invariant(
+      typeof val === "number" && Number.isInteger(val) && val >= 0,
+      `modelContext.${key} must be a non-negative integer`
+    );
+  }
+  invariant(
+    value.sessionMode === null ||
+      value.sessionMode === "idle" ||
+      value.sessionMode === "reviewing" ||
+      value.sessionMode === "designing" ||
+      value.sessionMode === "executing",
+    "modelContext.sessionMode must be a valid SessionMode or null"
+  );
+  invariant(
+    Array.isArray(value.focusObjectIds) && value.focusObjectIds.every((id) => typeof id === "string"),
+    "modelContext.focusObjectIds must be an array of strings"
+  );
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "modelContext.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertModelRequest(value: unknown): asserts value is ModelRequest {
+  invariant(isPlainObject(value), "model request must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "modelRequest.id is required");
+  assertNullableString(value.systemInstruction, "modelRequest.systemInstruction must be a string or null");
+  assertModelContext(value.context);
+  invariant(typeof value.instruction === "string" && value.instruction.length > 0, "modelRequest.instruction is required");
+  invariant(Array.isArray(value.tools), "modelRequest.tools must be an array");
+  for (const tool of value.tools) assertModelToolDeclaration(tool);
+  invariant(
+    new Set(value.tools.map((tool: ModelToolDeclaration) => tool.name)).size === value.tools.length,
+    "modelRequest.tools must not declare the same tool name twice"
+  );
+  if (value.outputSchema !== null) {
+    assertValidToolValueSchema(value.outputSchema, "modelRequest.outputSchema");
+  }
+  assertModelRequestConfig(value.config);
+  assertNullableString(value.sessionId, "modelRequest.sessionId must be a string or null");
+  invariant(isIsoTimestamp(value.createdAt), "modelRequest.createdAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "modelRequest.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertModelToolCallIntent(value: unknown): asserts value is ModelToolCallIntent {
+  invariant(isPlainObject(value), "model tool call intent must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "modelToolCallIntent.id is required");
+  invariant(
+    typeof value.toolName === "string" && value.toolName.length > 0,
+    "modelToolCallIntent.toolName is required"
+  );
+  invariant(
+    isPlainObject(value.arguments) && isJsonSafeValue(value.arguments),
+    "modelToolCallIntent.arguments must be a JSON-serializable object"
+  );
+}
+
+/**
+ * Enforces the "exactly the field matching `kind` is populated, every other
+ * field is null" discipline described on `ModelResponse` itself -- a
+ * response claiming `kind: "text"` with `text: null` (or with
+ * `structuredResult` non-null) is malformed, not merely unconventional.
+ */
+export function assertModelResponse(value: unknown): asserts value is ModelResponse {
+  invariant(isPlainObject(value), "model response must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "modelResponse.id is required");
+  invariant(
+    typeof value.requestId === "string" && value.requestId.length > 0,
+    "modelResponse.requestId is required"
+  );
+  invariant(isModelResponseKind(value.kind), "invalid model response kind");
+
+  assertNullableString(value.text, "modelResponse.text must be a string or null");
+  invariant(
+    value.structuredResult === null || (isPlainObject(value.structuredResult) && isJsonSafeValue(value.structuredResult)),
+    "modelResponse.structuredResult must be a JSON-serializable object or null"
+  );
+  if (value.toolCall !== null) assertModelToolCallIntent(value.toolCall);
+  assertNullableString(value.errorMessage, "modelResponse.errorMessage must be a string or null");
+
+  // Exactly the field matching `kind` is populated; every other field is
+  // null. `text` doubles as the clarification QUESTION for
+  // "clarification_request", so both share the same field.
+  const wantsText = value.kind === "text" || value.kind === "clarification_request";
+  invariant(
+    wantsText ? value.text !== null : value.text === null,
+    `modelResponse.text must be non-null only when kind is "text" or "clarification_request"`
+  );
+  invariant(
+    value.kind === "structured_result" ? value.structuredResult !== null : value.structuredResult === null,
+    `modelResponse.structuredResult must be non-null only when kind is "structured_result"`
+  );
+  invariant(
+    value.kind === "tool_call" ? value.toolCall !== null : value.toolCall === null,
+    `modelResponse.toolCall must be non-null only when kind is "tool_call"`
+  );
+  invariant(
+    value.kind === "error" ? value.errorMessage !== null : value.errorMessage === null,
+    `modelResponse.errorMessage must be non-null only when kind is "error"`
+  );
+
+  invariant(isIsoTimestamp(value.createdAt), "modelResponse.createdAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "modelResponse.metadata must be a JSON-serializable object"
+  );
+}
+
+function assertModelInvocationError(value: unknown): asserts value is ModelInvocationError {
+  invariant(isPlainObject(value), "model invocation error must be an object");
+  invariant(isModelErrorKind(value.kind), "invalid model error kind");
+  invariant(typeof value.message === "string", "model invocation error message must be a string");
+}
+
+export function assertModelInvocationResult(value: unknown): asserts value is ModelInvocationResult {
+  invariant(isPlainObject(value), "model invocation result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "modelInvocationResult.id is required");
+  invariant(
+    typeof value.requestId === "string" && value.requestId.length > 0,
+    "modelInvocationResult.requestId is required"
+  );
+  invariant(
+    typeof value.providerId === "string" && value.providerId.length > 0,
+    "modelInvocationResult.providerId is required"
+  );
+  invariant(typeof value.modelId === "string" && value.modelId.length > 0, "modelInvocationResult.modelId is required");
+  assertNullableString(value.sessionId, "modelInvocationResult.sessionId must be a string or null");
+  invariant(
+    value.status === "success" || value.status === "error",
+    "invalid model invocation result status"
+  );
+  if (value.status === "success") {
+    invariant(value.error === null, "modelInvocationResult.error must be null when status is success");
+    assertModelResponse(value.response);
+  } else {
+    invariant(value.response === null, "modelInvocationResult.response must be null when status is error");
+    assertModelInvocationError(value.error);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "modelInvocationResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "modelInvocationResult.completedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "modelInvocationResult.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertModelProviderDescriptor(value: unknown): asserts value is ModelProviderDescriptor {
+  invariant(isPlainObject(value), "model provider descriptor must be an object");
+  invariant(
+    typeof value.providerId === "string" && value.providerId.length > 0,
+    "modelProviderDescriptor.providerId is required"
+  );
+  invariant(typeof value.modelId === "string" && value.modelId.length > 0, "modelProviderDescriptor.modelId is required");
+  invariant(typeof value.supportsToolCalling === "boolean", "modelProviderDescriptor.supportsToolCalling must be a boolean");
+  invariant(
+    typeof value.supportsStructuredOutput === "boolean",
+    "modelProviderDescriptor.supportsStructuredOutput must be a boolean"
+  );
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "modelProviderDescriptor.metadata must be a JSON-serializable object"
   );
 }
 

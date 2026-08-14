@@ -1,5 +1,6 @@
 import type { ToolErrorKind } from "./types.js";
 import type { EnvironmentErrorKind } from "./environment-types.js";
+import type { ModelErrorKind } from "./model-types.js";
 
 /** Thrown by every assert* function in validators.ts. A dedicated class
  * lets callers (e.g. a future P16 verification layer, or a P7 gate on
@@ -74,6 +75,25 @@ export class EnvironmentError extends Error {
   constructor(kind: EnvironmentErrorKind, message: string) {
     super(message);
     this.name = "EnvironmentError";
+    this.kind = kind;
+  }
+}
+
+/**
+ * Available for a ModelProvider IMPLEMENTATION to throw internally while
+ * building a result (e.g. inside a try/catch it uses to convert its own
+ * failure into a structured `ModelInvocationResult`) — never surfaced to a
+ * caller of `generate()`, which must always resolve to a
+ * `ModelInvocationResult` and never reject for an expected failure mode
+ * (API unavailable, auth failure, timeout, rate limit, malformed response),
+ * exactly the same discipline as `EnvironmentError`/`ToolError`.
+ */
+export class ModelError extends Error {
+  readonly kind: ModelErrorKind;
+
+  constructor(kind: ModelErrorKind, message: string) {
+    super(message);
+    this.name = "ModelError";
     this.kind = kind;
   }
 }

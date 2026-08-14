@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./environment-types.js";
+export * from "./model-types.js";
 export * from "./transitions.js";
 export * from "./ids.js";
 export * from "./tool-schema.js";

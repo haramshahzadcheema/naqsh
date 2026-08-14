@@ -22,8 +22,34 @@ import {
   assertEnvironmentOperationResult,
   assertEnvironmentProperty,
   assertEnvironmentRelationship,
-  assertEnvironmentSession
+  assertEnvironmentSession,
+  assertModelContext,
+  assertModelInvocationResult,
+  assertModelProviderDescriptor,
+  assertModelRequest,
+  assertModelRequestConfig,
+  assertModelResponse,
+  assertModelToolCallIntent,
+  assertModelToolDeclaration
 } from "./validators.js";
+import type {
+  ModelContext,
+  ModelContextInput,
+  ModelInvocationResult,
+  ModelInvocationResultInput,
+  ModelProviderDescriptor,
+  ModelProviderDescriptorInput,
+  ModelRequest,
+  ModelRequestConfig,
+  ModelRequestConfigInput,
+  ModelRequestInput,
+  ModelResponse,
+  ModelResponseInput,
+  ModelToolCallIntent,
+  ModelToolCallIntentInput,
+  ModelToolDeclaration,
+  ModelToolDeclarationInput
+} from "./model-types.js";
 import type {
   Approval,
   ApprovalInput,
@@ -499,4 +525,118 @@ export function createEnvironmentOperationResult(input: EnvironmentOperationResu
   };
   assertEnvironmentOperationResult(result);
   return Object.freeze(result);
+}
+
+export function createModelRequestConfig(input: ModelRequestConfigInput): ModelRequestConfig {
+  const config: ModelRequestConfig = {
+    modelId: input.modelId,
+    temperature: input.temperature ?? null,
+    maxOutputTokens: input.maxOutputTokens ?? null,
+    timeoutMs: input.timeoutMs ?? null
+  };
+  assertModelRequestConfig(config);
+  return Object.freeze(config);
+}
+
+export function createModelToolDeclaration(input: ModelToolDeclarationInput): ModelToolDeclaration {
+  const declaration: ModelToolDeclaration = {
+    name: input.name,
+    description: input.description,
+    inputSchema: input.inputSchema,
+    mutation: input.mutation,
+    target: input.target
+  };
+  assertModelToolDeclaration(declaration);
+  return Object.freeze(declaration);
+}
+
+export function createModelContext(input: ModelContextInput = {}): ModelContext {
+  const context: ModelContext = {
+    projectId: input.projectId ?? null,
+    projectName: input.projectName ?? null,
+    projectSummary: input.projectSummary ?? null,
+    objectiveSummary: input.objectiveSummary ?? null,
+    requirementCount: input.requirementCount ?? 0,
+    constraintCount: input.constraintCount ?? 0,
+    objectCount: input.objectCount ?? 0,
+    decisionCount: input.decisionCount ?? 0,
+    sessionMode: input.sessionMode ?? null,
+    focusObjectIds: [...(input.focusObjectIds ?? [])],
+    metadata: input.metadata ?? {}
+  };
+  assertModelContext(context);
+  return Object.freeze(context);
+}
+
+export function createModelRequest(input: ModelRequestInput): ModelRequest {
+  const request: ModelRequest = {
+    id: input.id ?? createId("modelreq"),
+    systemInstruction: input.systemInstruction ?? null,
+    context: createModelContext(input.context),
+    instruction: input.instruction,
+    tools: (input.tools ?? []).map((tool) => createModelToolDeclaration(tool)),
+    outputSchema: input.outputSchema ?? null,
+    config: createModelRequestConfig(input.config),
+    sessionId: input.sessionId ?? null,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertModelRequest(request);
+  return Object.freeze(request);
+}
+
+export function createModelToolCallIntent(input: ModelToolCallIntentInput): ModelToolCallIntent {
+  const intent: ModelToolCallIntent = {
+    id: input.id ?? createId("modelcall"),
+    toolName: input.toolName,
+    arguments: input.arguments ?? {}
+  };
+  assertModelToolCallIntent(intent);
+  return Object.freeze(intent);
+}
+
+export function createModelResponse(input: ModelResponseInput): ModelResponse {
+  const response: ModelResponse = {
+    id: input.id ?? createId("modelresp"),
+    requestId: input.requestId,
+    kind: input.kind,
+    text: input.text ?? null,
+    structuredResult: input.structuredResult ?? null,
+    toolCall: input.toolCall ? createModelToolCallIntent(input.toolCall) : null,
+    errorMessage: input.errorMessage ?? null,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertModelResponse(response);
+  return Object.freeze(response);
+}
+
+export function createModelInvocationResult(input: ModelInvocationResultInput): ModelInvocationResult {
+  const result: ModelInvocationResult = {
+    id: input.id ?? createId("modelinv"),
+    requestId: input.requestId,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    sessionId: input.sessionId ?? null,
+    status: input.status,
+    response: input.response ?? null,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertModelInvocationResult(result);
+  return Object.freeze(result);
+}
+
+export function createModelProviderDescriptor(input: ModelProviderDescriptorInput): ModelProviderDescriptor {
+  const descriptor: ModelProviderDescriptor = {
+    providerId: input.providerId,
+    modelId: input.modelId,
+    supportsToolCalling: input.supportsToolCalling ?? false,
+    supportsStructuredOutput: input.supportsStructuredOutput ?? false,
+    metadata: input.metadata ?? {}
+  };
+  assertModelProviderDescriptor(descriptor);
+  return Object.freeze(descriptor);
 }

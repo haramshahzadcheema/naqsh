@@ -1,5 +1,6 @@
 import type { Approval, AuthorizationDecision, AutonomyGrant, Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
 import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "./environment-types.js";
+import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model-types.js";
 import {
   assertApproval,
   assertAuthorizationDecision,
@@ -8,6 +9,9 @@ import {
   assertEnvironmentObject,
   assertEnvironmentOperationResult,
   assertEnvironmentSession,
+  assertModelInvocationResult,
+  assertModelRequest,
+  assertModelResponse,
   assertProject,
   assertTool,
   assertToolResult,
@@ -150,5 +154,41 @@ export function deserializeEnvironmentOperationResult(serialized: string): Envir
   requireNonEmptyString(serialized, "serialized environment operation result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertEnvironmentOperationResult(parsed);
+  return parsed;
+}
+
+export function serializeModelRequest(request: ModelRequest): string {
+  assertModelRequest(request);
+  return JSON.stringify(request);
+}
+
+export function deserializeModelRequest(serialized: string): ModelRequest {
+  requireNonEmptyString(serialized, "serialized model request is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertModelRequest(parsed);
+  return parsed;
+}
+
+export function serializeModelResponse(response: ModelResponse): string {
+  assertModelResponse(response);
+  return JSON.stringify(response);
+}
+
+export function deserializeModelResponse(serialized: string): ModelResponse {
+  requireNonEmptyString(serialized, "serialized model response is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertModelResponse(parsed);
+  return parsed;
+}
+
+export function serializeModelInvocationResult(result: ModelInvocationResult): string {
+  assertModelInvocationResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeModelInvocationResult(serialized: string): ModelInvocationResult {
+  requireNonEmptyString(serialized, "serialized model invocation result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertModelInvocationResult(parsed);
   return parsed;
 }
