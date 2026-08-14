@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test test/transitions.test.ts test/change-history.test.ts test/tool-registry.test.ts test/execute-tool.test.ts test/repo-boundaries.test.ts",
+    "test": "node --import tsx --test test/transitions.test.ts test/change-history.test.ts test/tool-registry.test.ts test/execute-tool.test.ts test/approval-store.test.ts test/autonomy-grant-store.test.ts test/authorization.test.ts test/repo-boundaries.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

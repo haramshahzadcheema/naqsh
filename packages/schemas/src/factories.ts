@@ -1,5 +1,11 @@
 import { createId, toIsoTimestamp } from "./ids.js";
 import type {
+  Approval,
+  ApprovalInput,
+  AuthorizationDecision,
+  AuthorizationDecisionInput,
+  AutonomyGrant,
+  AutonomyGrantInput,
   Change,
   ChangeCause,
   ChangeCauseInput,
@@ -31,6 +37,9 @@ import type {
   WorldModelState
 } from "./types.js";
 import {
+  assertApproval,
+  assertAuthorizationDecision,
+  assertAutonomyGrant,
   assertChange,
   assertChangeCause,
   assertConstraint,
@@ -244,6 +253,23 @@ export function createChange(input: ChangeInput): Change {
   return Object.freeze(change);
 }
 
+/** Recursively freezes a plain object/array tree. Used specifically for a
+ * Tool's `inputSchema`/`outputSchema`: the registry returns the SAME Tool
+ * object reference on every `getByName` call, so a shallow freeze alone
+ * would still let a caller mutate `tool.inputSchema.properties.x` and
+ * silently change validation behavior for every future call to that
+ * already-registered tool -- the same class of bug the P2 audit fixed for
+ * Change by freezing it. Schemas are small, bounded-depth structures, so a
+ * plain recursive walk is cheap and safe here. */
+function deepFreeze<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item);
+  } else if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return Object.freeze(value);
+}
+
 /** Builds a Tool definition. `id` is generated (an opaque internal
  * reference); `name` is caller-chosen and is what a ToolRequest/registry
  * lookup actually uses — see Tool's doc comment in types.ts. */
@@ -255,8 +281,8 @@ export function createTool(input: ToolInput): Tool {
     version: input.version ?? "0.1.0",
     target: input.target,
     mutation: input.mutation,
-    inputSchema: input.inputSchema,
-    outputSchema: input.outputSchema,
+    inputSchema: deepFreeze(structuredClone(input.inputSchema)),
+    outputSchema: deepFreeze(structuredClone(input.outputSchema)),
     source: input.source ?? "system",
     metadata: input.metadata ?? {}
   };
@@ -291,4 +317,75 @@ export function createToolResult(input: ToolResultInput): ToolResult {
   };
   assertToolResult(result);
   return Object.freeze(result);
+}
+
+/** Defaults `status` to "pending" when omitted, like every other optional
+ * field on every other createX factory -- callers requesting a NEW
+ * approval simply don't pass `status` and get "pending". `status` is
+ * still settable explicitly because @naqsh/core's ApprovalStore relies on
+ * exactly that to reconstruct each updated snapshot after a transition
+ * (`createApproval({ ...current, status: "approved", ... })`); it is
+ * lifecycle-managed by the store's approve/reject/revoke/consume methods
+ * in ordinary use, not because this factory forbids setting it directly. */
+export function createApproval(input: ApprovalInput): Approval {
+  const approval: Approval = {
+    id: input.id ?? createId("appr"),
+    toolName: input.toolName,
+    targetType: input.targetType ?? null,
+    targetId: input.targetId ?? null,
+    status: input.status ?? "pending",
+    requestedBy: input.requestedBy ?? "agent",
+    decidedBy: input.decidedBy ?? null,
+    reason: input.reason ?? "",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    respondedAt: input.respondedAt ?? null,
+    expiresAt: input.expiresAt ?? null,
+    consumedAt: input.consumedAt ?? null,
+    metadata: input.metadata ?? {}
+  };
+  assertApproval(approval);
+  return Object.freeze(approval);
+}
+
+/** Defaults `status` to "active" when omitted, for the same reason
+ * createApproval defaults to "pending" -- see its doc comment and
+ * AutonomyGrantStore. */
+export function createAutonomyGrant(input: AutonomyGrantInput): AutonomyGrant {
+  const grant: AutonomyGrant = {
+    id: input.id ?? createId("grant"),
+    toolNames: [...input.toolNames],
+    targetType: input.targetType ?? null,
+    targetId: input.targetId ?? null,
+    status: input.status ?? "active",
+    grantedBy: input.grantedBy ?? "human",
+    reason: input.reason ?? "",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    expiresAt: input.expiresAt ?? null,
+    revokedAt: input.revokedAt ?? null,
+    maxUses: input.maxUses ?? null,
+    useCount: input.useCount ?? 0,
+    metadata: input.metadata ?? {}
+  };
+  assertAutonomyGrant(grant);
+  return Object.freeze(grant);
+}
+
+export function createAuthorizationDecision(input: AuthorizationDecisionInput): AuthorizationDecision {
+  const decision: AuthorizationDecision = {
+    id: input.id ?? createId("authz"),
+    toolName: input.toolName,
+    target: input.target,
+    autonomyLevel: input.autonomyLevel,
+    source: input.source,
+    requestId: input.requestId,
+    allowed: input.allowed,
+    denialReason: input.allowed ? null : (input.denialReason ?? null),
+    message: input.message ?? "",
+    matchedApprovalId: input.matchedApprovalId ?? null,
+    matchedAutonomyGrantId: input.matchedAutonomyGrantId ?? null,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertAuthorizationDecision(decision);
+  return Object.freeze(decision);
 }

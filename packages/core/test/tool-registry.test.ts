@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createTool, ToolError, type Tool, type ToolInput } from "@naqsh/schemas";
-import { createToolRegistry } from "../src/tool-registry.js";
+import { createToolRegistry, invokeRegisteredTool } from "../src/tool-registry.js";
 
 function buildToolInput(overrides: Partial<ToolInput> = {}): ToolInput {
   return {
@@ -66,18 +66,18 @@ describe("ToolRegistry: register/lookup/list", () => {
   });
 });
 
-describe("ToolRegistry: invoke (internal dispatch primitive)", () => {
+describe("ToolRegistry: invokeRegisteredTool (internal dispatch primitive)", () => {
   it("calls the registered handler with the given input", async () => {
     const registry = createToolRegistry();
     registry.register(createTool(buildToolInput()), (input: unknown) => ({ echoed: input }));
-    const result = await registry.invoke("inspect_project", { x: 1 });
+    const result = await invokeRegisteredTool(registry, "inspect_project", { x: 1 });
     assert.deepEqual(result, { echoed: { x: 1 } });
   });
 
   it("rejects with unknown_tool for an unregistered name", async () => {
     const registry = createToolRegistry();
     await assert.rejects(
-      () => registry.invoke("nope", {}),
+      () => invokeRegisteredTool(registry, "nope", {}),
       (error: unknown) => error instanceof ToolError && error.kind === "unknown_tool"
     );
   });
@@ -88,6 +88,18 @@ describe("ToolRegistry: invoke (internal dispatch primitive)", () => {
       await Promise.resolve();
       return { ok: true };
     });
-    assert.deepEqual(await registry.invoke("inspect_project", {}), { ok: true });
+    assert.deepEqual(await invokeRegisteredTool(registry, "inspect_project", {}), { ok: true });
+  });
+});
+
+describe("ToolRegistry: invoke is not part of the public surface (P3/P4 audit regression)", () => {
+  it("ToolRegistry objects have no callable invoke method", () => {
+    const registry = createToolRegistry();
+    assert.equal((registry as unknown as { invoke?: unknown }).invoke, undefined);
+  });
+
+  it("@naqsh/core's public barrel does not export invokeRegisteredTool", async () => {
+    const publicApi = await import("../src/index.js");
+    assert.equal((publicApi as Record<string, unknown>).invokeRegisteredTool, undefined);
   });
 });

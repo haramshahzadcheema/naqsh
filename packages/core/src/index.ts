@@ -2,5 +2,12 @@ export * from "./transitions.js";
 export * from "./bootstrap.js";
 export * from "./change-history.js";
 export * from "./record-transition.js";
-export * from "./tool-registry.js";
+// Named (not `export *`) deliberately: tool-registry.js also exports
+// `invokeRegisteredTool`, which must NOT be part of @naqsh/core's public
+// surface -- see tool-registry.ts's doc comment. execute-tool.js is the
+// only sanctioned caller and imports it directly.
+export { createToolRegistry, type ToolHandler, type ToolRegistry } from "./tool-registry.js";
 export * from "./execute-tool.js";
+export * from "./approval-store.js";
+export * from "./autonomy-grant-store.js";
+export * from "./authorization.js";

@@ -1,5 +1,8 @@
-import type { Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
+import type { Approval, AuthorizationDecision, AutonomyGrant, Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
 import {
+  assertApproval,
+  assertAuthorizationDecision,
+  assertAutonomyGrant,
   assertChange,
   assertProject,
   assertTool,
@@ -71,5 +74,41 @@ export function deserializeToolResult(serialized: string): ToolResult {
   requireNonEmptyString(serialized, "serialized tool result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertToolResult(parsed);
+  return parsed;
+}
+
+export function serializeApproval(approval: Approval): string {
+  assertApproval(approval);
+  return JSON.stringify(approval);
+}
+
+export function deserializeApproval(serialized: string): Approval {
+  requireNonEmptyString(serialized, "serialized approval is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertApproval(parsed);
+  return parsed;
+}
+
+export function serializeAutonomyGrant(grant: AutonomyGrant): string {
+  assertAutonomyGrant(grant);
+  return JSON.stringify(grant);
+}
+
+export function deserializeAutonomyGrant(serialized: string): AutonomyGrant {
+  requireNonEmptyString(serialized, "serialized autonomy grant is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertAutonomyGrant(parsed);
+  return parsed;
+}
+
+export function serializeAuthorizationDecision(decision: AuthorizationDecision): string {
+  assertAuthorizationDecision(decision);
+  return JSON.stringify(decision);
+}
+
+export function deserializeAuthorizationDecision(serialized: string): AuthorizationDecision {
+  requireNonEmptyString(serialized, "serialized authorization decision is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertAuthorizationDecision(parsed);
   return parsed;
 }

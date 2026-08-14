@@ -552,3 +552,207 @@ export interface ToolResultInput {
   completedAt?: string;
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * Authorization + Approval (P4).
+ *
+ * `AutonomyLevel` is an ORDERED progression — index in `AUTONOMY_LEVELS` IS
+ * the rank @naqsh/core's authorization logic compares against, so the
+ * order below is load-bearing, not just documentation. Each level is a
+ * strict superset of what the previous one permits:
+ *   observe         -> inspect only, zero mutation
+ *   suggest         -> may also reason/propose (still zero mutation)
+ *   approved_modify -> may mutate, but only with a matching Approval
+ *   autonomous      -> may mutate within an explicit, bounded AutonomyGrant
+ *
+ * Never treated as a boolean "is autonomous" switch — see AutonomyGrant.
+ */
+export type AutonomyLevel = "observe" | "suggest" | "approved_modify" | "autonomous";
+
+export const AUTONOMY_LEVELS: readonly AutonomyLevel[] = ["observe", "suggest", "approved_modify", "autonomous"];
+
+/**
+ * A structured, single-action authorization record — never a bare
+ * `approved: true` flag. Tied to exactly one `toolName` and an optional
+ * target scope (`targetType`/`targetId`, same shape/semantics as
+ * `ChangeTarget`), so an approval for one action can never accidentally
+ * cover a different tool or a different target. Single-use: once
+ * `consumedAt` is set by @naqsh/core's ApprovalStore after a successful
+ * authorized call, the same approval cannot authorize a second call.
+ *
+ * `targetType`/`targetId` both `null` means "any target of any type" —
+ * the caller requesting approval controls how broad or narrow that is,
+ * this type itself doesn't restrict it.
+ */
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "revoked";
+
+export const APPROVAL_STATUSES: readonly ApprovalStatus[] = ["pending", "approved", "rejected", "revoked"];
+
+export interface Approval {
+  id: string;
+  toolName: string;
+  targetType: string | null;
+  targetId: string | null;
+  status: ApprovalStatus;
+  /** Who/what asked for this approval (typically "agent"). */
+  requestedBy: EntitySource;
+  /** Who/what decided it (typically "human"); null while pending. */
+  decidedBy: EntitySource | null;
+  /** Why it was requested, and/or why it was approved/rejected/revoked —
+   * whichever is most recent. Freeform, matching ChangeCause.description's
+   * role. */
+  reason: string;
+  createdAt: string;
+  /** When approve()/reject() was called; null while pending. */
+  respondedAt: string | null;
+  /** Optional expiry. Checked at evaluation time (derived), not swept by
+   * a background process -- there is deliberately no "expired" status. */
+  expiresAt: string | null;
+  /** When this approval was actually used to authorize a call; null if
+   * never consumed. Distinct from `respondedAt` (when a human decided)
+   * because a human can approve something that's never actually invoked. */
+  consumedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ApprovalInput {
+  id?: string;
+  toolName: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  status?: ApprovalStatus;
+  requestedBy?: EntitySource;
+  decidedBy?: EntitySource | null;
+  reason?: string;
+  createdAt?: string;
+  respondedAt?: string | null;
+  expiresAt?: string | null;
+  consumedAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * A bounded grant of AUTONOMOUS execution — explicitly NOT "unrestricted
+ * power". Scoped to an explicit allowlist of tool names (`toolNames`,
+ * never a wildcard) and, like Approval, an optional target scope. Bounded
+ * by `expiresAt` and/or `maxUses`; `useCount` is incremented by
+ * @naqsh/core's AutonomyGrantStore each time it authorizes a call.
+ * Revocable via `status`.
+ */
+export type AutonomyGrantStatus = "active" | "revoked";
+
+export const AUTONOMY_GRANT_STATUSES: readonly AutonomyGrantStatus[] = ["active", "revoked"];
+
+export interface AutonomyGrant {
+  id: string;
+  /** Explicit allowlist -- must be non-empty. No wildcards: an autonomy
+   * grant covers exactly the tools named here, never "everything". */
+  toolNames: string[];
+  targetType: string | null;
+  targetId: string | null;
+  status: AutonomyGrantStatus;
+  grantedBy: EntitySource;
+  reason: string;
+  createdAt: string;
+  expiresAt: string | null;
+  /** When revoke() was called; null unless status is "revoked". */
+  revokedAt: string | null;
+  /** Optional cap on total uses; null means unbounded by count (still
+   * bounded by expiresAt/revocation). */
+  maxUses: number | null;
+  useCount: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface AutonomyGrantInput {
+  id?: string;
+  toolNames: string[];
+  targetType?: string | null;
+  targetId?: string | null;
+  status?: AutonomyGrantStatus;
+  grantedBy?: EntitySource;
+  reason?: string;
+  createdAt?: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  maxUses?: number | null;
+  useCount?: number;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Every distinct way an authorization check can deny a call, named
+ * specifically enough to answer "why" without string-matching a message —
+ * matching every denial path the P4 brief enumerates.
+ */
+export type AuthorizationDenialReason =
+  | "unknown_autonomy_level"
+  | "insufficient_autonomy_level"
+  | "approval_not_found"
+  | "approval_target_mismatch"
+  | "approval_required"
+  | "approval_rejected"
+  | "approval_revoked"
+  | "approval_expired"
+  | "approval_already_consumed"
+  | "autonomy_grant_not_found"
+  | "autonomy_grant_target_mismatch"
+  | "autonomy_grant_revoked"
+  | "autonomy_grant_expired"
+  | "autonomy_grant_exhausted";
+
+export const AUTHORIZATION_DENIAL_REASONS: readonly AuthorizationDenialReason[] = [
+  "unknown_autonomy_level",
+  "insufficient_autonomy_level",
+  "approval_not_found",
+  "approval_target_mismatch",
+  "approval_required",
+  "approval_rejected",
+  "approval_revoked",
+  "approval_expired",
+  "approval_already_consumed",
+  "autonomy_grant_not_found",
+  "autonomy_grant_target_mismatch",
+  "autonomy_grant_revoked",
+  "autonomy_grant_expired",
+  "autonomy_grant_exhausted"
+];
+
+/**
+ * The auditable record of one authorization evaluation — the "Audit/change
+ * event" step in the P4 brief's flow diagram. Produced by
+ * @naqsh/core's `evaluateToolAuthorization` for every tool call it
+ * evaluates, allowed or denied, so denial is a first-class, inspectable
+ * outcome rather than a thrown exception or a silent no-op.
+ */
+export interface AuthorizationDecision {
+  id: string;
+  toolName: string;
+  target: ChangeTarget | null;
+  autonomyLevel: string;
+  source: EntitySource;
+  requestId: string;
+  allowed: boolean;
+  denialReason: AuthorizationDenialReason | null;
+  message: string;
+  matchedApprovalId: string | null;
+  matchedAutonomyGrantId: string | null;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AuthorizationDecisionInput {
+  id?: string;
+  toolName: string;
+  target: ChangeTarget | null;
+  autonomyLevel: string;
+  source: EntitySource;
+  requestId: string;
+  allowed: boolean;
+  denialReason?: AuthorizationDenialReason | null;
+  message?: string;
+  matchedApprovalId?: string | null;
+  matchedAutonomyGrantId?: string | null;
+  createdAt?: string;
+  metadata?: Record<string, unknown>;
+}

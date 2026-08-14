@@ -1,11 +1,17 @@
 import { isIsoTimestamp } from "./ids.js";
 import { assertValidToolValueSchema } from "./tool-schema.js";
 import {
+  APPROVAL_STATUSES,
+  AUTHORIZATION_DENIAL_REASONS,
+  AUTONOMY_GRANT_STATUSES,
   CHANGE_CAUSE_KINDS,
   TOOL_ERROR_KINDS,
   TOOL_MUTATION_KINDS,
   TOOL_TARGETS,
   ENTITY_SOURCES,
+  type Approval,
+  type AuthorizationDecision,
+  type AutonomyGrant,
   type Change,
   type ChangeCause,
   type ChangeTarget,
@@ -330,6 +336,26 @@ function isToolErrorKind(value: unknown): value is (typeof TOOL_ERROR_KINDS)[num
   return typeof value === "string" && (TOOL_ERROR_KINDS as readonly string[]).includes(value);
 }
 
+function isApprovalStatus(value: unknown): value is (typeof APPROVAL_STATUSES)[number] {
+  return typeof value === "string" && (APPROVAL_STATUSES as readonly string[]).includes(value);
+}
+
+function isAutonomyGrantStatus(value: unknown): value is (typeof AUTONOMY_GRANT_STATUSES)[number] {
+  return typeof value === "string" && (AUTONOMY_GRANT_STATUSES as readonly string[]).includes(value);
+}
+
+function isAuthorizationDenialReason(value: unknown): value is (typeof AUTHORIZATION_DENIAL_REASONS)[number] {
+  return typeof value === "string" && (AUTHORIZATION_DENIAL_REASONS as readonly string[]).includes(value);
+}
+
+function assertNullableString(value: unknown, message: string): void {
+  invariant(value === null || typeof value === "string", message);
+}
+
+function assertNullableTimestamp(value: unknown, message: string): void {
+  invariant(value === null || isIsoTimestamp(value), message);
+}
+
 /**
  * Validates a Tool's own shape is well-formed, including recursively
  * validating that `inputSchema`/`outputSchema` are themselves well-formed
@@ -348,7 +374,10 @@ export function assertTool(value: unknown): asserts value is Tool {
   assertValidToolValueSchema(value.inputSchema, "tool.inputSchema");
   assertValidToolValueSchema(value.outputSchema, "tool.outputSchema");
   invariant(isEntitySource(value.source), "invalid tool source");
-  invariant(isPlainObject(value.metadata), "tool.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "tool.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertToolRequest(value: unknown): asserts value is ToolRequest {
@@ -360,12 +389,22 @@ export function assertToolRequest(value: unknown): asserts value is ToolRequest 
   );
   invariant(isEntitySource(value.source), "invalid tool request source");
   invariant(isIsoTimestamp(value.createdAt), "toolRequest.createdAt must be an ISO timestamp");
-  invariant(isPlainObject(value.metadata), "toolRequest.metadata must be an object");
-  // `input` is deliberately NOT shape-checked here -- it's raw, pre-
-  // validation caller input; matching it against a specific tool's
-  // inputSchema is executeTool's job in @naqsh/core, not this structural
-  // check (a ToolRequest can legitimately exist for a request that turns
-  // out to be invalid, so it can still be recorded as an error result).
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "toolRequest.metadata must be a JSON-serializable object"
+  );
+  // `input` is intentionally EXEMPT from JSON-safety checking, unlike
+  // every other field in this file. It's raw, pre-validation caller
+  // input -- a ToolRequest must be constructible for it (so a bad call
+  // can still be recorded as an error result) without executeTool's
+  // request-construction step itself becoming a second, earlier place
+  // that can throw for "invalid input" before executeTool's own try/catch
+  // ever gets a chance to turn that into a structured ToolResult instead
+  // of an uncaught exception. In practice this isn't a gap: a function or
+  // other non-JSON-safe value fails ordinary type checks in
+  // matchesToolValueSchema against ANY reasonably-declared inputSchema
+  // (typeof/isPlainObject checks all reject it), so it's still caught,
+  // just one layer later and gracefully rather than by throwing here.
 }
 
 function assertToolResultError(value: unknown): asserts value is ToolResultError {
@@ -397,6 +436,104 @@ export function assertToolResult(value: unknown): asserts value is ToolResult {
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "toolResult.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertApproval(value: unknown): asserts value is Approval {
+  invariant(isPlainObject(value), "approval must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "approval.id is required");
+  invariant(
+    typeof value.toolName === "string" && value.toolName.length > 0,
+    "approval.toolName is required"
+  );
+  assertNullableString(value.targetType, "approval.targetType must be a string or null");
+  assertNullableString(value.targetId, "approval.targetId must be a string or null");
+  invariant(isApprovalStatus(value.status), "invalid approval status");
+  invariant(isEntitySource(value.requestedBy), "invalid approval requestedBy source");
+  invariant(
+    value.decidedBy === null || isEntitySource(value.decidedBy),
+    "approval.decidedBy must be a valid source or null"
+  );
+  invariant(typeof value.reason === "string", "approval.reason must be a string");
+  invariant(isIsoTimestamp(value.createdAt), "approval.createdAt must be an ISO timestamp");
+  assertNullableTimestamp(value.respondedAt, "approval.respondedAt must be an ISO timestamp or null");
+  assertNullableTimestamp(value.expiresAt, "approval.expiresAt must be an ISO timestamp or null");
+  assertNullableTimestamp(value.consumedAt, "approval.consumedAt must be an ISO timestamp or null");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "approval.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertAutonomyGrant(value: unknown): asserts value is AutonomyGrant {
+  invariant(isPlainObject(value), "autonomy grant must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "autonomyGrant.id is required");
+  invariant(
+    Array.isArray(value.toolNames) &&
+      value.toolNames.length > 0 &&
+      value.toolNames.every((name) => typeof name === "string" && name.length > 0),
+    "autonomyGrant.toolNames must be a non-empty array of non-empty strings"
+  );
+  assertNullableString(value.targetType, "autonomyGrant.targetType must be a string or null");
+  assertNullableString(value.targetId, "autonomyGrant.targetId must be a string or null");
+  invariant(isAutonomyGrantStatus(value.status), "invalid autonomy grant status");
+  invariant(isEntitySource(value.grantedBy), "invalid autonomy grant grantedBy source");
+  invariant(typeof value.reason === "string", "autonomyGrant.reason must be a string");
+  invariant(isIsoTimestamp(value.createdAt), "autonomyGrant.createdAt must be an ISO timestamp");
+  assertNullableTimestamp(value.expiresAt, "autonomyGrant.expiresAt must be an ISO timestamp or null");
+  assertNullableTimestamp(value.revokedAt, "autonomyGrant.revokedAt must be an ISO timestamp or null");
+  invariant(
+    value.maxUses === null || (typeof value.maxUses === "number" && Number.isInteger(value.maxUses) && value.maxUses >= 1),
+    "autonomyGrant.maxUses must be a positive integer or null"
+  );
+  invariant(
+    typeof value.useCount === "number" && Number.isInteger(value.useCount) && value.useCount >= 0,
+    "autonomyGrant.useCount must be a non-negative integer"
+  );
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "autonomyGrant.metadata must be a JSON-serializable object"
+  );
+}
+
+/**
+ * Deliberately does NOT validate `autonomyLevel` against `AUTONOMY_LEVELS`:
+ * an unrecognized level is itself one of the things a decision records
+ * (`denialReason: "unknown_autonomy_level"`), so the raw string that was
+ * evaluated must still be storable even when it wasn't a valid level.
+ */
+export function assertAuthorizationDecision(value: unknown): asserts value is AuthorizationDecision {
+  invariant(isPlainObject(value), "authorization decision must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "authorizationDecision.id is required");
+  invariant(
+    typeof value.toolName === "string" && value.toolName.length > 0,
+    "authorizationDecision.toolName is required"
+  );
+  if (value.target !== null) {
+    assertChangeTarget(value.target);
+  }
+  invariant(typeof value.autonomyLevel === "string", "authorizationDecision.autonomyLevel must be a string");
+  invariant(isEntitySource(value.source), "invalid authorization decision source");
+  invariant(
+    typeof value.requestId === "string" && value.requestId.length > 0,
+    "authorizationDecision.requestId is required"
+  );
+  invariant(typeof value.allowed === "boolean", "authorizationDecision.allowed must be a boolean");
+  if (value.allowed) {
+    invariant(value.denialReason === null, "authorizationDecision.denialReason must be null when allowed");
+  } else {
+    invariant(isAuthorizationDenialReason(value.denialReason), "invalid authorization denial reason");
+  }
+  invariant(typeof value.message === "string", "authorizationDecision.message must be a string");
+  assertNullableString(value.matchedApprovalId, "authorizationDecision.matchedApprovalId must be a string or null");
+  assertNullableString(
+    value.matchedAutonomyGrantId,
+    "authorizationDecision.matchedAutonomyGrantId must be a string or null"
+  );
+  invariant(isIsoTimestamp(value.createdAt), "authorizationDecision.createdAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "authorizationDecision.metadata must be a JSON-serializable object"
   );
 }
 

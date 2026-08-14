@@ -16,22 +16,27 @@ Repository layout:
 owns every data contract — entities (`Project`, `Requirement`, `Constraint`,
 `EngineeringObject`, `Decision`, `Experiment`, `Preference`, `SessionState`,
 `WorldModelState`), the `WorldModelTransition` discriminated union, the
-Change Model (`Change`, `ChangeCause`, `ChangeTarget`), and the Tool system's
-contracts (`Tool`, `ToolValueSchema`, `ToolRequest`, `ToolResult`) — plus
-their validators, factories, and serialization. `core` owns only behavior
-built on top of that data: the `updateWorldModel` reducer and its transition
-registry, `ChangeHistory` + `recordTransition` (the audited write path), and
-`ToolRegistry` + `executeTool` (the controlled tool execution boundary).
-Neither package knows about any specific environment (FreeCAD or otherwise),
-Gemini, or a UI framework — those integrate through `packages/adapters` and
-`apps/*` in later phases, never by reaching into `core`/`schemas`.
+Change Model (`Change`, `ChangeCause`, `ChangeTarget`), the Tool system's
+contracts (`Tool`, `ToolValueSchema`, `ToolRequest`, `ToolResult`), and the
+Authorization Model's contracts (`AutonomyLevel`, `Approval`,
+`AutonomyGrant`, `AuthorizationDecision`) — plus their validators,
+factories, and serialization. `core` owns only behavior built on top of
+that data: the `updateWorldModel` reducer and its transition registry,
+`ChangeHistory` + `recordTransition` (the audited write path),
+`ToolRegistry` + `executeTool` (the controlled tool execution boundary),
+and `evaluateToolAuthorization` + `ApprovalStore` + `AutonomyGrantStore`
+(the authorization decision layer). Neither package knows about any
+specific environment (FreeCAD or otherwise), Gemini, or a UI framework —
+those integrate through `packages/adapters` and `apps/*` in later phases,
+never by reaching into `core`/`schemas`.
 
 `packages/core/test/repo-boundaries.test.ts` enforces this direction as a
-regression test, not just a convention — including a static check that the
-tool system contains no `eval`, `Function` construction, or subprocess
+regression test, not just a convention — including a static check, scanned
+across every `.ts` file in both `core/src` and `schemas/src`, that nothing
+contains `eval`, `Function` construction, or subprocess/dynamic-import
 execution.
 
-## World Model, Change Model, and Tools
+## World Model, Change Model, Tools, and Authorization
 
 - **World Model** (P1) — `WorldModelState` is the current materialized
   state. `updateWorldModel(state, transition)` is a pure reducer; it has no
@@ -45,14 +50,47 @@ execution.
 - **Tools** (P3) — `Tool` is pure metadata (identity, target domain,
   mutation classification, JSON-Schema-compatible input/output contracts);
   it never carries a handler. `ToolRegistry` pairs a `Tool` with its handler
-  function in a private closure — nothing outside the registry can obtain a
-  raw handler reference. `executeTool` is the only sanctioned way to run one:
-  validate input → policy seam (a hook, not an enforcement system — that's
-  P4) → handler → validate output → a structured `ToolResult`, never a thrown
-  exception for an expected failure mode. A mutating tool's handler returns
-  transition-shaped *data*; the caller feeds that through the existing
-  `recordTransition` pipeline, so a tool can never bypass the World Model or
-  mutate hidden state.
+  function in a private closure — there is no `invoke`/`execute` method on
+  `ToolRegistry` itself; dispatch lives in a free function
+  (`invokeRegisteredTool`) that is deliberately NOT exported from
+  `@naqsh/core`'s public barrel, so `executeTool` is the only realistic
+  caller. `executeTool` is the sanctioned way to run a tool: validate input
+  → policy seam (an `authorize` hook) → handler → validate output → a
+  structured `ToolResult`, never a thrown exception for an expected failure
+  mode. A mutating tool's handler returns transition-shaped *data*; the
+  caller feeds that through the existing `recordTransition` pipeline, so a
+  tool can never bypass the World Model or mutate hidden state.
+- **Authorization** (P4) — four ordered `AutonomyLevel`s (`observe` <
+  `suggest` < `approved_modify` < `autonomous`, ordering is load-bearing:
+  it's the rank comparison). `evaluateToolAuthorization` is the
+  deterministic decision function: given a `Tool`'s mutation
+  classification, the current autonomy level, and the current contents of
+  an `ApprovalStore`/`AutonomyGrantStore`, it returns an
+  `AuthorizationDecision` — allowed, or denied with one of fourteen named
+  reasons (never a bare `Error("denied")`). It never mutates the stores it
+  reads (deciding and consuming an approval/grant-use are separate,
+  explicit steps) and never consults an LLM. `createExecuteToolAuthorizer`
+  adapts it into the exact shape `executeTool`'s `authorize` hook expects —
+  the only integration point between P3 and P4; `executeTool` itself is
+  unmodified in behavior and still has no idea autonomy levels exist.
+  `Approval` authorizes exactly one `(toolName, target)` pair and is
+  single-use (`consumedAt`); `AutonomyGrant` authorizes a bounded set of
+  future calls (explicit `toolNames` allowlist, optional target scope,
+  optional `expiresAt`/`maxUses`) and is revocable.
+
+## What's intentionally not implemented yet
+
+No Gemini, no FreeCAD, no real CAD operations, no autonomous agent loop, no
+approval UI, no production authentication, no cloud services, no
+persistence/database of any kind, no background jobs. `ApprovalStore` and
+`AutonomyGrantStore` are in-memory only — nothing survives a process
+restart. There is no orchestration loop that actually creates approvals,
+grants autonomy, or wires `AuthorizationDecision`s into a persisted audit
+trail; P4 provides the primitives those would be built from, not the
+loop itself (that's P11). `AutonomyGrant`/`Approval` target-matching
+picks the first covering match rather than the most specific one when
+several overlap — correct for the single-match cases every current test
+exercises, worth revisiting if overlapping scopes become common.
 
 ## Tooling
 

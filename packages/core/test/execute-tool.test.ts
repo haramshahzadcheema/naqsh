@@ -210,9 +210,42 @@ describe("executeTool: the P4 policy seam (not enforcement)", () => {
     const { result } = await executeTool(registry, {
       toolName: "inspect_project",
       input: { name: "x" },
-      authorize: async (tool) => tool.mutation === "observe"
+      authorize: async (context) => context.tool.mutation === "observe"
     });
     assert.equal(result.status, "success");
+  });
+
+  it("passes source and requestId to the authorize hook, matching the ToolRequest", async () => {
+    const registry = createToolRegistry();
+    registry.register(createTool(buildToolInput()), () => ({ requirementCount: 0 }));
+    let seenSource: string | undefined;
+    let seenRequestId: string | undefined;
+
+    const { request } = await executeTool(registry, {
+      toolName: "inspect_project",
+      input: { name: "x" },
+      source: "agent",
+      authorize: (context) => {
+        seenSource = context.source;
+        seenRequestId = context.requestId;
+        return true;
+      }
+    });
+
+    assert.equal(seenSource, "agent");
+    assert.equal(seenRequestId, request.id);
+  });
+
+  it("propagates a structured denial reason from the object form of the outcome", async () => {
+    const registry = createToolRegistry();
+    registry.register(createTool(buildToolInput()), () => ({ requirementCount: 0 }));
+    const { result } = await executeTool(registry, {
+      toolName: "inspect_project",
+      input: { name: "x" },
+      authorize: () => ({ allowed: false, reason: "autonomy level SUGGEST cannot execute mutate tools" })
+    });
+    assert.equal(result.error?.kind, "policy_rejected");
+    assert.equal(result.error?.message, "autonomy level SUGGEST cannot execute mutate tools");
   });
 });
 
