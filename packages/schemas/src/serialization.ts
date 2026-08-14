@@ -1,9 +1,13 @@
 import type { Approval, AuthorizationDecision, AutonomyGrant, Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
+import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "./environment-types.js";
 import {
   assertApproval,
   assertAuthorizationDecision,
   assertAutonomyGrant,
   assertChange,
+  assertEnvironmentObject,
+  assertEnvironmentOperationResult,
+  assertEnvironmentSession,
   assertProject,
   assertTool,
   assertToolResult,
@@ -110,5 +114,41 @@ export function deserializeAuthorizationDecision(serialized: string): Authorizat
   requireNonEmptyString(serialized, "serialized authorization decision is required");
   const parsed: unknown = JSON.parse(serialized);
   assertAuthorizationDecision(parsed);
+  return parsed;
+}
+
+export function serializeEnvironmentSession(session: EnvironmentSession): string {
+  assertEnvironmentSession(session);
+  return JSON.stringify(session);
+}
+
+export function deserializeEnvironmentSession(serialized: string): EnvironmentSession {
+  requireNonEmptyString(serialized, "serialized environment session is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertEnvironmentSession(parsed);
+  return parsed;
+}
+
+export function serializeEnvironmentObject(object: EnvironmentObject): string {
+  assertEnvironmentObject(object);
+  return JSON.stringify(object);
+}
+
+export function deserializeEnvironmentObject(serialized: string): EnvironmentObject {
+  requireNonEmptyString(serialized, "serialized environment object is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertEnvironmentObject(parsed);
+  return parsed;
+}
+
+export function serializeEnvironmentOperationResult(result: EnvironmentOperationResult): string {
+  assertEnvironmentOperationResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeEnvironmentOperationResult(serialized: string): EnvironmentOperationResult {
+  requireNonEmptyString(serialized, "serialized environment operation result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertEnvironmentOperationResult(parsed);
   return parsed;
 }

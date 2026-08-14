@@ -12,29 +12,52 @@ Repository layout:
 
 ## Dependency direction
 
-`packages/core` depends on `packages/schemas`. Never the reverse. `schemas`
-owns every data contract — entities (`Project`, `Requirement`, `Constraint`,
+```
+packages/schemas   (data contracts: entities, transitions, Change, Tool,
+                     Authorization, Environment — no behavior)
+      ↑
+packages/core       (behavior over that data: the World Model reducer,
+                     ChangeHistory, ToolRegistry/executeTool, authorization
+                     evaluation, and the EnvironmentAdapter CONTRACT +
+                     reusable contract-test suite — no environment knows
+                     which one it's talking to)
+      ↑
+packages/adapters   (concrete EnvironmentAdapter implementations — mocks
+                     today, FreeCADAdapter in P12+ — never imported BY
+                     core/schemas, only importing FROM them)
+      ↑
+apps/web, apps/api  (future UI / API surface)
+```
+
+`packages/core` depends on `packages/schemas`; `packages/adapters` depends
+on both. Never the reverse in either case. `schemas` owns every data
+contract — entities (`Project`, `Requirement`, `Constraint`,
 `EngineeringObject`, `Decision`, `Experiment`, `Preference`, `SessionState`,
 `WorldModelState`), the `WorldModelTransition` discriminated union, the
 Change Model (`Change`, `ChangeCause`, `ChangeTarget`), the Tool system's
-contracts (`Tool`, `ToolValueSchema`, `ToolRequest`, `ToolResult`), and the
+contracts (`Tool`, `ToolValueSchema`, `ToolRequest`, `ToolResult`), the
 Authorization Model's contracts (`AutonomyLevel`, `Approval`,
-`AutonomyGrant`, `AuthorizationDecision`) — plus their validators,
-factories, and serialization. `core` owns only behavior built on top of
-that data: the `updateWorldModel` reducer and its transition registry,
-`ChangeHistory` + `recordTransition` (the audited write path),
+`AutonomyGrant`, `AuthorizationDecision`), and the Environment Adapter's
+data contracts (`EnvironmentDescriptor`, `EnvironmentSession`,
+`EnvironmentObject`, `EnvironmentOperationResult`, ...) — plus their
+validators, factories, and serialization. `core` owns behavior built on
+top of that data: the `updateWorldModel` reducer and its transition
+registry, `ChangeHistory` + `recordTransition` (the audited write path),
 `ToolRegistry` + `executeTool` (the controlled tool execution boundary),
-and `evaluateToolAuthorization` + `ApprovalStore` + `AutonomyGrantStore`
-(the authorization decision layer). Neither package knows about any
-specific environment (FreeCAD or otherwise), Gemini, or a UI framework —
-those integrate through `packages/adapters` and `apps/*` in later phases,
-never by reaching into `core`/`schemas`.
+`evaluateToolAuthorization` + `ApprovalStore` + `AutonomyGrantStore` (the
+authorization decision layer), and the `EnvironmentAdapter` *interface*
+plus its reusable contract-test suite (`runEnvironmentAdapterContractTests`)
+— core defines what an environment adapter must do, never a concrete one.
+`packages/adapters` supplies the first real implementations of that
+interface (currently two deterministic mocks; see below). No package
+knows about Gemini or a UI framework — those integrate in later phases,
+never by reaching into `core`/`schemas`/`adapters`.
 
-`packages/core/test/repo-boundaries.test.ts` enforces this direction as a
-regression test, not just a convention — including a static check, scanned
-across every `.ts` file in both `core/src` and `schemas/src`, that nothing
-contains `eval`, `Function` construction, or subprocess/dynamic-import
-execution.
+`packages/core/test/repo-boundaries.test.ts` enforces every arrow above as
+a regression test, not just a convention — including a static check,
+scanned across every `.ts` file in `core/src`, `schemas/src`, and
+`adapters/src`, that nothing contains `eval`, `Function` construction, or
+subprocess/dynamic-import execution.
 
 ## World Model, Change Model, Tools, and Authorization
 
@@ -82,10 +105,35 @@ execution.
   approval/grant covers a call, the MOST SPECIFIC one wins (exact target >
   target-type-only > fully open), not merely the first one found, so a
   narrow rejection can't be shadowed by a broader approval created earlier.
+- **Environment Adapter** (P5) — `EnvironmentAdapter` (core) is the ONE way
+  anything in this repo is allowed to talk to an external engineering
+  environment (CAD, simulation, manufacturing, robotics, EDA, ...). Eleven
+  methods (`describe`/`health`/`connect`/`disconnect`/`listObjects`/
+  `inspectObject`/`createObject`/`modifyObject`/`deleteObject`/`save`/
+  `checkpoint`/`restore`), every one of them present on every adapter
+  regardless of what it actually supports — an adapter that doesn't
+  support `create` still has a `createObject` method; calling it resolves
+  to `{status:"error", error:{kind:"unsupported_capability"}}` rather than
+  being absent or throwing. What an adapter *can* do is declared up front
+  via `EnvironmentDescriptor.capabilities` (`create`/`modify`/`delete`/
+  `save`/`checkpoint` — reading is always assumed baseline). This is what
+  lets ONE reusable suite, `runEnvironmentAdapterContractTests` (core),
+  run unmodified against adapters with entirely different capability
+  profiles — proven today by `packages/adapters`' two mocks
+  (`createMockCadEnvironment`: full capability set;
+  `createMockSimulationEnvironment`: `modify` only, fixed topology) and
+  intended to run against a real `FreeCADAdapter` in P12+ the exact same
+  way. `EnvironmentObject` is deliberately NOT `EngineeringObject`: an
+  adapter reports a raw environment fact, not NAQSH's interpreted domain
+  belief — nothing in `environment-adapter.ts` or any mock ever touches
+  `WorldModelState`/`ChangeHistory`/`updateWorldModel` (enforced as a
+  repo-boundaries regression test). Reconciling environment observations
+  into the World Model (Environment → observation → interpretation →
+  World Model update) is P8's job, not P5's.
 
 ## Error model
 
-Three error classes, one per layer, so a caller can branch on `.kind`
+Four error classes, one per layer, so a caller can branch on `.kind`
 instead of string-matching a message: `WorldModelValidationError` (schemas)
 for data-shape/domain-contract violations across P0–P2 — malformed
 entities, unsupported transition kinds, out-of-order/mismatched-parent
@@ -96,24 +144,37 @@ outcomes — `invalid_input` / `unknown_tool` / `execution_failure` /
 `ApprovalStore`/`AutonomyGrantStore` lifecycle violations —
 `not_found` / `invalid_state_transition` — deliberately NOT `ToolError`,
 since no tool execution is involved in e.g. approving an already-decided
-approval. Authorization *denials* (as opposed to store misuse) are not
-exceptions at all — see `AuthorizationDecision.denialReason`, one of
-fourteen named values.
+approval. `EnvironmentError` (P5), available for an adapter implementation
+to throw on a genuinely unexpected failure — `not_connected` /
+`object_not_found` / `unsupported_capability` / `invalid_operation` /
+`environment_failure` / `conflict` — but never used for an EXPECTED
+failure; those are always a returned `EnvironmentOperationResult` with
+`status: "error"`, same discipline as `ToolResult`. Authorization
+*denials* and environment operation *failures* are both not exceptions at
+all in the expected case — see `AuthorizationDecision.denialReason` (one
+of fourteen named values) and `EnvironmentOperationResult.error`.
 
 ## What's intentionally not implemented yet
 
 No Gemini, no FreeCAD, no real CAD operations, no autonomous agent loop, no
 approval UI, no production authentication, no cloud services, no
-persistence/database of any kind, no background jobs. `ApprovalStore` and
-`AutonomyGrantStore` are in-memory only — nothing survives a process
-restart. There is no orchestration loop that actually creates approvals,
-grants autonomy, or wires `AuthorizationDecision`s into a persisted audit
-trail; P4 provides the primitives those would be built from, not the loop
-itself (that's P11). No lint/formatter is configured — `strict` TypeScript
-with `noUnusedLocals`/`noUnusedParameters` catches a meaningful subset of
-what a linter would (verified during the P0–P4 foundation audit, which
-found and fixed two real dead-import cases this way); style enforcement
-beyond that is deferred.
+persistence/database of any kind, no background jobs, no simulation
+engine. `ApprovalStore` and `AutonomyGrantStore` are in-memory only —
+nothing survives a process restart, and the same is true of every
+`EnvironmentAdapter`'s state. There is no orchestration loop that actually
+creates approvals, grants autonomy, or wires `AuthorizationDecision`s or
+`EnvironmentOperationResult`s into a persisted audit trail; P4/P5 provide
+the primitives those would be built from, not the loop itself (that's
+P11). The two mock adapters in `packages/adapters` are deliberately
+simplistic — proving the `EnvironmentAdapter` contract works, not
+simulating a real CAD/simulation application; no geometry kernel, no
+FEA/CFD, no real persistence to disk. `FreeCADAdapter` does not exist yet
+(P12–P14) — nothing in `packages/adapters` imports FreeCAD, a Python
+runtime, or any vendor SDK. No lint/formatter is configured — `strict`
+TypeScript with `noUnusedLocals`/`noUnusedParameters` catches a meaningful
+subset of what a linter would (verified during the P0–P4 foundation audit,
+which found and fixed two real dead-import cases this way); style
+enforcement beyond that is deferred.
 
 ## Tooling
 

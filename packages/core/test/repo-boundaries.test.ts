@@ -139,7 +139,11 @@ describe("P3 tool system: no arbitrary code execution", () => {
       /\bspawn\s*\(/,
       /import\s*\(\s*[a-zA-Z_$]/ // dynamic import of a runtime-computed (non-literal) specifier
     ];
-    const sourceFiles = [...listTsFiles("packages/core/src"), ...listTsFiles("packages/schemas/src")];
+    const sourceFiles = [
+      ...listTsFiles("packages/core/src"),
+      ...listTsFiles("packages/schemas/src"),
+      ...listTsFiles("packages/adapters/src")
+    ];
     assert.ok(sourceFiles.length > 10, "expected to find a substantial number of source files to scan");
     for (const relativePath of sourceFiles) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
@@ -159,5 +163,101 @@ describe("P3 tool system: no arbitrary code execution", () => {
     const toolInterfaceMatch = typesContents.match(/export interface Tool \{[\s\S]*?\n\}/);
     assert.ok(toolInterfaceMatch, "expected to find the Tool interface in packages/schemas/src/types.ts");
     assert.doesNotMatch(toolInterfaceMatch![0], /handler/i);
+  });
+});
+
+describe("P5 environment adapter: dependency direction and World Model boundary", () => {
+  it("declares @naqsh/core and @naqsh/schemas as dependencies of @naqsh/adapters", () => {
+    const adaptersPackageJson = readJson("packages/adapters/package.json");
+    const dependencies = adaptersPackageJson.dependencies as Record<string, string> | undefined;
+    assert.ok(dependencies?.["@naqsh/core"], "@naqsh/adapters must depend on @naqsh/core");
+    assert.ok(dependencies?.["@naqsh/schemas"], "@naqsh/adapters must depend on @naqsh/schemas");
+  });
+
+  it("does not let @naqsh/core depend on @naqsh/adapters", () => {
+    const corePackageJson = readJson("packages/core/package.json");
+    const dependencies = (corePackageJson.dependencies ?? {}) as Record<string, string>;
+    assert.equal(
+      "@naqsh/adapters" in dependencies,
+      false,
+      "@naqsh/core must stay dependency-free of @naqsh/adapters -- core defines the EnvironmentAdapter contract, it never depends on a concrete implementation"
+    );
+  });
+
+  it("no source file under packages/core/src imports from @naqsh/adapters", () => {
+    // Matches an actual import/require statement, not a doc comment that
+    // merely MENTIONS the package name while explaining the architecture
+    // (e.g. "Concrete adapters (the mocks in @naqsh/adapters now, ...)"),
+    // which several files in this repo legitimately do.
+    const actualImportPattern = /from\s+["'`]@naqsh\/adapters["'`]|require\s*\(\s*["'`]@naqsh\/adapters["'`]\s*\)/;
+    for (const relativePath of listTsFiles("packages/core/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, actualImportPattern, `${relativePath} must not import @naqsh/adapters`);
+    }
+  });
+
+  it("environment-adapter files never import the World Model transition/change machinery", () => {
+    // Preserves the P5 brief's explicit boundary: an adapter reports what
+    // an environment has; reconciling that into WorldModelState is a
+    // later phase's job (P8), not this one's. If environment-adapter.ts,
+    // environment-adapter-contract.ts, or any mock adapter ever imports
+    // transitions.ts/change-history.ts/record-transition.ts/bootstrap.ts,
+    // that boundary has been silently crossed.
+    const forbiddenImports = [
+      "./transitions.js",
+      "./change-history.js",
+      "./record-transition.js",
+      "./bootstrap.js",
+      "@naqsh/core/transitions",
+      "@naqsh/core/change-history"
+    ];
+    const filesToCheck = [
+      "packages/core/src/environment-adapter.ts",
+      "packages/core/src/environment-adapter-contract.ts",
+      ...listTsFiles("packages/adapters/src")
+    ];
+    for (const relativePath of filesToCheck) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- environment observation and World Model mutation are separate concerns`
+        );
+      }
+    }
+  });
+
+  it("EnvironmentAdapter's optional methods are real methods on every implementation, not conditionally present", () => {
+    // Regression guard for the capability-vs-interface design decision:
+    // the P5 brief asks for "capability-oriented design" AND "fail
+    // deterministically with a typed error/result" at once. That is only
+    // possible if every adapter has the SAME method surface regardless of
+    // what it supports (a missing method would force callers to
+    // feature-detect per adapter instead of always getting a structured
+    // result back). This checks the interface declares all eleven
+    // operation methods as non-optional.
+    const contents = readFileSync(join(repoRoot, "packages/core/src/environment-adapter.ts"), "utf8");
+    const requiredMethods = [
+      "describe",
+      "health",
+      "connect",
+      "disconnect",
+      "listObjects",
+      "inspectObject",
+      "createObject",
+      "modifyObject",
+      "deleteObject",
+      "save",
+      "checkpoint",
+      "restore"
+    ];
+    for (const method of requiredMethods) {
+      assert.doesNotMatch(
+        contents,
+        new RegExp(`${method}\\?\\s*[(:]`),
+        `EnvironmentAdapter.${method} must not be an optional ("${method}?:") member`
+      );
+    }
   });
 });

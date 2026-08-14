@@ -1,6 +1,21 @@
 import { isIsoTimestamp } from "./ids.js";
 import { assertValidToolValueSchema } from "./tool-schema.js";
 import {
+  ENVIRONMENT_CAPABILITIES,
+  ENVIRONMENT_ERROR_KINDS,
+  ENVIRONMENT_HEALTH_STATUSES,
+  ENVIRONMENT_OPERATION_KINDS,
+  ENVIRONMENT_SESSION_STATUSES,
+  type EnvironmentDescriptor,
+  type EnvironmentHealth,
+  type EnvironmentObject,
+  type EnvironmentOperationError,
+  type EnvironmentOperationResult,
+  type EnvironmentProperty,
+  type EnvironmentRelationship,
+  type EnvironmentSession
+} from "./environment-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
@@ -38,7 +53,7 @@ import { WorldModelValidationError } from "./errors.js";
 // The classes themselves live in errors.js, a dependency-free leaf module,
 // specifically so this file and tool-schema.ts can both throw them without
 // an import cycle between the two.
-export { AuthorizationError, ToolError, WorldModelValidationError } from "./errors.js";
+export { AuthorizationError, EnvironmentError, ToolError, WorldModelValidationError } from "./errors.js";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -538,6 +553,147 @@ export function assertAuthorizationDecision(value: unknown): asserts value is Au
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "authorizationDecision.metadata must be a JSON-serializable object"
+  );
+}
+
+function isEnvironmentCapability(value: unknown): value is (typeof ENVIRONMENT_CAPABILITIES)[number] {
+  return typeof value === "string" && (ENVIRONMENT_CAPABILITIES as readonly string[]).includes(value);
+}
+
+function isEnvironmentSessionStatus(value: unknown): value is (typeof ENVIRONMENT_SESSION_STATUSES)[number] {
+  return typeof value === "string" && (ENVIRONMENT_SESSION_STATUSES as readonly string[]).includes(value);
+}
+
+function isEnvironmentHealthStatus(value: unknown): value is (typeof ENVIRONMENT_HEALTH_STATUSES)[number] {
+  return typeof value === "string" && (ENVIRONMENT_HEALTH_STATUSES as readonly string[]).includes(value);
+}
+
+function isEnvironmentOperationKind(value: unknown): value is (typeof ENVIRONMENT_OPERATION_KINDS)[number] {
+  return typeof value === "string" && (ENVIRONMENT_OPERATION_KINDS as readonly string[]).includes(value);
+}
+
+function isEnvironmentErrorKind(value: unknown): value is (typeof ENVIRONMENT_ERROR_KINDS)[number] {
+  return typeof value === "string" && (ENVIRONMENT_ERROR_KINDS as readonly string[]).includes(value);
+}
+
+export function assertEnvironmentDescriptor(value: unknown): asserts value is EnvironmentDescriptor {
+  invariant(isPlainObject(value), "environment descriptor must be an object");
+  invariant(typeof value.kind === "string" && value.kind.length > 0, "environmentDescriptor.kind is required");
+  invariant(typeof value.name === "string" && value.name.length > 0, "environmentDescriptor.name is required");
+  invariant(
+    typeof value.version === "string" && value.version.length > 0,
+    "environmentDescriptor.version is required"
+  );
+  invariant(
+    Array.isArray(value.capabilities) && value.capabilities.every((capability) => isEnvironmentCapability(capability)),
+    "environmentDescriptor.capabilities must be an array of valid capabilities"
+  );
+  invariant(
+    new Set(value.capabilities).size === value.capabilities.length,
+    "environmentDescriptor.capabilities must not contain duplicates"
+  );
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentDescriptor.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertEnvironmentSession(value: unknown): asserts value is EnvironmentSession {
+  invariant(isPlainObject(value), "environment session must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "environmentSession.id is required");
+  invariant(
+    typeof value.environmentKind === "string" && value.environmentKind.length > 0,
+    "environmentSession.environmentKind is required"
+  );
+  invariant(isEnvironmentSessionStatus(value.status), "invalid environment session status");
+  assertNullableString(value.documentName, "environmentSession.documentName must be a string or null");
+  invariant(isIsoTimestamp(value.openedAt), "environmentSession.openedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentSession.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertEnvironmentProperty(value: unknown): asserts value is EnvironmentProperty {
+  invariant(isPlainObject(value), "environment property must be an object");
+  invariant(
+    typeof value.key === "string" && value.key.length > 0,
+    "environmentProperty.key is required"
+  );
+  invariant(isJsonSafeValue(value.value), "environmentProperty.value must be JSON-serializable");
+  invariant(typeof value.readOnly === "boolean", "environmentProperty.readOnly must be a boolean");
+}
+
+export function assertEnvironmentRelationship(value: unknown): asserts value is EnvironmentRelationship {
+  invariant(isPlainObject(value), "environment relationship must be an object");
+  invariant(typeof value.type === "string" && value.type.length > 0, "environmentRelationship.type is required");
+  invariant(
+    typeof value.targetId === "string" && value.targetId.length > 0,
+    "environmentRelationship.targetId is required"
+  );
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentRelationship.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertEnvironmentObject(value: unknown): asserts value is EnvironmentObject {
+  invariant(isPlainObject(value), "environment object must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "environmentObject.id is required");
+  invariant(typeof value.type === "string" && value.type.length > 0, "environmentObject.type is required");
+  invariant(typeof value.name === "string", "environmentObject.name must be a string");
+  invariant(Array.isArray(value.properties), "environmentObject.properties must be an array");
+  for (const property of value.properties) assertEnvironmentProperty(property);
+  invariant(Array.isArray(value.relationships), "environmentObject.relationships must be an array");
+  for (const relationship of value.relationships) assertEnvironmentRelationship(relationship);
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentObject.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertEnvironmentHealth(value: unknown): asserts value is EnvironmentHealth {
+  invariant(isPlainObject(value), "environment health must be an object");
+  invariant(isEnvironmentHealthStatus(value.status), "invalid environment health status");
+  invariant(typeof value.message === "string", "environmentHealth.message must be a string");
+  invariant(isIsoTimestamp(value.checkedAt), "environmentHealth.checkedAt must be an ISO timestamp");
+}
+
+function assertEnvironmentOperationError(value: unknown): asserts value is EnvironmentOperationError {
+  invariant(isPlainObject(value), "environment operation error must be an object");
+  invariant(isEnvironmentErrorKind(value.kind), "invalid environment error kind");
+  invariant(typeof value.message === "string", "environment operation error message must be a string");
+}
+
+/**
+ * Deliberately does NOT validate `data` against any specific shape beyond
+ * JSON-safety -- like `ToolResult.output`, what `data` should look like
+ * depends on `operation` (an EnvironmentObject for inspect_object, an
+ * EnvironmentSession for connect, null for disconnect/save, ...) and
+ * enforcing that per-operation shape is the contract-test suite's job
+ * (core's environment-adapter-contract.ts), not this generic validator's.
+ */
+export function assertEnvironmentOperationResult(value: unknown): asserts value is EnvironmentOperationResult {
+  invariant(isPlainObject(value), "environment operation result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "environmentOperationResult.id is required");
+  invariant(isEnvironmentOperationKind(value.operation), "invalid environment operation kind");
+  assertNullableString(value.sessionId, "environmentOperationResult.sessionId must be a string or null");
+  assertNullableString(value.objectId, "environmentOperationResult.objectId must be a string or null");
+  invariant(
+    value.status === "success" || value.status === "error",
+    "invalid environment operation result status"
+  );
+  invariant(isJsonSafeValue(value.data), "environmentOperationResult.data must be JSON-serializable");
+  if (value.status === "success") {
+    invariant(value.error === null, "environmentOperationResult.error must be null when status is success");
+  } else {
+    assertEnvironmentOperationError(value.error);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "environmentOperationResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "environmentOperationResult.completedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentOperationResult.metadata must be a JSON-serializable object"
   );
 }
 

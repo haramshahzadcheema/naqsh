@@ -1,5 +1,30 @@
 import { createId, toIsoTimestamp } from "./ids.js";
 import type {
+  EnvironmentDescriptor,
+  EnvironmentDescriptorInput,
+  EnvironmentHealth,
+  EnvironmentHealthInput,
+  EnvironmentObject,
+  EnvironmentObjectInput,
+  EnvironmentOperationResult,
+  EnvironmentOperationResultInput,
+  EnvironmentProperty,
+  EnvironmentPropertyInput,
+  EnvironmentRelationship,
+  EnvironmentRelationshipInput,
+  EnvironmentSession,
+  EnvironmentSessionInput
+} from "./environment-types.js";
+import {
+  assertEnvironmentDescriptor,
+  assertEnvironmentHealth,
+  assertEnvironmentObject,
+  assertEnvironmentOperationResult,
+  assertEnvironmentProperty,
+  assertEnvironmentRelationship,
+  assertEnvironmentSession
+} from "./validators.js";
+import type {
   Approval,
   ApprovalInput,
   AuthorizationDecision,
@@ -389,4 +414,89 @@ export function createAuthorizationDecision(input: AuthorizationDecisionInput): 
   };
   assertAuthorizationDecision(decision);
   return Object.freeze(decision);
+}
+
+export function createEnvironmentDescriptor(input: EnvironmentDescriptorInput): EnvironmentDescriptor {
+  const descriptor: EnvironmentDescriptor = {
+    kind: input.kind,
+    name: input.name,
+    version: input.version ?? "0.1.0",
+    capabilities: [...(input.capabilities ?? [])],
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentDescriptor(descriptor);
+  return Object.freeze(descriptor);
+}
+
+export function createEnvironmentSession(input: EnvironmentSessionInput): EnvironmentSession {
+  const session: EnvironmentSession = {
+    id: input.id ?? createId("envsess"),
+    environmentKind: input.environmentKind,
+    status: input.status ?? "connected",
+    documentName: input.documentName ?? null,
+    openedAt: input.openedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentSession(session);
+  return Object.freeze(session);
+}
+
+export function createEnvironmentProperty(input: EnvironmentPropertyInput): EnvironmentProperty {
+  const property: EnvironmentProperty = {
+    key: input.key,
+    value: input.value ?? null,
+    readOnly: input.readOnly ?? false
+  };
+  assertEnvironmentProperty(property);
+  return Object.freeze(property);
+}
+
+export function createEnvironmentRelationship(input: EnvironmentRelationshipInput): EnvironmentRelationship {
+  const relationship: EnvironmentRelationship = {
+    type: input.type,
+    targetId: input.targetId,
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentRelationship(relationship);
+  return Object.freeze(relationship);
+}
+
+export function createEnvironmentObject(input: EnvironmentObjectInput): EnvironmentObject {
+  const object: EnvironmentObject = {
+    id: input.id ?? createId("envobj"),
+    type: input.type,
+    name: input.name,
+    properties: (input.properties ?? []).map((property) => createEnvironmentProperty(property)),
+    relationships: (input.relationships ?? []).map((relationship) => createEnvironmentRelationship(relationship)),
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentObject(object);
+  return Object.freeze(object);
+}
+
+export function createEnvironmentHealth(input: EnvironmentHealthInput): EnvironmentHealth {
+  const health: EnvironmentHealth = {
+    status: input.status,
+    message: input.message ?? "",
+    checkedAt: input.checkedAt ?? toIsoTimestamp()
+  };
+  assertEnvironmentHealth(health);
+  return Object.freeze(health);
+}
+
+export function createEnvironmentOperationResult(input: EnvironmentOperationResultInput): EnvironmentOperationResult {
+  const result: EnvironmentOperationResult = {
+    id: input.id ?? createId("envop"),
+    operation: input.operation,
+    sessionId: input.sessionId ?? null,
+    objectId: input.objectId ?? null,
+    status: input.status,
+    data: input.data ?? null,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentOperationResult(result);
+  return Object.freeze(result);
 }

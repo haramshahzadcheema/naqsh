@@ -11,3 +11,5 @@ export * from "./execute-tool.js";
 export * from "./approval-store.js";
 export * from "./autonomy-grant-store.js";
 export * from "./authorization.js";
+export * from "./environment-adapter.js";
+export * from "./environment-adapter-contract.js";

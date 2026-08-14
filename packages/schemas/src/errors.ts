@@ -1,4 +1,5 @@
 import type { ToolErrorKind } from "./types.js";
+import type { EnvironmentErrorKind } from "./environment-types.js";
 
 /** Thrown by every assert* function in validators.ts. A dedicated class
  * lets callers (e.g. a future P16 verification layer, or a P7 gate on
@@ -53,6 +54,26 @@ export class AuthorizationError extends Error {
   constructor(kind: AuthorizationErrorKind, message: string) {
     super(message);
     this.name = "AuthorizationError";
+    this.kind = kind;
+  }
+}
+
+/**
+ * Available for an EnvironmentAdapter IMPLEMENTATION to throw on a
+ * genuinely unexpected failure (a real bug, a malformed internal state) —
+ * never for an EXPECTED failure mode. Expected failures (object not
+ * found, capability unsupported, not connected, ...) must be returned as
+ * an `EnvironmentOperationResult` with `status: "error"`, exactly like
+ * `ToolError`/`executeTool`: the adapter boundary never throws for
+ * something a well-behaved caller should be able to anticipate and
+ * handle without a try/catch.
+ */
+export class EnvironmentError extends Error {
+  readonly kind: EnvironmentErrorKind;
+
+  constructor(kind: EnvironmentErrorKind, message: string) {
+    super(message);
+    this.name = "EnvironmentError";
     this.kind = kind;
   }
 }
