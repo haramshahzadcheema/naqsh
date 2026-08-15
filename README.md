@@ -374,6 +374,135 @@ work yet either. What it IS: the exact functions a future HTTP handler
 would call directly, already typed against `@naqsh/core`'s real
 observation API, so wiring an actual server later is pure plumbing.
 
+## Planning (P9)
+
+**`WorldModelState` is what is currently known to be true about the
+project. A `Plan` is what NAQSH PROPOSES should happen next. These are
+never merged.** Generating a plan cannot add a requirement, add a
+decision, modify an object, or mark anything complete — none of those are
+things `packages/core/src/planner.ts` (or anything it calls) is even
+capable of, because nothing in the planning files imports
+`updateWorldModel`/`ChangeHistory`/`recordTransition`, an
+`EnvironmentAdapter`, or a concrete `ModelProvider` implementation (all
+enforced as repo-boundaries checks, mirroring P8's identical guards). The
+flow is:
+
+```
+ObservationResult -> ModelRequest -> ModelProvider.generate() ->
+structured output -> shape validation -> id remapping ->
+semantic validation -> Plan
+```
+
+never `WorldModelState -> Plan` directly — `generatePlanProposal` takes an
+already-built `ObservationResult` (P8), the same "observe first" boundary
+P8 established for Gemini. Gemini's output is never automatically
+authoritative: a `status: "success"` `ModelInvocationResult` only proves
+the model's JSON matches `outputSchema`'s SHAPE (`validateStructuredResult`,
+run inside the provider). `generatePlanProposal` adds two more layers
+before anything is called a `Plan`: reassembling the shape into real,
+schema-validated domain objects (`createPlan`/`createPlanStep`/... —
+`assertPlan` and friends, which catch things `ToolValueSchema` can't
+express, like "title must be non-empty"), and `validatePlanSemantics`
+(`packages/core/src/plan-semantics.ts`) — the deterministic check that
+catches a structurally-valid plan referencing a requirement/constraint/
+object/decision id that doesn't exist in the observation it was built
+from, a step dependency on an unknown step, a step that depends on itself,
+or a dependency cycle (DFS over `dependsOn`, cycle-safe by construction —
+no plan can hang generation). A plan that fails either layer is REJECTED
+(`generatePlanProposal` resolves to `{status: "error", error: {kind, message}}`,
+never throws for an expected failure), never silently repaired — a
+hallucinated id is never dropped or guessed-at, it fails validation and
+the whole plan is rejected.
+
+**One `Plan` type, not a parallel "PlanProposal" schema.** The same design
+`Approval` already uses (`status: "pending" -> "approved"`, one type, not
+two): a freshly generated plan is simply a `Plan` with `status:
+"proposed"`. `PlanStatus` (`draft` / `proposed` / `approved` / `executing`
+/ `completed` / `rejected` / `superseded`) and `PlanStepStatus` (`pending`
+/ `in_progress` / `complete` / `blocked` / `skipped`) both define their
+FULL future-compatible range now — `generatePlanProposal` only ever
+produces `"proposed"`/`"pending"`. Nothing decides what to do with a
+proposed plan (approve it, execute it, mark a step complete) — that is
+explicitly P10 (concrete modification proposals) and P11 (the
+observe/reason/propose/approve/execute loop)'s job, not this phase's.
+`Plan.supersedesPlanId`/`version` exist so a future revision mechanism has
+somewhere to record "this plan replaces that one" without a breaking
+schema change; P9 itself never sets `supersedesPlanId` to anything but
+`null`.
+
+**Known vs. assumed vs. unknown vs. proposed — never collapsed into one
+bucket.** A plan step's `relevantRequirementIds`/`relevantConstraintIds`/
+`relevantObjectIds`/`relevantDecisionIds` are the KNOWN category made
+concrete: real ids copied from the `ObservationResult`, checked against it
+by `validatePlanSemantics` — never free text ("based on what we discussed
+earlier..."). `Plan.assumptions` (each with an `id`/`description`/
+`rationale`) is the ASSUMED category: something the plan treats as true
+FOR PLANNING PURPOSES without it being a confirmed project fact — recorded
+once at the plan level and referenced by `PlanStep.assumptionIds`, not
+copy-pasted per step. `Plan.missingInformation` (seeded from the source
+observation's own list, so a gap the World Model already knew about is
+never silently dropped, plus whatever the model additionally identifies)
+and `Plan.unresolvedQuestions` are the UNKNOWN category: real, structural
+gaps and open questions, never fabricated. The PLAN ITSELF — every step —
+is the PROPOSED category: intended engineering work NAQSH suggests, not
+something already decided or already true. The system prompt sent to the
+model (`PLANNING_SYSTEM_INSTRUCTION`, `planner.ts`) states these rules
+explicitly, but the actual enforcement is `validatePlanSemantics`, not the
+model's good behavior.
+
+**Dependencies are a graph, not just a number.** `PlanStep.dependsOn` (a
+list of other step ids in the same plan) is the AUTHORITATIVE dependency
+signal; `PlanStep.order` is a display/sequencing hint only, so a future
+execution loop can eventually run independent steps in parallel instead of
+being forced into one linear sequence. The model assigns its own local
+step/assumption id labels (e.g. `"step-1"`); `generatePlanProposal`
+remaps every one of them to NAQSH's canonical `createId` format before
+constructing the `Plan`, rewriting every `dependsOn`/`assumptionRefs`
+reference to match. A reference that doesn't resolve to one of the
+model's OWN declared ids is passed through UNCHANGED rather than silently
+dropped — dropping it would be exactly the "silently repair fabricated
+model output" the P9 brief forbids; left unresolved, it correctly fails
+`validatePlanSemantics`'s `unknown_dependency`/`unknown_assumption_reference`
+check instead.
+
+**The planning tool.** `createPlanningTool(getState, provider)`
+(`packages/core/src/plan-tool.ts`) is the second agent-facing, PRODUCTION
+`Tool` in this repository (after P8's `observe_project`). Registered and
+executed the normal way; classified `mutation: "suggest"` — the tier
+`AutonomyLevel`'s own doc comment defines as "may also reason/propose
+(still zero mutation)" — `target: "world_model"`, matching
+`observe_project`'s target since planning reasons about World Model data.
+Its handler calls `observeProject` (read) then `generatePlanProposal`
+(pure orchestration over the injected `ModelProvider`) — nothing else. A
+`PlanGenerationResult` error is mapped onto `ToolError`
+(`invalid_input`/`unavailable`/`execution_failure`, by kind), the same
+"never let an internal error class leak past the tool boundary" discipline
+`observation-tool.ts` established for `ObservationError`.
+
+**Inspection.** `packages/core/src/plan-query.ts` provides deterministic,
+read-only query helpers over an already-generated `Plan` —
+`getPlanSummary`/`getPlanStepById`/`getStepDependencies`/
+`getStepDependents`. Unlike `observe-project.ts`'s query functions, none
+of these need a defensive clone-and-freeze step: `createPlan` already
+deep-freezes every `Plan` it returns, so there is no live, World-Model-style
+mutable reference to guard against here.
+
+**API seam.** `apps/api/src/plan-service.ts` mirrors
+`observation-service.ts`'s exact shape: `generateWholeProjectPlan`/
+`generateFocusedPlan`/`generateObjectPlan` (thin pass-throughs composing
+`observeProject` + `generatePlanProposal`) and
+`inspectPlanSummary`/`inspectPlanStep`/`inspectStepDependencies` (thin
+pass-throughs to `plan-query.ts`). Deliberately NOT a running HTTP server,
+for the same reason P8's service isn't one.
+
+**Empty and existing-model projects both work.** Planning does not require
+any `EngineeringObject` to already exist — a from-scratch project
+(`objects: []`) produces a legitimate plan (e.g. clarify requirements,
+select material, draft geometry), and an existing-model project's plan can
+reference real objects/decisions already in the observation. Neither path
+is special-cased in `planner.ts`; both are exercised in
+`planner.test.ts`.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`
@@ -411,7 +540,13 @@ boundary, exactly like any other handler exception. Authorization
 *denials*, environment operation *failures*, and model invocation
 *failures* are all not exceptions at all in the expected case — see
 `AuthorizationDecision.denialReason` (one of fourteen named values),
-`EnvironmentOperationResult.error`, and `ModelInvocationResult.error`.
+`EnvironmentOperationResult.error`, and `ModelInvocationResult.error`. Plan
+generation (P9) follows the same "not an exception" discipline rather than
+adding a seventh throwable class: `generatePlanProposal` resolves to
+`PlanGenerationResult`, `{status: "error", error: {kind, message}}` for
+every expected failure — `invalid_input` / `model_unavailable` /
+`invalid_model_output` / `malformed_plan_shape` /
+`semantic_validation_failed` (`PlanGenerationErrorKind`).
 
 ## What's intentionally not implemented yet
 
@@ -430,12 +565,18 @@ proving the `EnvironmentAdapter` contract works, not simulating a real
 CAD/simulation application; no geometry kernel, no FEA/CFD, no real
 persistence to disk. `FreeCADAdapter` does not exist yet (P12–P14) —
 nothing in `packages/adapters` imports FreeCAD, a Python runtime, or any
-vendor SDK. There is no agent loop, no planner, and no proposal system
-(P9–P11) — P7 only establishes the provider boundary, typed
-request/response contracts, and the validation/permission-respecting path
-from a tool-call intent to `executeTool`; nothing decides what to ask the
-model, when, or what to do with a response, and nothing calls a
-`ModelProvider` outside of tests. `createGeminiModelProvider` has never
+vendor SDK. P9 adds a planner (`generatePlanProposal`) that turns an
+objective + `ObservationResult` into a structured, non-executing `Plan` —
+but there is still no CONCRETE modification proposal system (P10: a Plan
+step is a description of intended work, not yet a specific, executable
+World Model change) and no agent loop (P11: nothing decides WHEN to plan,
+what to do with a `Plan` once generated, how to move it past `status:
+"proposed"`, or wires it into an observe/reason/propose/approve/execute
+cycle). Nothing persists a generated `Plan` across process restarts — no
+`PlanStore` exists yet, matching `ApprovalStore`/`AutonomyGrantStore`'s own
+in-memory-only precedent; a caller holds the `Plan` value `generatePlanProposal`
+returns and decides what to do with it. Outside of tests, nothing calls a
+`ModelProvider` for either observation-adjacent reasoning or planning. `createGeminiModelProvider` has never
 been called against the real Gemini API in this environment — no
 `GEMINI_API_KEY` is configured, and none was faked; treat it as
 implemented-and-typechecked, not verified-against-the-live-service, until

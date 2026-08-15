@@ -513,3 +513,105 @@ describe("P8 observation: read-only, environment-independent, and provider-indep
     }
   });
 });
+
+describe("P9 planning: non-mutating, environment-independent, and provider-implementation-independent", () => {
+  // Mirrors P8's identical guard block above -- planning must be exactly as
+  // structurally incapable of mutating the World Model, touching a concrete
+  // environment, or depending on a concrete model-provider SDK as
+  // observation already is. `planner.ts`/`plan-tool.ts` import the
+  // `ModelProvider` INTERFACE (packages/core/src/model-provider.ts) -- a
+  // provider-agnostic contract this package already owns -- never a
+  // concrete implementation.
+  const planningFiles = [
+    "packages/core/src/planner.ts",
+    "packages/core/src/plan-tool.ts",
+    "packages/core/src/plan-semantics.ts",
+    "packages/core/src/plan-query.ts"
+  ];
+
+  it("planning files never import the World Model WRITE path -- generating a plan cannot mutate WorldModelState", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const relativePath of planningFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- planning must never be able to mutate the World Model`
+        );
+      }
+    }
+  });
+
+  it("planning files never import a concrete model-provider package or @google/genai -- only the provider-agnostic ModelProvider interface", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/
+    ];
+    for (const relativePath of planningFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern} -- planning depends only on the ModelProvider interface`);
+      }
+    }
+  });
+
+  it("planning files never import an EnvironmentAdapter or a concrete adapter package -- planning stays environment-independent", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/adapters["'`]|require\s*\(\s*["'`]@naqsh\/adapters["'`]\s*\)/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of planningFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(
+          contents,
+          pattern,
+          `${relativePath} must not import ${pattern} -- planning never touches a concrete environment or FreeCAD`
+        );
+      }
+    }
+  });
+
+  it("planning files declare no module-level mutable state", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    for (const relativePath of planningFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not declare module-level mutable state`);
+      }
+    }
+  });
+
+  it("no arbitrary code execution in the planning files -- a Plan can never carry an executable action", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of planningFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("apps/api's plan service stays a thin pass-through -- no Gemini or adapter coupling in the API layer either", () => {
+    const relativePath = "apps/api/src/plan-service.ts";
+    if (!existsSync(join(repoRoot, relativePath))) return;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/
+    ];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+    }
+  });
+});

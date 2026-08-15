@@ -52,6 +52,19 @@ import type {
 } from "./model-types.js";
 import { assertObservationResult } from "./validators.js";
 import type { ObservationResult, ObservationResultInput } from "./observation-types.js";
+import { assertPlan, assertPlanAssumption, assertPlanQuestion, assertPlanRisk, assertPlanStep, WorldModelValidationError } from "./validators.js";
+import type {
+  Plan,
+  PlanAssumption,
+  PlanAssumptionInput,
+  PlanInput,
+  PlanQuestion,
+  PlanQuestionInput,
+  PlanRisk,
+  PlanRiskInput,
+  PlanStep,
+  PlanStepInput
+} from "./plan-types.js";
 import type {
   Approval,
   ApprovalInput,
@@ -713,4 +726,111 @@ export function createObservationResult(input: ObservationResultInput): Observat
   };
   assertObservationResult(result);
   return deepFreeze(result);
+}
+
+/** `structuredClone` throws a raw, unclassified `DOMException` ("could not
+ * be cloned") for a non-cloneable value (a function, a Symbol) — leaking
+ * that past this factory would violate the one-error-class-per-layer
+ * convention every other validation failure in this file follows. Cloning
+ * happens before `assertPlanStep`/`assertPlan` run (defaults must be
+ * applied to build the candidate object first), so a clone failure has to
+ * be caught and re-thrown as `WorldModelValidationError` here rather than
+ * relying on the assert call afterward to catch it — by then it's too
+ * late, the throw already escaped. */
+function clonePlanField<T>(value: T, path: string): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    throw new WorldModelValidationError("invalid_shape", `${path} must be JSON-serializable`);
+  }
+}
+
+export function createPlanAssumption(input: PlanAssumptionInput): PlanAssumption {
+  const assumption: PlanAssumption = {
+    id: input.id ?? createId("planasm"),
+    description: input.description,
+    rationale: input.rationale
+  };
+  assertPlanAssumption(assumption);
+  return Object.freeze(assumption);
+}
+
+export function createPlanQuestion(input: PlanQuestionInput): PlanQuestion {
+  const question: PlanQuestion = {
+    id: input.id ?? createId("planq"),
+    question: input.question,
+    reason: input.reason
+  };
+  assertPlanQuestion(question);
+  return Object.freeze(question);
+}
+
+export function createPlanRisk(input: PlanRiskInput): PlanRisk {
+  const risk: PlanRisk = {
+    id: input.id ?? createId("planrisk"),
+    description: input.description,
+    impact: input.impact,
+    severity: input.severity
+  };
+  assertPlanRisk(risk);
+  return Object.freeze(risk);
+}
+
+export function createPlanStep(input: PlanStepInput): PlanStep {
+  const step: PlanStep = {
+    id: input.id ?? createId("planstep"),
+    order: input.order ?? 0,
+    title: input.title,
+    description: input.description,
+    purpose: input.purpose,
+    dependsOn: clonePlanField(input.dependsOn ?? [], "planStep.dependsOn"),
+    inputs: clonePlanField(input.inputs ?? [], "planStep.inputs"),
+    expectedOutputs: clonePlanField(input.expectedOutputs ?? [], "planStep.expectedOutputs"),
+    relevantRequirementIds: clonePlanField(input.relevantRequirementIds ?? [], "planStep.relevantRequirementIds"),
+    relevantConstraintIds: clonePlanField(input.relevantConstraintIds ?? [], "planStep.relevantConstraintIds"),
+    relevantObjectIds: clonePlanField(input.relevantObjectIds ?? [], "planStep.relevantObjectIds"),
+    relevantDecisionIds: clonePlanField(input.relevantDecisionIds ?? [], "planStep.relevantDecisionIds"),
+    verificationIntent: input.verificationIntent ?? null,
+    assumptionIds: clonePlanField(input.assumptionIds ?? [], "planStep.assumptionIds"),
+    status: input.status ?? "pending",
+    metadata: clonePlanField(input.metadata ?? {}, "planStep.metadata")
+  };
+  assertPlanStep(step);
+  return deepFreeze(step);
+}
+
+/**
+ * `structuredClone` before `deepFreeze`, for the exact reason
+ * `createObservationResult` needs it (see that factory's doc comment): a
+ * caller may still hold the arrays/objects passed in `input` and mutate
+ * them after this call returns. Unlike `ObservationResult`, a `Plan` never
+ * holds a live reference into `WorldModelState` in the first place — every
+ * project-entity reference here is an ID string, never an embedded entity
+ * — so there is no analogous "this would freeze the World Model itself"
+ * risk; this is still the right defensive default for a value that claims
+ * to be an immutable, storable record.
+ */
+export function createPlan(input: PlanInput): Plan {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const plan: Plan = {
+    id: input.id ?? createId("plan"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    observationId: input.observationId,
+    objectiveSummary: input.objectiveSummary,
+    status: input.status ?? "proposed",
+    steps: (input.steps ?? []).map((step) => createPlanStep(step)),
+    assumptions: (input.assumptions ?? []).map((assumption) => createPlanAssumption(assumption)),
+    unresolvedQuestions: (input.unresolvedQuestions ?? []).map((question) => createPlanQuestion(question)),
+    risks: (input.risks ?? []).map((risk) => createPlanRisk(risk)),
+    missingInformation: clonePlanField(input.missingInformation ?? [], "plan.missingInformation"),
+    supersedesPlanId: input.supersedesPlanId ?? null,
+    version: input.version ?? 1,
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: clonePlanField(input.metadata ?? {}, "plan.metadata")
+  };
+  assertPlan(plan);
+  return deepFreeze(plan);
 }

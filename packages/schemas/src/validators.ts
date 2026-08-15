@@ -30,6 +30,16 @@ import {
 } from "./model-types.js";
 import { OBSERVATION_SCOPES, type ObservationResult } from "./observation-types.js";
 import {
+  PLAN_RISK_SEVERITIES,
+  PLAN_STATUSES,
+  PLAN_STEP_STATUSES,
+  type Plan,
+  type PlanAssumption,
+  type PlanQuestion,
+  type PlanRisk,
+  type PlanStep
+} from "./plan-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
@@ -1063,6 +1073,112 @@ export function assertObservationResult(value: unknown): asserts value is Observ
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "observationResult.metadata must be a JSON-serializable object"
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPlanStatus(value: unknown): value is (typeof PLAN_STATUSES)[number] {
+  return typeof value === "string" && (PLAN_STATUSES as readonly string[]).includes(value);
+}
+
+function isPlanStepStatus(value: unknown): value is (typeof PLAN_STEP_STATUSES)[number] {
+  return typeof value === "string" && (PLAN_STEP_STATUSES as readonly string[]).includes(value);
+}
+
+function isPlanRiskSeverity(value: unknown): value is (typeof PLAN_RISK_SEVERITIES)[number] {
+  return typeof value === "string" && (PLAN_RISK_SEVERITIES as readonly string[]).includes(value);
+}
+
+export function assertPlanAssumption(value: unknown): asserts value is PlanAssumption {
+  invariant(isPlainObject(value), "plan assumption must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "planAssumption.id is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "planAssumption.description is required");
+  invariant(typeof value.rationale === "string", "planAssumption.rationale must be a string");
+}
+
+export function assertPlanQuestion(value: unknown): asserts value is PlanQuestion {
+  invariant(isPlainObject(value), "plan question must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "planQuestion.id is required");
+  invariant(typeof value.question === "string" && value.question.trim().length > 0, "planQuestion.question is required");
+  invariant(typeof value.reason === "string", "planQuestion.reason must be a string");
+}
+
+export function assertPlanRisk(value: unknown): asserts value is PlanRisk {
+  invariant(isPlainObject(value), "plan risk must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "planRisk.id is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "planRisk.description is required");
+  invariant(typeof value.impact === "string", "planRisk.impact must be a string");
+  invariant(isPlanRiskSeverity(value.severity), "invalid planRisk.severity");
+}
+
+export function assertPlanStep(value: unknown): asserts value is PlanStep {
+  invariant(isPlainObject(value), "plan step must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "planStep.id is required");
+  invariant(typeof value.order === "number" && Number.isInteger(value.order) && value.order >= 0, "planStep.order must be a non-negative integer");
+  invariant(typeof value.title === "string" && value.title.trim().length > 0, "planStep.title is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "planStep.description is required");
+  invariant(
+    typeof value.purpose === "string" && value.purpose.trim().length > 0,
+    "planStep.purpose is required -- an opaque step with no stated reason defeats P9's traceability requirement"
+  );
+  invariant(isStringArray(value.dependsOn), "planStep.dependsOn must be an array of strings");
+  invariant(isStringArray(value.inputs), "planStep.inputs must be an array of strings");
+  invariant(isStringArray(value.expectedOutputs), "planStep.expectedOutputs must be an array of strings");
+  invariant(isStringArray(value.relevantRequirementIds), "planStep.relevantRequirementIds must be an array of strings");
+  invariant(isStringArray(value.relevantConstraintIds), "planStep.relevantConstraintIds must be an array of strings");
+  invariant(isStringArray(value.relevantObjectIds), "planStep.relevantObjectIds must be an array of strings");
+  invariant(isStringArray(value.relevantDecisionIds), "planStep.relevantDecisionIds must be an array of strings");
+  invariant(
+    value.verificationIntent === null || typeof value.verificationIntent === "string",
+    "planStep.verificationIntent must be a string or null"
+  );
+  invariant(isStringArray(value.assumptionIds), "planStep.assumptionIds must be an array of strings");
+  invariant(isPlanStepStatus(value.status), "invalid planStep.status");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "planStep.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertPlan(value: unknown): asserts value is Plan {
+  invariant(isPlainObject(value), "plan must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "plan.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "plan.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "plan.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.observationId === "string" && value.observationId.length > 0, "plan.observationId is required");
+  invariant(typeof value.objectiveSummary === "string", "plan.objectiveSummary must be a string");
+  invariant(isPlanStatus(value.status), "invalid plan.status");
+
+  invariant(Array.isArray(value.steps), "plan.steps must be an array");
+  for (const step of value.steps) assertPlanStep(step);
+  invariant(Array.isArray(value.assumptions), "plan.assumptions must be an array");
+  for (const assumption of value.assumptions) assertPlanAssumption(assumption);
+  invariant(Array.isArray(value.unresolvedQuestions), "plan.unresolvedQuestions must be an array");
+  for (const question of value.unresolvedQuestions) assertPlanQuestion(question);
+  invariant(Array.isArray(value.risks), "plan.risks must be an array");
+  for (const risk of value.risks) assertPlanRisk(risk);
+  invariant(isStringArray(value.missingInformation), "plan.missingInformation must be an array of strings");
+
+  invariant(
+    value.supersedesPlanId === null || (typeof value.supersedesPlanId === "string" && value.supersedesPlanId.length > 0),
+    "plan.supersedesPlanId must be a non-empty string or null"
+  );
+  invariant(
+    typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 1,
+    "plan.version must be a positive integer"
+  );
+  invariant(isEntitySource(value.source), "invalid plan.source");
+  invariant(isIsoTimestamp(value.createdAt), "plan.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "plan.updatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "plan.metadata must be a JSON-serializable object"
   );
 }
 

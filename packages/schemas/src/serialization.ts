@@ -1,6 +1,7 @@
 import type { Approval, AuthorizationDecision, AutonomyGrant, Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
 import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "./environment-types.js";
 import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model-types.js";
+import type { Plan } from "./plan-types.js";
 import {
   assertApproval,
   assertAuthorizationDecision,
@@ -12,6 +13,7 @@ import {
   assertModelInvocationResult,
   assertModelRequest,
   assertModelResponse,
+  assertPlan,
   assertProject,
   assertTool,
   assertToolResult,
@@ -178,6 +180,18 @@ export function deserializeModelResponse(serialized: string): ModelResponse {
   requireNonEmptyString(serialized, "serialized model response is required");
   const parsed: unknown = JSON.parse(serialized);
   assertModelResponse(parsed);
+  return parsed;
+}
+
+export function serializePlan(plan: Plan): string {
+  assertPlan(plan);
+  return JSON.stringify(plan);
+}
+
+export function deserializePlan(serialized: string): Plan {
+  requireNonEmptyString(serialized, "serialized plan is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertPlan(parsed);
   return parsed;
 }
 
