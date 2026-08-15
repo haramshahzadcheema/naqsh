@@ -52,8 +52,19 @@ import type {
 } from "./model-types.js";
 import { assertObservationResult } from "./validators.js";
 import type { ObservationResult, ObservationResultInput } from "./observation-types.js";
-import { assertPlan, assertPlanAssumption, assertPlanQuestion, assertPlanRisk, assertPlanStep, assertProposal, WorldModelValidationError } from "./validators.js";
+import {
+  assertAgentLoopRun,
+  assertExecutionResult,
+  assertPlan,
+  assertPlanAssumption,
+  assertPlanQuestion,
+  assertPlanRisk,
+  assertPlanStep,
+  assertProposal,
+  WorldModelValidationError
+} from "./validators.js";
 import type { Proposal, ProposalInput } from "./proposal-types.js";
+import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import type {
   Plan,
   PlanAssumption,
@@ -420,6 +431,7 @@ export function createApproval(input: ApprovalInput): Approval {
     toolName: input.toolName,
     targetType: input.targetType ?? null,
     targetId: input.targetId ?? null,
+    proposalId: input.proposalId ?? null,
     status: input.status ?? "pending",
     requestedBy: input.requestedBy ?? "agent",
     decidedBy: input.decidedBy ?? null,
@@ -877,4 +889,56 @@ export function createProposal(input: ProposalInput): Proposal {
   };
   assertProposal(proposal);
   return deepFreeze(proposal);
+}
+
+/** `toolResult` is cloned+frozen along with everything else via `deepFreeze`
+ * below, matching `createChange`'s "a recorded fact, not a working draft"
+ * reasoning applied to P11's own execution record. */
+export function createExecutionResult(input: ExecutionResultInput): ExecutionResult {
+  const result: ExecutionResult = {
+    id: input.id ?? createId("execres"),
+    proposalId: input.proposalId,
+    approvalId: input.approvalId ?? null,
+    toolRequestId: input.toolRequestId ?? null,
+    outcome: input.outcome,
+    toolResult: input.toolResult === undefined ? null : safeStructuredClone(input.toolResult, "executionResult.toolResult"),
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "executionResult.metadata")
+  };
+  assertExecutionResult(result);
+  return deepFreeze(result);
+}
+
+/**
+ * Builds the traceable P11 audit record. Every nested entity
+ * (`observationBefore`/`plan`/`proposal`/`approval`/`executionResult`/
+ * `observationAfter`) is ALREADY a validated, frozen value by the time it
+ * reaches this factory (each was built by its own phase's `createX`) --
+ * this factory does not re-validate their internals beyond what
+ * `assertAgentLoopRun` already checks, and does not clone them (they are
+ * already immutable, so there is nothing to defend against here the way
+ * `safeStructuredClone` defends a caller-supplied plain object/array).
+ */
+export function createAgentLoopRun(input: AgentLoopRunInput): AgentLoopRun {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const run: AgentLoopRun = {
+    id: input.id ?? createId("looprun"),
+    projectId: input.projectId,
+    observationBefore: input.observationBefore,
+    plan: input.plan,
+    planStepId: input.planStepId,
+    proposal: input.proposal,
+    approval: input.approval ?? null,
+    executionResult: input.executionResult ?? null,
+    observationAfter: input.observationAfter ?? null,
+    discrepancy: input.discrepancy ?? null,
+    status: input.status ?? "observed",
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "agentLoopRun.metadata")
+  };
+  assertAgentLoopRun(run);
+  return Object.freeze(run);
 }

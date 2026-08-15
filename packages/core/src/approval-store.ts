@@ -1,6 +1,9 @@
 import { AuthorizationError, createApproval, type Approval, type ApprovalInput, type EntitySource } from "@naqsh/schemas";
 
-export type CreateApprovalInput = Pick<ApprovalInput, "toolName" | "targetType" | "targetId" | "reason" | "requestedBy" | "expiresAt" | "metadata">;
+export type CreateApprovalInput = Pick<
+  ApprovalInput,
+  "toolName" | "targetType" | "targetId" | "proposalId" | "reason" | "requestedBy" | "expiresAt" | "metadata"
+>;
 
 /**
  * Deterministic, in-memory store for Approval records — the APPROVED_MODIFY

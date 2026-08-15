@@ -86,6 +86,27 @@ export interface RemoveRelationshipTransition extends BaseTransition<"remove_rel
   relationshipId: string;
 }
 
+/**
+ * P11: patches a single property on an existing `EngineeringObject` --
+ * closes the one write-path gap P1-P10 left open despite `EngineeringObject`
+ * already being creatable (`add_object`) and every OTHER core entity having
+ * an `update_*` transition (`update_requirement`). Without this, Phase 11's
+ * controlled agent loop would have nothing to actually EXECUTE against the
+ * World Model once a proposal is approved.
+ *
+ * `propertyKey`/`value` (not a generic `patch`) deliberately mirrors
+ * `update_requirement`'s shape while matching the exact `modify_object` tool
+ * contract P10's own test fixtures already established
+ * (`registryWithModifyObject` in proposal-generator.test.ts /
+ * proposal-tool.test.ts: `input: { objectId, propertyKey, value }`) -- this
+ * is not a new vocabulary, it is completing one already implied.
+ */
+export interface UpdateObjectTransition extends BaseTransition<"update_object"> {
+  objectId: string;
+  propertyKey: string;
+  value: unknown;
+}
+
 export type ProjectTransition =
   | SetProjectMetadataTransition
   | SetObjectiveTransition
@@ -98,7 +119,8 @@ export type ProjectTransition =
   | AddExperimentTransition
   | AddPreferenceTransition
   | AddRelationshipTransition
-  | RemoveRelationshipTransition;
+  | RemoveRelationshipTransition
+  | UpdateObjectTransition;
 
 export interface ReplaceSessionTransition extends BaseTransition<"replace_session"> {
   session: SessionStateInput;

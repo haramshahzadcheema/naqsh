@@ -759,3 +759,110 @@ describe("P10 proposals: non-mutating, non-executing, and environment-independen
     assert.doesNotMatch(contents, /executeTool\s*\(/, `${relativePath} must not call executeTool -- proposing is not executing`);
   });
 });
+
+describe("P11 agent loop: approval-gated execution, no bypass", () => {
+  // The controlled loop OBSERVE -> REASON -> PROPOSE -> APPROVAL -> EXECUTE
+  // -> OBSERVE finally lets a proposal actually run -- which makes this
+  // phase's structural guards the most safety-critical in the repository.
+  // Every check below proves a specific way the "NO APPROVAL -> NO
+  // MUTATION" invariant could be silently broken, structurally rather than
+  // by convention.
+  const agentLoopFiles = [
+    "packages/core/src/agent-loop.ts",
+    "packages/core/src/proposal-approval.ts",
+    "packages/core/src/modify-object-tool.ts",
+    "packages/core/src/modify-environment-object-tool.ts"
+  ];
+
+  it("agent-loop.ts never imports the World Model write path directly -- every mutation happens inside a registered tool's own handler, never as a shortcut in the orchestrator", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    const relativePath = "packages/core/src/agent-loop.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    for (const forbidden of forbiddenImports) {
+      assert.equal(
+        contents.includes(forbidden),
+        false,
+        `${relativePath} must not import ${forbidden} -- the orchestrator itself must have no independent write path`
+      );
+    }
+  });
+
+  it("agent-loop.ts never calls invokeRegisteredTool directly -- executeTool is the one sanctioned execution boundary", () => {
+    const relativePath = "packages/core/src/agent-loop.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /invokeRegisteredTool\s*\(/, `${relativePath} must not call invokeRegisteredTool directly`);
+    assert.match(contents, /executeTool\s*\(/, `${relativePath} must call executeTool -- that is the one sanctioned execution boundary`);
+  });
+
+  it("agent-loop.ts checks proposal staleness and re-reads the approval's CURRENT status before ever executing", () => {
+    // Structural proxy for "no unsafe execution": if these calls didn't
+    // appear at all, there would be no code path capable of blocking a
+    // stale proposal or a since-revoked approval -- this doesn't prove
+    // correctness (the runtime test suite does), but it proves the
+    // mechanism the runtime tests rely on genuinely exists in source.
+    const relativePath = "packages/core/src/agent-loop.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /isProposalStale\s*\(/, `${relativePath} must check proposal staleness before executing`);
+    assert.match(
+      contents,
+      /approvals\.getById\s*\(/,
+      `${relativePath} must re-read the Approval by id from the ApprovalStore, never trust a run's own stale snapshot`
+    );
+  });
+
+  it("modify-object-tool.ts mutates the World Model only through recordTransition -- it has no direct access to the bare updateWorldModel reducer", () => {
+    const relativePath = "packages/core/src/modify-object-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /recordTransition\s*\(/, `${relativePath} must call recordTransition`);
+    assert.doesNotMatch(
+      contents,
+      /from\s+["'`]\.\/transitions\.js["'`]/,
+      `${relativePath} must not import ./transitions.js directly -- recordTransition is the sole audited write path`
+    );
+  });
+
+  it("modify-environment-object-tool.ts never imports a concrete adapter package or a FreeCAD-specific module -- only the generic EnvironmentAdapter interface", () => {
+    // Matches an actual import/require statement naming a freecad module,
+    // not a doc comment that merely MENTIONS FreeCAD while explaining why
+    // this tool stays generic (which this file's own header deliberately
+    // does) -- the same precision-regex lesson the P8/P9/P10 audits already
+    // applied to `@naqsh/adapters`/`@naqsh/model-providers` mentions in
+    // prose elsewhere in this file.
+    const relativePath = "packages/core/src/modify-environment-object-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    assert.doesNotMatch(
+      contents,
+      /from\s+["'`][^"'`]*freecad[^"'`]*["'`]|require\s*\(\s*["'`][^"'`]*freecad[^"'`]*["'`]\s*\)/i,
+      `${relativePath} must not import a FreeCAD-specific module -- no CAD-specific dependency belongs in core orchestration`
+    );
+  });
+
+  it("no P11 file registers a tool literally named 'execute_proposal' -- proposals execute as themselves (the real named tool), never through a generic execution wrapper", () => {
+    const pattern = /name:\s*["'`]execute_proposal["'`]/;
+    for (const relativePath of agentLoopFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not register a tool named "execute_proposal"`);
+    }
+  });
+
+  it("P11 files declare no module-level mutable state", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    for (const relativePath of agentLoopFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not declare module-level mutable state`);
+      }
+    }
+  });
+
+  it("apps/api's agent-loop service stays a thin pass-through -- no Gemini or adapter coupling in the API layer either", () => {
+    const relativePath = "apps/api/src/agent-loop-service.ts";
+    if (!existsSync(join(repoRoot, relativePath))) return;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [/from\s+["'`]@naqsh\/model-providers["'`]/, /from\s+["'`]@google\/genai["'`]/, /from\s+["'`]@naqsh\/adapters["'`]/];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+    }
+  });
+});

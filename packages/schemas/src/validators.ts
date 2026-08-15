@@ -29,6 +29,7 @@ import {
   type ModelToolDeclaration
 } from "./model-types.js";
 import { OBSERVATION_SCOPES, type ObservationResult } from "./observation-types.js";
+import { AGENT_LOOP_RUN_STATUSES, EXECUTION_OUTCOMES, type AgentLoopRun, type ExecutionResult } from "./agent-loop-types.js";
 import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
@@ -558,6 +559,7 @@ export function assertApproval(value: unknown): asserts value is Approval {
   );
   assertNullableString(value.targetType, "approval.targetType must be a string or null");
   assertNullableString(value.targetId, "approval.targetId must be a string or null");
+  assertNullableString(value.proposalId, "approval.proposalId must be a string or null");
   invariant(isApprovalStatus(value.status), "invalid approval status");
   invariant(isEntitySource(value.requestedBy), "invalid approval requestedBy source");
   invariant(
@@ -1228,6 +1230,77 @@ export function assertProposal(value: unknown): asserts value is Proposal {
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "proposal.metadata must be a JSON-serializable object"
+  );
+}
+
+function isExecutionOutcome(value: unknown): value is (typeof EXECUTION_OUTCOMES)[number] {
+  return typeof value === "string" && (EXECUTION_OUTCOMES as readonly string[]).includes(value);
+}
+
+export function assertExecutionResult(value: unknown): asserts value is ExecutionResult {
+  invariant(isPlainObject(value), "execution result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "executionResult.id is required");
+  invariant(
+    typeof value.proposalId === "string" && value.proposalId.length > 0,
+    "executionResult.proposalId is required"
+  );
+  assertNullableString(value.approvalId, "executionResult.approvalId must be a string or null");
+  assertNullableString(value.toolRequestId, "executionResult.toolRequestId must be a string or null");
+  invariant(isExecutionOutcome(value.outcome), "invalid executionResult.outcome");
+  if (value.outcome === "rejected" || value.outcome === "stale") {
+    invariant(value.toolResult === null, "executionResult.toolResult must be null when outcome is 'rejected' or 'stale'");
+  } else {
+    invariant(
+      value.toolResult !== null,
+      "executionResult.toolResult must be present unless outcome is 'rejected' or 'stale'"
+    );
+    assertToolResult(value.toolResult);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "executionResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "executionResult.completedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "executionResult.metadata must be a JSON-serializable object"
+  );
+}
+
+function isAgentLoopRunStatus(value: unknown): value is (typeof AGENT_LOOP_RUN_STATUSES)[number] {
+  return typeof value === "string" && (AGENT_LOOP_RUN_STATUSES as readonly string[]).includes(value);
+}
+
+function assertLoopDiscrepancy(value: unknown, message: string): void {
+  invariant(value === null || isPlainObject(value), message);
+  if (value === null) return;
+  const record = value as Record<string, unknown>;
+  invariant(typeof record.detected === "boolean", `${message} (detected must be a boolean)`);
+  invariant(typeof record.description === "string", `${message} (description must be a string)`);
+}
+
+export function assertAgentLoopRun(value: unknown): asserts value is AgentLoopRun {
+  invariant(isPlainObject(value), "agent loop run must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "agentLoopRun.id is required");
+  invariant(
+    typeof value.projectId === "string" && value.projectId.length > 0,
+    "agentLoopRun.projectId is required"
+  );
+  assertObservationResult(value.observationBefore);
+  assertPlan(value.plan);
+  invariant(
+    typeof value.planStepId === "string" && value.planStepId.length > 0,
+    "agentLoopRun.planStepId is required"
+  );
+  assertProposal(value.proposal);
+  if (value.approval !== null) assertApproval(value.approval);
+  if (value.executionResult !== null) assertExecutionResult(value.executionResult);
+  if (value.observationAfter !== null) assertObservationResult(value.observationAfter);
+  assertLoopDiscrepancy(value.discrepancy, "agentLoopRun.discrepancy must be a LoopDiscrepancy or null");
+  invariant(isAgentLoopRunStatus(value.status), "invalid agentLoopRun.status");
+  invariant(isEntitySource(value.source), "invalid agentLoopRun.source");
+  invariant(isIsoTimestamp(value.createdAt), "agentLoopRun.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "agentLoopRun.updatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "agentLoopRun.metadata must be a JSON-serializable object"
   );
 }
 

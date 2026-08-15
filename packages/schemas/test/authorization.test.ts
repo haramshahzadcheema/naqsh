@@ -81,6 +81,23 @@ describe("Approval: creation and defaults", () => {
     });
     assert.deepEqual(deserializeApproval(serializeApproval(approval)), approval);
   });
+
+  it("P11: defaults proposalId to null (a generic tool-level approval, not tied to a specific proposal)", () => {
+    const approval = createApproval({ toolName: "modify_parameter" });
+    assert.equal(approval.proposalId, null);
+  });
+
+  it("P11: preserves an explicit proposalId -- this is what lets an approval be tied to the EXACT proposal it authorizes", () => {
+    const approval = createApproval({ toolName: "modify_object", proposalId: "proposal_1" });
+    assert.equal(approval.proposalId, "proposal_1");
+  });
+
+  it("P11: rejects a non-string, non-null proposalId", () => {
+    assert.throws(
+      () => createApproval({ toolName: "x", proposalId: 5 as never }),
+      /approval.proposalId must be a string or null/
+    );
+  });
 });
 
 describe("AutonomyGrant: creation and defaults", () => {

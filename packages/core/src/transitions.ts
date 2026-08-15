@@ -280,6 +280,32 @@ const registry: TransitionRegistry = {
     }),
     resolveForReplay: (transition) => transition
   },
+  update_object: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      objects: project.objects.map((object) =>
+        object.id === transition.objectId
+          ? createEngineeringObject({
+              ...object,
+              properties: { ...object.properties, [transition.propertyKey]: transition.value },
+              id: object.id
+            })
+          : object
+      )
+    }),
+    describeChange: (before, after, transition) => ({
+      entityType: "object",
+      entityId: transition.objectId,
+      before: before.objects.find((object) => object.id === transition.objectId) ?? null,
+      after: after.objects.find((object) => object.id === transition.objectId) ?? null
+    }),
+    // `objectId`/`propertyKey`/`value` are all explicit and createEngineeringObject
+    // never generates a new id when one is already supplied -- always
+    // deterministic as-is, same reasoning as update_requirement.
+    resolveForReplay: (transition) => transition
+  },
   replace_session: {
     target: "session",
     mutates: true,

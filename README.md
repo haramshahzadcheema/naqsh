@@ -601,6 +601,121 @@ invoked by creating a proposal that names it.
 `generatePlanStepProposal`, composing nothing beyond `generateProposal`
 itself.
 
+## Controlled Agent Loop (P11)
+
+**The first complete controlled agent loop:**
+
+```
+OBSERVE -> REASON -> PROPOSE -> APPROVAL -> EXECUTE -> OBSERVE
+```
+
+P11 does not reimplement any of these stages — OBSERVE is P8's
+`observeProject`, REASON is P9's `generatePlanProposal`, and PROPOSE is
+P10's `generateProposal`, all used exactly as those phases built them.
+What P11 adds is genuinely new: an APPROVAL gate tied to the exact
+proposal it authorizes, a real EXECUTE step that runs an approved
+proposal through the SAME `executeTool` boundary every other tool call
+in this repository goes through, and a second, post-execution OBSERVE
+that becomes the basis for what the loop reports — never the model's own
+claim of what it did.
+
+**Two entry points, not one giant function**
+(`packages/core/src/agent-loop.ts`), because human approval is genuinely
+asynchronous:
+
+- `beginAgentLoopRun` — OBSERVE -> REASON -> PROPOSE -> (request) APPROVAL,
+  then stops. Returns an `AgentLoopRun` (below) with status
+  `"awaiting_approval"`, or an earlier failure status if any stage
+  couldn't produce something valid.
+- `resumeAgentLoopRunAfterApproval` — called only after a human (or a
+  future policy) has decided the requested `Approval` via the same
+  `ApprovalStore` P4 already provides. Re-reads that decision itself
+  (never trusts the run's own, necessarily-stale snapshot), then
+  EXECUTE -> OBSERVE.
+
+**The critical invariant: NO APPROVAL -> NO MUTATION.**
+`resumeAgentLoopRunAfterApproval` never calls `executeTool` unless (a) the
+run is genuinely `"awaiting_approval"`, (b) the CURRENT state of the
+referenced `Approval` — re-read from the store — is `"approved"`, (c)
+that approval's own `proposalId` matches this exact proposal (a new P11
+field on `Approval`, additive, defaults `null`; toolName+target alone
+cannot distinguish two different proposals that happen to name the same
+tool and target), and (d) the proposal's `projectVersion` still matches
+the CURRENT World Model version (staleness). Any one of these failing
+routes to a terminal, non-executing status (`"rejected"`/`"stale"`)
+before `executeTool` is ever reached.
+
+**`modify_object`** (`packages/core/src/modify-object-tool.ts`) is this
+repository's FIRST real `mutation: "mutate"` tool — every tool registered
+before P11 (`observe_project`, `create_plan`, `create_proposal`) is
+`"observe"`/`"suggest"`. Its handler calls `recordTransition` (never a
+bare `updateWorldModel`), so every successful call produces a real,
+auditable `Change` (P2) — there is no second, unaudited write path. It
+closes a genuine P1–P10 gap: `EngineeringObject` was creatable
+(`add_object`) but had no update transition, unlike every other core
+entity (`update_requirement`). The new `update_object`
+`WorldModelTransition` (`propertyKey`/`value`, matching the exact
+`modify_object` input shape P10's own test fixtures had already
+established) mirrors `update_requirement` exactly.
+
+**`modify_environment_object`**
+(`packages/core/src/modify-environment-object-tool.ts`) proves a
+proposal can equally target a real `EnvironmentAdapter` (P5/P6), not only
+the World Model — a thin, generic wrapper around
+`EnvironmentAdapter.modifyObject`, callable against the mock CAD
+environment today and, unchanged, against a real `FreeCADAdapter` once
+P12 exists. It deliberately does NOT reconcile the environment's result
+back into `WorldModelState` — mapping an `EnvironmentObjectId` to an
+`EngineeringObject.id` and interpreting raw `EnvironmentProperty` data as
+World Model facts is real, adapter-specific interpretation work
+(`environment-types.ts`'s own header names this as a later phase's job);
+attempting it generically here would mean guessing. This tool proves the
+EXECUTE step can legitimately reach a real environment through the same
+typed/permission boundary every other tool goes through; full
+environment↔World-Model reconciliation remains explicitly deferred (see
+below).
+
+**`AgentLoopRun`** (`packages/schemas/src/agent-loop-types.ts`) is the
+complete, traceable audit record — P11's "CHANGE / AUDIT RECORD"
+requirement made concrete, the same relationship `Change` has to a
+`WorldModelTransition` applied to a whole loop pass. It embeds the REAL
+value each stage produced (an actual `ObservationResult`/`Plan`/
+`Proposal`/`Approval`/`ExecutionResult`, never just an id) — there is no
+`ObservationStore`/`PlanStore`/`ProposalStore` a reference could
+resolve against later (none exist yet, by deliberate P9/P10 design), so
+an id-only reference would be unresolvable the moment the value outlives
+its creating call. A reviewer can reconstruct the entire loop — what was
+observed, what objective was pursued, what was reasoned about, what was
+proposed and why, what approval was requested and by whom it was
+decided, what exactly executed, what the environment/World Model
+reported, and what the post-execution observation showed — from this one
+value.
+
+**"COMMAND SUCCEEDED != OBJECTIVE SATISFIED"** is enforced structurally,
+not aspirationally: `LoopDiscrepancy` (part of `AgentLoopRun`) is computed
+by comparing the proposal's declared target entity between the pre- and
+post-execution `ObservationResult`s — never by re-interpreting
+`Proposal.expectedEffect` prose. A tool that reports `status: "success"`
+while genuinely changing nothing is caught this way, exercised directly
+in `packages/core/test/agent-loop.test.ts`'s CASE F.
+
+**`ExecutionResult.outcome`** is deliberately narrower than the P11
+brief's full illustrative list: `"succeeded" | "failed" | "rejected" |
+"stale"`, omitting `"requested"/"approved"/"started"` (already
+represented by `AgentLoopRun.status`'s own progression, so recording them
+again on `ExecutionResult` would be a second, driftable copy of the same
+axis) and `"partially_completed"` (this architecture's execution
+primitive — one `executeTool` call — is atomic by construction; a
+`ToolResult` is always wholly success or wholly error, so that value
+could never be genuinely reachable, and adding it would be exactly the
+kind of fabricated, unreachable status `ObservationResult.
+missingInformation`'s own precedent forbids).
+
+**API seam.** `apps/api/src/agent-loop-service.ts` mirrors every prior
+phase's service file exactly: two thin pass-throughs
+(`startAgentLoopRun`/`continueAgentLoopRun`), composing nothing beyond
+`beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval` themselves.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`
@@ -652,38 +767,41 @@ every expected failure — `invalid_input` / `model_unavailable` /
 
 ## What's intentionally not implemented yet
 
-No FreeCAD, no real CAD operations, no autonomous agent loop, no approval
-UI, no production authentication, no cloud services, no
+No FreeCAD, no real CAD operations, no full autonomous engineering, no
+approval UI, no production authentication, no cloud services, no
 persistence/database of any kind, no background jobs, no simulation
 engine. `ApprovalStore` and `AutonomyGrantStore` are in-memory only —
 nothing survives a process restart, and the same is true of every
-`EnvironmentAdapter`'s and `ModelProvider`'s state. There is no
-orchestration loop that actually creates approvals, grants autonomy, or
-wires `AuthorizationDecision`s, `EnvironmentOperationResult`s, or
-`ModelInvocationResult`s into a persisted audit trail; P4/P5/P7 provide the
-primitives those would be built from, not the loop itself (that's P11).
-The mock adapters in `packages/adapters` are deliberately simplistic —
-proving the `EnvironmentAdapter` contract works, not simulating a real
-CAD/simulation application; no geometry kernel, no FEA/CFD, no real
-persistence to disk. `FreeCADAdapter` does not exist yet (P12–P14) —
-nothing in `packages/adapters` imports FreeCAD, a Python runtime, or any
-vendor SDK. P9 adds a planner (`generatePlanProposal`) that turns an
-objective + `ObservationResult` into a structured, non-executing `Plan`,
-and P10 adds `generateProposal`, which turns one `Plan` step into a
-concrete, non-executing `Proposal` (a specific proposed `Tool` call) — but
-there is still no agent loop (P11: nothing decides WHEN to plan, when to
-propose, what to do with a `Plan`/`Proposal` once generated, how to move a
-`Proposal` past `status: "proposed"`, or wires any of this into an
-observe/reason/propose/approve/execute cycle) and no approval mechanism
-(a later phase: nothing anywhere lets a human actually approve or reject a
-`Proposal` — `ProposalStatus` defines the shape, nothing populates it
-past `"proposed"`). Nothing persists a generated `Plan` or `Proposal`
-across process restarts — no `PlanStore`/`ProposalStore` exists yet,
-matching `ApprovalStore`/`AutonomyGrantStore`'s own in-memory-only
-precedent; a caller holds the value `generatePlanProposal`/
-`generateProposal` returns and decides what to do with it. Outside of
+`EnvironmentAdapter`'s, `ModelProvider`'s, and now `AgentLoopRun`'s state
+(no `AgentLoopRunStore` exists either — a caller holds the value
+`beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval` returns, matching
+`ApprovalStore`/`AutonomyGrantStore`/the absent `PlanStore`/`ProposalStore`'s
+own in-memory-only precedent). The mock adapters in `packages/adapters`
+are deliberately simplistic — proving the `EnvironmentAdapter` contract
+works, not simulating a real CAD/simulation application; no geometry
+kernel, no FEA/CFD, no real persistence to disk. `FreeCADAdapter` does
+not exist yet (P12–P14) — nothing in `packages/adapters` or
+`packages/core` imports FreeCAD, a Python runtime, or any vendor SDK.
+P11's `modify_environment_object` tool proves the EXECUTE step can reach
+a real `EnvironmentAdapter`, but deliberately does NOT reconcile an
+environment's reported result back into `WorldModelState` — mapping an
+`EnvironmentObjectId` to an `EngineeringObject.id` and interpreting raw
+`EnvironmentProperty` data as World Model facts is real,
+adapter-specific interpretation work (the environment↔World-Model
+reconciliation `environment-types.ts`'s own P5 header names as "a later
+phase's job"); P11 only proves the boundary is real and permission-gated,
+it does not solve interpretation. P11's agent loop is also deliberately
+narrow in scope: it never chooses among multiple plan steps beyond a
+simple, overridable "first pending step" default
+(`selectFirstPendingPlanStep`) — prioritizing among candidate steps is a
+planning concern, not this phase's; it never retries a failed/stale/
+rejected run automatically — a new loop run is simply initiated again by
+the caller; and `LoopDiscrepancy` detection is implemented only for
+`target.entityType === "object"` (the only kind `modify_object`/
+`modify_environment_object` can currently affect) — any other target
+shape is honestly reported as "not checked," never guessed. Outside of
 tests, nothing calls a `ModelProvider` for observation-adjacent reasoning,
-planning, or proposing. `createGeminiModelProvider` has never
+planning, proposing, or the agent loop. `createGeminiModelProvider` has never
 been called against the real Gemini API in this environment — no
 `GEMINI_API_KEY` is configured, and none was faked; treat it as
 implemented-and-typechecked, not verified-against-the-live-service, until

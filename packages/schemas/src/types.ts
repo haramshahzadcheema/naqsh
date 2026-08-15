@@ -666,6 +666,18 @@ export interface Approval {
   toolName: string;
   targetType: string | null;
   targetId: string | null;
+  /** P11: which `Proposal` (P10) this approval was requested for, or `null`
+   * for a generic tool-level approval not tied to a specific proposal (e.g.
+   * a hand-built fixture, or any future non-proposal-driven mutation path).
+   * Additive -- every `Approval` created before P11 implicitly had no
+   * proposal association, and this field defaults to `null` without
+   * changing `evaluateToolAuthorization`'s own tool+target matching
+   * semantics at all. Phase 11's agent-loop layer uses this to enforce
+   * "approval must be associated with the EXACT proposal it was requested
+   * for" on top of (never instead of) P4's existing tool/target
+   * authorization -- toolName+target alone cannot distinguish two different
+   * proposals that happen to name the same tool and target. */
+  proposalId: string | null;
   status: ApprovalStatus;
   /** Who/what asked for this approval (typically "agent"). */
   requestedBy: EntitySource;
@@ -693,6 +705,7 @@ export interface ApprovalInput {
   toolName: string;
   targetType?: string | null;
   targetId?: string | null;
+  proposalId?: string | null;
   status?: ApprovalStatus;
   requestedBy?: EntitySource;
   decidedBy?: EntitySource | null;

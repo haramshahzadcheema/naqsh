@@ -3,7 +3,9 @@ import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession 
 import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model-types.js";
 import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
+import type { AgentLoopRun } from "./agent-loop-types.js";
 import {
+  assertAgentLoopRun,
   assertApproval,
   assertAuthorizationDecision,
   assertAutonomyGrant,
@@ -218,5 +220,17 @@ export function deserializeModelInvocationResult(serialized: string): ModelInvoc
   requireNonEmptyString(serialized, "serialized model invocation result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertModelInvocationResult(parsed);
+  return parsed;
+}
+
+export function serializeAgentLoopRun(run: AgentLoopRun): string {
+  assertAgentLoopRun(run);
+  return JSON.stringify(run);
+}
+
+export function deserializeAgentLoopRun(serialized: string): AgentLoopRun {
+  requireNonEmptyString(serialized, "serialized agent loop run is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertAgentLoopRun(parsed);
   return parsed;
 }

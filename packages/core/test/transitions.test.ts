@@ -155,6 +155,50 @@ describe("updateWorldModel: project transitions increment version and validate",
     assert.equal(updated.project.requirements[0]!.status, "satisfied");
   });
 
+  it("P11: updates a single property on an existing object while keeping the id and other properties stable", () => {
+    const state = buildState();
+    const withObject = updateWorldModel(state, {
+      kind: "add_object",
+      object: createEngineeringObject({ type: "part", name: "Bracket", properties: { thicknessMm: 6 } })
+    });
+    const objectId = withObject.project.objects[0]!.id;
+    const updated = updateWorldModel(withObject, {
+      kind: "update_object",
+      objectId,
+      propertyKey: "material",
+      value: "aluminum_6061"
+    });
+    assert.equal(updated.project.objects[0]!.id, objectId);
+    assert.equal(updated.project.objects[0]!.properties.material, "aluminum_6061");
+    assert.equal(updated.project.objects[0]!.properties.thicknessMm, 6);
+    assert.equal(updated.project.version, withObject.project.version + 1);
+  });
+
+  it("P11: update_object on an unknown objectId is a no-op, not an error -- the tool layer is responsible for rejecting an unknown object before proposing this transition", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, { kind: "update_object", objectId: "does_not_exist", propertyKey: "x", value: 1 });
+    assert.deepEqual(next.project.objects, []);
+  });
+
+  it("P11: getTransitionEntry('update_object').describeChange reports the touched object's before/after state", () => {
+    const state = buildState();
+    const withObject = updateWorldModel(state, {
+      kind: "add_object",
+      object: createEngineeringObject({ type: "part", name: "Bracket", properties: { material: "steel" } })
+    });
+    const objectId = withObject.project.objects[0]!.id;
+    const transition = { kind: "update_object" as const, objectId, propertyKey: "material", value: "aluminum_6061" };
+    const updated = updateWorldModel(withObject, transition);
+    const entry = getTransitionEntry("update_object") as {
+      describeChange: (before: unknown, after: unknown, transition: unknown) => { entityType: string; entityId: string | null; before: unknown; after: unknown };
+    };
+    const description = entry.describeChange(withObject.project, updated.project, transition);
+    assert.equal(description.entityType, "object");
+    assert.equal(description.entityId, objectId);
+    assert.equal((description.before as { properties: { material: string } }).properties.material, "steel");
+    assert.equal((description.after as { properties: { material: string } }).properties.material, "aluminum_6061");
+  });
+
   it("removes a requirement by id", () => {
     const state = buildState();
     const withRequirement = updateWorldModel(state, {
