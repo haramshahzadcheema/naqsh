@@ -208,6 +208,20 @@ describe("ChangeHistory: ordering and appending", () => {
     assert.throws(() => freshHistory.append(second.change), /Change out of order/);
   });
 
+  it("REGRESSION: an out-of-sequence append throws WorldModelValidationError with kind 'invalid_change_sequence'", () => {
+    const producer = createChangeHistory();
+    const first = recordTransition(producer, buildState(), { kind: "observe" });
+    const second = recordTransition(producer, first.state, { kind: "observe" });
+    const freshHistory = createChangeHistory();
+    try {
+      freshHistory.append(second.change);
+      assert.fail("expected append to throw");
+    } catch (error) {
+      assert.ok(error instanceof WorldModelValidationError);
+      assert.equal(error.kind, "invalid_change_sequence");
+    }
+  });
+
   it("rejects appending a duplicate change id", () => {
     const history = createChangeHistory();
     const state = buildState();

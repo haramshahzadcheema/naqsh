@@ -21,7 +21,7 @@ import {
 
 function requireNonEmptyString(value: string, message: string): void {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new WorldModelValidationError(message);
+    throw new WorldModelValidationError("invalid_shape", message);
   }
 }
 

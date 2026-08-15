@@ -19,3 +19,5 @@ export * from "./context-builder.js";
 export * from "./model-tool-declarations.js";
 export * from "./execute-model-tool-call.js";
 export * from "./validate-model-response.js";
+export * from "./observe-project.js";
+export * from "./observation-tool.js";

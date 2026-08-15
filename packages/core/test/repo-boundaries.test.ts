@@ -116,6 +116,19 @@ describe("dependency direction: core depends on schemas, never the reverse", () 
       "packages/core/src/transitions.ts must import transition interfaces from @naqsh/schemas instead of redefining them"
     );
   });
+
+  it("no source file under packages/core/src or packages/schemas/src imports from apps/api or apps/web", () => {
+    // The wrong-direction-import guard this file was otherwise missing
+    // (flagged during the P0-P8 audit): apps consume packages, never the
+    // reverse. Unlikely in practice, but this file guards every OTHER
+    // wrong-direction import explicitly, so this one shouldn't be the sole
+    // silent gap.
+    const forbiddenPattern = /from\s+["'`](\.\.\/)*apps\/(api|web)\//;
+    for (const relativePath of [...listTsFiles("packages/core/src"), ...listTsFiles("packages/schemas/src")]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import from apps/api or apps/web`);
+    }
+  });
 });
 
 describe("P3 tool system: no arbitrary code execution", () => {
@@ -410,6 +423,93 @@ describe("P7 model provider: dependency direction, vendor SDK isolation, and aut
         false,
         `${relativePath} must not combine executeTool with ModelToolCallIntent -- executeModelToolCall is the one sanctioned path`
       );
+    }
+  });
+});
+
+describe("P8 observation: read-only, environment-independent, and provider-independent", () => {
+  const observationFiles = ["packages/core/src/observe-project.ts", "packages/core/src/observation-tool.ts"];
+
+  it("observation files never import the World Model WRITE path -- observation cannot mutate WorldModelState", () => {
+    // The single most important P8 invariant: "An observation operation
+    // must NEVER mutate the World Model." updateWorldModel is the ONLY
+    // function that can produce a new WorldModelState; ChangeHistory/
+    // recordTransition are how a mutation gets audited. If observation
+    // code never imports any of them, it structurally CANNOT mutate
+    // project state, no matter what a future caller does with its output.
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const relativePath of observationFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- observation must never be able to mutate the World Model`
+        );
+      }
+    }
+  });
+
+  it("observation files never import a model-provider package or @google/genai -- Gemini never constructs an observation", () => {
+    // Matches actual import/require statements only, not a doc comment
+    // that merely MENTIONS "ModelProvider"/"ModelResponse" while explaining
+    // the architecture (both files do this deliberately, the same way
+    // several P5/P6/P7 files reference sibling concepts in prose) -- see
+    // the identical reasoning on the "no source file under
+    // packages/core/src imports from @naqsh/adapters" check above.
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/
+    ];
+    for (const relativePath of observationFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern} -- Gemini never constructs an ObservationResult`);
+      }
+    }
+  });
+
+  it("observation files never import an EnvironmentAdapter or a concrete adapter package -- observation stays environment-independent", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/adapters["'`]|require\s*\(\s*["'`]@naqsh\/adapters["'`]\s*\)/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of observationFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(
+          contents,
+          pattern,
+          `${relativePath} must not import ${pattern} -- observation reads WorldModelState only, never a concrete environment`
+        );
+      }
+    }
+  });
+
+  it("observation files declare no module-level mutable state", () => {
+    // No singleton "current project" -- every function takes WorldModelState
+    // as an explicit argument. A module-level `let`/mutable Map/Set would
+    // be exactly the hidden global state the P8 brief forbids.
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    for (const relativePath of observationFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not declare module-level mutable state`);
+      }
+    }
+  });
+
+  it("apps/api's observation service stays a thin pass-through -- no Gemini or adapter coupling in the API layer either", () => {
+    const relativePath = "apps/api/src/observation-service.ts";
+    if (!existsSync(join(repoRoot, relativePath))) return;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/
+    ];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
     }
   });
 });

@@ -50,6 +50,8 @@ import type {
   ModelToolDeclaration,
   ModelToolDeclarationInput
 } from "./model-types.js";
+import { assertObservationResult } from "./validators.js";
+import type { ObservationResult, ObservationResultInput } from "./observation-types.js";
 import type {
   Approval,
   ApprovalInput,
@@ -67,6 +69,8 @@ import type {
   DecisionInput,
   EngineeringObject,
   EngineeringObjectInput,
+  EntityRelationship,
+  EntityRelationshipInput,
   Experiment,
   ExperimentInput,
   Objective,
@@ -96,6 +100,7 @@ import {
   assertConstraint,
   assertDecision,
   assertEngineeringObject,
+  assertEntityRelationship,
   assertExperiment,
   assertObjective,
   assertPreference,
@@ -210,6 +215,22 @@ export function createPreference(input: PreferenceInput = {}): Preference {
   return preference;
 }
 
+export function createEntityRelationship(input: EntityRelationshipInput): EntityRelationship {
+  const relationship: EntityRelationship = {
+    id: input.id ?? createId("rel"),
+    type: input.type,
+    sourceType: input.sourceType,
+    sourceId: input.sourceId,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    source: input.source ?? "system",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertEntityRelationship(relationship);
+  return relationship;
+}
+
 export function createProject(input: ProjectInput = {}): Project {
   const createdAt = input.createdAt ?? toIsoTimestamp();
   const project: Project = {
@@ -223,6 +244,7 @@ export function createProject(input: ProjectInput = {}): Project {
     decisions: (input.decisions ?? []).map((decision) => createDecision(decision)),
     experiments: (input.experiments ?? []).map((experiment) => createExperiment(experiment)),
     preferences: (input.preferences ?? []).map((preference) => createPreference(preference)),
+    relationships: (input.relationships ?? []).map((relationship) => createEntityRelationship(relationship)),
     metadata: input.metadata ?? {},
     version: input.version ?? 1,
     createdAt,
@@ -400,11 +422,22 @@ export function createApproval(input: ApprovalInput): Approval {
 
 /** Defaults `status` to "active" when omitted, for the same reason
  * createApproval defaults to "pending" -- see its doc comment and
- * AutonomyGrantStore. */
+ * AutonomyGrantStore.
+ *
+ * `toolNames` is deep-frozen, not just the top-level `grant` object:
+ * `Object.freeze(grant)` alone leaves the ARRAY `grant.toolNames` points at
+ * fully mutable, and `AutonomyGrantStore` hands out this exact object
+ * reference from `create()`/`getById()`/`list()` with no defensive copy.
+ * Confirmed exploitable during the P0-P8 audit: without this,
+ * `grant.toolNames.push("dangerous_tool")` on a returned grant silently
+ * expands what an ALREADY-ACTIVE autonomy grant authorizes -- no new
+ * Change, no revoke/recreate, nothing for `evaluateAutonomyGrant`
+ * (authorization.ts, which reads `grant.toolNames.includes(...)` directly)
+ * to catch, since it trusts the stored object's own field. */
 export function createAutonomyGrant(input: AutonomyGrantInput): AutonomyGrant {
   const grant: AutonomyGrant = {
     id: input.id ?? createId("grant"),
-    toolNames: [...input.toolNames],
+    toolNames: Object.freeze([...input.toolNames]) as readonly string[] as string[],
     targetType: input.targetType ?? null,
     targetId: input.targetId ?? null,
     status: input.status ?? "active",
@@ -639,4 +672,45 @@ export function createModelProviderDescriptor(input: ModelProviderDescriptorInpu
   };
   assertModelProviderDescriptor(descriptor);
   return Object.freeze(descriptor);
+}
+
+/**
+ * `structuredClone` BEFORE `deepFreeze` (not after, and not skipped) is
+ * load-bearing here, not a style choice. `deepFreeze` alone would freeze
+ * whatever reference it's given -- if that reference is the SAME array
+ * `WorldModelState.project.requirements` already is (which it is: neither
+ * P1's entity factories nor `Project.requirements` itself freeze their
+ * output), freezing it in place would permanently freeze the World
+ * Model's own live array, breaking `updateWorldModel`'s "always start
+ * from a plain, spreadable array" assumption elsewhere. `structuredClone`
+ * breaks the reference FIRST, so `deepFreeze` only ever locks an
+ * independent copy. Confirmed by direct reproduction during the P8 audit:
+ * without this, `observationResult.requirements.push(...)` silently
+ * mutated the source project's requirements array.
+ */
+export function createObservationResult(input: ObservationResultInput): ObservationResult {
+  const result: ObservationResult = {
+    id: input.id ?? createId("obs"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    scope: input.scope,
+    scopeObjectId: input.scopeObjectId ?? null,
+    objectiveSummary: input.objectiveSummary ?? null,
+    requirements: structuredClone(input.requirements ?? []),
+    constraints: structuredClone(input.constraints ?? []),
+    objects: structuredClone(input.objects ?? []),
+    relationships: structuredClone(input.relationships ?? []),
+    decisions: structuredClone(input.decisions ?? []),
+    experiments: structuredClone(input.experiments ?? []),
+    preferences: structuredClone(input.preferences ?? []),
+    focusObjectIds: structuredClone(input.focusObjectIds ?? []),
+    sessionMode: input.sessionMode ?? "idle",
+    missingInformation: structuredClone(input.missingInformation ?? []),
+    ambiguityIndicators: structuredClone(input.ambiguityIndicators ?? []),
+    source: input.source ?? "system",
+    observedAt: input.observedAt ?? toIsoTimestamp(),
+    metadata: structuredClone(input.metadata ?? {})
+  };
+  assertObservationResult(result);
+  return deepFreeze(result);
 }

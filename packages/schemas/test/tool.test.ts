@@ -83,6 +83,44 @@ describe("ToolValueSchema: schema definitions themselves are validated", () => {
       /items.type must be one of/
     );
   });
+
+  it("accepts an explicit nullable flag (P8)", () => {
+    assert.doesNotThrow(() => assertValidToolValueSchema({ type: "string", nullable: true }));
+  });
+
+  it("rejects a non-boolean nullable flag", () => {
+    assert.throws(
+      () => assertValidToolValueSchema({ type: "string", nullable: "yes" as never }),
+      /nullable must be a boolean/
+    );
+  });
+});
+
+describe("matchesToolValueSchema: nullable (P8)", () => {
+  it("accepts null for a schema marked nullable", () => {
+    assert.deepEqual(matchesToolValueSchema({ type: "string", nullable: true }, null), []);
+  });
+
+  it("rejects null for a schema NOT marked nullable -- existing (pre-P8) schemas are unaffected", () => {
+    const errors = matchesToolValueSchema({ type: "string" }, null);
+    assert.notEqual(errors.length, 0);
+  });
+
+  it("still validates the real type when the value is non-null, even on a nullable schema", () => {
+    const errors = matchesToolValueSchema({ type: "string", nullable: true }, 42);
+    assert.notEqual(errors.length, 0);
+  });
+
+  it("nullable composes with object properties", () => {
+    const schema: ToolValueSchema = {
+      type: "object",
+      properties: { scopeObjectId: { type: "string", nullable: true } },
+      required: ["scopeObjectId"]
+    };
+    assert.deepEqual(matchesToolValueSchema(schema, { scopeObjectId: null }), []);
+    assert.deepEqual(matchesToolValueSchema(schema, { scopeObjectId: "obj_1" }), []);
+    assert.notEqual(matchesToolValueSchema(schema, { scopeObjectId: 1 }).length, 0);
+  });
 });
 
 describe("matchesToolValueSchema: validating a VALUE against a schema", () => {

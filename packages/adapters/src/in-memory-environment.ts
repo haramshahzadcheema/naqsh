@@ -57,6 +57,33 @@ export interface InMemoryEnvironmentAdapterOptions {
   now?: () => string;
 }
 
+/** `createEnvironmentObject` only shallow-`Object.freeze`s its return value
+ * (the top-level object itself becomes non-reassignable, but the nested
+ * `properties`/`relationships` arrays and `metadata` object are NOT frozen
+ * or cloned) -- so handing a caller the exact `EnvironmentObject` this
+ * engine has stored in its internal `objects` Map would let
+ * `result.data.properties.push(...)` silently corrupt this adapter's own
+ * ground truth for every future call, not just the caller's local copy.
+ * Applied at every point engine-internal data crosses into a returned
+ * `EnvironmentOperationResult.data` -- the same defensive-clone pattern
+ * `packages/core/src/observe-project.ts` uses for the identical class of
+ * bug on the WorldModelState side. */
+function snapshot<T>(value: T): T {
+  const clone = structuredClone(value);
+  deepFreezeInPlace(clone);
+  return clone;
+}
+
+function deepFreezeInPlace(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreezeInPlace(item);
+    Object.freeze(value);
+  } else if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value)) deepFreezeInPlace(item);
+    Object.freeze(value);
+  }
+}
+
 export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAdapterOptions): EnvironmentAdapter {
   const generateId = options.generateId ?? ((prefix: string) => createId(prefix));
   const now = options.now ?? (() => toIsoTimestamp());
@@ -200,7 +227,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     async listObjects(session) {
       const guard = requireConnected(session, "list_objects");
       if (guard) return guard;
-      return success("list_objects", session.id, null, Array.from(objects.values()));
+      return success("list_objects", session.id, null, snapshot(Array.from(objects.values())));
     },
 
     async inspectObject(session, objectId) {
@@ -210,7 +237,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (!object) {
         return failure("inspect_object", session.id, objectId, "object_not_found", `No object with id "${objectId}"`);
       }
-      return success("inspect_object", session.id, objectId, object);
+      return success("inspect_object", session.id, objectId, snapshot(object));
     },
 
     async createObject(session, input) {
@@ -232,7 +259,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
         return failure("create_object", session.id, null, "invalid_operation", built.message);
       }
       objects.set(built.id, built);
-      return success("create_object", session.id, built.id, built);
+      return success("create_object", session.id, built.id, snapshot(built));
     },
 
     async modifyObject(session, objectId, changes) {
@@ -267,7 +294,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
         return failure("modify_object", session.id, objectId, "invalid_operation", built.message);
       }
       objects.set(objectId, built);
-      return success("modify_object", session.id, objectId, built);
+      return success("modify_object", session.id, objectId, snapshot(built));
     },
 
     async deleteObject(session, objectId) {

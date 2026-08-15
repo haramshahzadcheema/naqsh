@@ -15,16 +15,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export function assertValidToolValueSchema(value: unknown, path = "schema"): asserts value is ToolValueSchema {
   if (!isPlainObject(value)) {
-    throw new WorldModelValidationError(`${path} must be an object`);
+    throw new WorldModelValidationError("invalid_shape", `${path} must be an object`);
   }
   if (value.description !== undefined && typeof value.description !== "string") {
-    throw new WorldModelValidationError(`${path}.description must be a string`);
+    throw new WorldModelValidationError("invalid_shape", `${path}.description must be a string`);
+  }
+  if (value.nullable !== undefined && typeof value.nullable !== "boolean") {
+    throw new WorldModelValidationError("invalid_shape", `${path}.nullable must be a boolean`);
   }
   switch (value.type) {
     case "string": {
       if (value.enum !== undefined) {
         if (!Array.isArray(value.enum) || !value.enum.every((item) => typeof item === "string")) {
-          throw new WorldModelValidationError(`${path}.enum must be an array of strings`);
+          throw new WorldModelValidationError("invalid_shape", `${path}.enum must be an array of strings`);
         }
       }
       return;
@@ -39,28 +42,29 @@ export function assertValidToolValueSchema(value: unknown, path = "schema"): ass
     }
     case "object": {
       if (!isPlainObject(value.properties)) {
-        throw new WorldModelValidationError(`${path}.properties must be an object`);
+        throw new WorldModelValidationError("invalid_shape", `${path}.properties must be an object`);
       }
       for (const [key, propertySchema] of Object.entries(value.properties)) {
         assertValidToolValueSchema(propertySchema, `${path}.properties.${key}`);
       }
       if (value.required !== undefined) {
         if (!Array.isArray(value.required) || !value.required.every((item) => typeof item === "string")) {
-          throw new WorldModelValidationError(`${path}.required must be an array of strings`);
+          throw new WorldModelValidationError("invalid_shape", `${path}.required must be an array of strings`);
         }
         for (const key of value.required) {
           if (!(key in value.properties)) {
-            throw new WorldModelValidationError(`${path}.required references unknown property "${key}"`);
+            throw new WorldModelValidationError("invalid_shape", `${path}.required references unknown property "${key}"`);
           }
         }
       }
       if (value.additionalProperties !== undefined && typeof value.additionalProperties !== "boolean") {
-        throw new WorldModelValidationError(`${path}.additionalProperties must be a boolean`);
+        throw new WorldModelValidationError("invalid_shape", `${path}.additionalProperties must be a boolean`);
       }
       return;
     }
     default:
       throw new WorldModelValidationError(
+        "invalid_shape",
         `${path}.type must be one of string, number, boolean, null, array, object`
       );
   }
@@ -73,6 +77,9 @@ export function assertValidToolValueSchema(value: unknown, path = "schema"): ass
  * malformed call at once, not one at a time across retries.
  */
 export function matchesToolValueSchema(schema: ToolValueSchema, value: unknown, path = "value"): string[] {
+  if (schema.nullable && value === null) {
+    return [];
+  }
   switch (schema.type) {
     case "string": {
       if (typeof value !== "string") return [`${path} must be a string`];
@@ -115,7 +122,7 @@ export function matchesToolValueSchema(schema: ToolValueSchema, value: unknown, 
     }
     default: {
       const exhaustiveCheck: never = schema;
-      throw new WorldModelValidationError(`Unsupported tool value schema type: ${JSON.stringify(exhaustiveCheck)}`);
+      throw new WorldModelValidationError("invalid_shape", `Unsupported tool value schema type: ${JSON.stringify(exhaustiveCheck)}`);
     }
   }
 }
@@ -123,6 +130,6 @@ export function matchesToolValueSchema(schema: ToolValueSchema, value: unknown, 
 export function assertMatchesToolValueSchema(schema: ToolValueSchema, value: unknown, path = "value"): void {
   const errors = matchesToolValueSchema(schema, value, path);
   if (errors.length > 0) {
-    throw new WorldModelValidationError(errors.join("; "));
+    throw new WorldModelValidationError("invalid_shape", errors.join("; "));
   }
 }

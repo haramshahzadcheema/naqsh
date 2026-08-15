@@ -80,6 +80,36 @@ describe("Mock environment: deterministic initialization and inspection", () => 
     assert.equal(serialNumber?.readOnly, true);
     assert.equal(status?.readOnly, false);
   });
+
+  it("REGRESSION: mutating an inspected/listed object cannot leak back into the adapter's own state", async () => {
+    // Confirmed exploitable during the P0-P8 audit: inspectObject/listObjects
+    // returned the exact EnvironmentObject reference stored in this engine's
+    // internal Map (createEnvironmentObject only shallow-freezes -- the
+    // nested properties/relationships arrays and metadata were never
+    // cloned), so result.data.properties.push(...) silently corrupted the
+    // adapter's ground truth for every future call.
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    const inspected = (await adapter.inspectObject(session, "widget_a")).data as EnvironmentObject;
+    assert.throws(() => {
+      (inspected.properties as unknown[]).push({ key: "injected", value: "evil", readOnly: false });
+    }, TypeError);
+    assert.throws(() => {
+      (inspected.metadata as Record<string, unknown>).injected = "evil";
+    }, TypeError);
+
+    const listed = (await adapter.listObjects(session)).data as EnvironmentObject[];
+    assert.throws(() => {
+      (listed as unknown[]).push({});
+    }, TypeError);
+
+    const reinspected = (await adapter.inspectObject(session, "widget_a")).data as EnvironmentObject;
+    assert.equal(
+      reinspected.properties.some((property) => property.key === "injected"),
+      false,
+      "the adapter's internal state must be completely unaffected by any attempted mutation above"
+    );
+  });
 });
 
 describe("Mock environment: object creation and modification", () => {

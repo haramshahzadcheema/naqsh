@@ -2,6 +2,7 @@ import type {
   ConstraintInput,
   DecisionInput,
   EngineeringObjectInput,
+  EntityRelationshipInput,
   ExperimentInput,
   ObjectiveInput,
   PreferenceInput,
@@ -70,6 +71,21 @@ export interface AddPreferenceTransition extends BaseTransition<"add_preference"
   preference: PreferenceInput;
 }
 
+/** P8: links two existing entities (e.g. "requirement req_1 is
+ * satisfied_by object envobj_2"). Deliberately does not validate that
+ * `sourceId`/`targetId` reference entities that currently exist — the
+ * reducer stays a pure function of its own input, exactly like every other
+ * `add_*` transition never checks cross-entity referential integrity (e.g.
+ * `add_decision` doesn't verify anything either). Dangling references are
+ * a read-time (observation) concern, not a write-time one. */
+export interface AddRelationshipTransition extends BaseTransition<"add_relationship"> {
+  relationship: EntityRelationshipInput;
+}
+
+export interface RemoveRelationshipTransition extends BaseTransition<"remove_relationship"> {
+  relationshipId: string;
+}
+
 export type ProjectTransition =
   | SetProjectMetadataTransition
   | SetObjectiveTransition
@@ -80,7 +96,9 @@ export type ProjectTransition =
   | AddObjectTransition
   | AddDecisionTransition
   | AddExperimentTransition
-  | AddPreferenceTransition;
+  | AddPreferenceTransition
+  | AddRelationshipTransition
+  | RemoveRelationshipTransition;
 
 export interface ReplaceSessionTransition extends BaseTransition<"replace_session"> {
   session: SessionStateInput;

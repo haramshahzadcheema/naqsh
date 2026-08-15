@@ -4,6 +4,7 @@ import {
   assertConstraint,
   assertDecision,
   assertEngineeringObject,
+  assertEntityRelationship,
   assertExperiment,
   assertPreference,
   assertRequirement,
@@ -11,6 +12,7 @@ import {
   createConstraint,
   createDecision,
   createEngineeringObject,
+  createEntityRelationship,
   createExperiment,
   createId,
   createObjective,
@@ -65,6 +67,30 @@ describe("entity factories default and validate", () => {
       () => createRequirement({ description: "x", category: "mass", priority: "urgent" as never }),
       WorldModelValidationError
     );
+  });
+
+  it("REGRESSION: rejects a requirement with a non-JSON-safe metadata value (a function slipping past validation would silently vanish on serialization)", () => {
+    assert.throws(
+      () => createRequirement({ description: "x", category: "mass", metadata: { audit: () => {} } as never }),
+      WorldModelValidationError
+    );
+  });
+
+  it("REGRESSION: rejects a requirement with a non-string, non-null unit (previously typed but never validated)", () => {
+    assert.throws(
+      () => createRequirement({ description: "x", category: "mass", unit: 42 as never }),
+      /requirement.unit must be a string or null/
+    );
+  });
+
+  it("throws WorldModelValidationError with kind 'invalid_shape' for a malformed entity", () => {
+    try {
+      createRequirement({ description: "x", category: "mass", priority: "urgent" as never });
+      assert.fail("expected createRequirement to throw");
+    } catch (error) {
+      assert.ok(error instanceof WorldModelValidationError);
+      assert.equal(error.kind, "invalid_shape");
+    }
   });
 
   it("creates and validates a constraint", () => {
@@ -132,6 +158,61 @@ describe("entity factories default and validate", () => {
   it("rejects an unknown session id", () => {
     assert.throws(() => assertSessionState({ id: "", mode: "idle" }), /session.id is required/);
   });
+
+  it("creates and validates an entity relationship", () => {
+    const relationship = createEntityRelationship({
+      type: "satisfies",
+      sourceType: "object",
+      sourceId: "obj_1",
+      targetType: "requirement",
+      targetId: "req_1"
+    });
+    assertEntityRelationship(relationship);
+    assert.match(relationship.id, /^rel_/);
+    assert.equal(relationship.source, "system");
+  });
+
+  it("rejects an entity relationship with an invalid sourceType", () => {
+    assert.throws(
+      () =>
+        createEntityRelationship({
+          type: "satisfies",
+          sourceType: "freecad_part" as never,
+          sourceId: "x",
+          targetType: "requirement",
+          targetId: "y"
+        }),
+      /invalid entityRelationship.sourceType/
+    );
+  });
+
+  it("rejects an entity relationship with an empty type", () => {
+    assert.throws(
+      () =>
+        createEntityRelationship({
+          type: "",
+          sourceType: "object",
+          sourceId: "x",
+          targetType: "requirement",
+          targetId: "y"
+        }),
+      /entityRelationship.type is required/
+    );
+  });
+
+  it("rejects an entity relationship with an empty targetId", () => {
+    assert.throws(
+      () =>
+        createEntityRelationship({
+          type: "satisfies",
+          sourceType: "object",
+          sourceId: "x",
+          targetType: "requirement",
+          targetId: ""
+        }),
+      /entityRelationship.targetId is required/
+    );
+  });
 });
 
 describe("project composition", () => {
@@ -163,6 +244,47 @@ describe("project composition", () => {
 
   it("rejects an empty serialized payload", () => {
     assert.throws(() => deserializeProject(""), /serialized project is required/);
+  });
+
+  it("defaults relationships to an empty array", () => {
+    const project = createProject({ name: "Bracket Study", description: "x" });
+    assert.deepEqual(project.relationships, []);
+  });
+
+  it("builds a project with relationships linking a requirement and an object", () => {
+    const project = createProject({
+      name: "Bracket Study",
+      description: "x",
+      requirements: [{ id: "req_1", description: "Max mass 350g" }],
+      objects: [{ id: "obj_1", type: "part", name: "Bracket" }],
+      relationships: [{ type: "satisfies", sourceType: "object", sourceId: "obj_1", targetType: "requirement", targetId: "req_1" }]
+    });
+    assert.equal(project.relationships.length, 1);
+    assert.equal(project.relationships[0]?.sourceId, "obj_1");
+  });
+
+  it("rejects a project whose relationships array contains a malformed entry", () => {
+    assert.throws(
+      () =>
+        createProject({
+          name: "x",
+          description: "x",
+          relationships: [{ type: "", sourceType: "object", sourceId: "a", targetType: "requirement", targetId: "b" }]
+        }),
+      /entityRelationship.type is required/
+    );
+  });
+
+  it("round-trips a project WITH relationships through JSON", () => {
+    const project = createProject({
+      name: "Bracket Study",
+      description: "x",
+      requirements: [{ id: "req_1", description: "x" }],
+      objects: [{ id: "obj_1", type: "part", name: "Bracket" }],
+      relationships: [{ type: "satisfies", sourceType: "object", sourceId: "obj_1", targetType: "requirement", targetId: "req_1" }]
+    });
+    const deserialized = deserializeProject(serializeProject(project));
+    assert.deepEqual(deserialized, project);
   });
 });
 

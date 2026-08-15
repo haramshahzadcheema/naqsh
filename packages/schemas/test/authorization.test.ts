@@ -121,6 +121,19 @@ describe("AutonomyGrant: creation and defaults", () => {
     }, TypeError);
   });
 
+  it("REGRESSION: toolNames is deep-frozen, not just the top-level grant -- pushing onto it must not silently expand what the grant authorizes", () => {
+    // Confirmed exploitable during the P0-P8 audit: AutonomyGrantStore hands
+    // out this exact object reference from create()/getById()/list() with no
+    // defensive copy, and evaluateAutonomyGrant reads grant.toolNames.includes(...)
+    // directly -- so an unfrozen array let a caller silently escalate an
+    // already-active grant's scope with no new Change, no revoke/recreate.
+    const grant = createAutonomyGrant({ toolNames: ["safe_tool"] });
+    assert.throws(() => {
+      (grant.toolNames as string[]).push("dangerous_tool");
+    }, TypeError);
+    assert.deepEqual(grant.toolNames, ["safe_tool"]);
+  });
+
   it("round-trips through JSON with full fidelity", () => {
     const grant = createAutonomyGrant({
       toolNames: ["inspect_project", "run_verification"],

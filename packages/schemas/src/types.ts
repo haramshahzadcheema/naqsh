@@ -156,6 +156,66 @@ export interface Preference {
 export type PreferenceInput = Partial<Preference>;
 
 /**
+ * Every "collection" entity kind a `Project` holds an array of — NOT
+ * `project`/`session`/`objective` (singular, non-repeatable concepts that
+ * `ChangeTarget.entityType` covers separately with an intentionally open
+ * string). Closed-but-additive, matching `EntitySource`/`ToolTarget`'s
+ * convention: extend only when a real new collection is added to `Project`.
+ * Introduced in P8 to give `EntityRelationship`'s source/target real type
+ * safety without reusing `ChangeTarget` (whose openness exists for a
+ * different reason — auditing an arbitrary Change, not typing a
+ * traversable relationship).
+ */
+export type EntityKind = "requirement" | "constraint" | "object" | "decision" | "experiment" | "preference";
+
+export const ENTITY_KINDS: readonly EntityKind[] = [
+  "requirement",
+  "constraint",
+  "object",
+  "decision",
+  "experiment",
+  "preference"
+];
+
+/**
+ * A first-class, queryable link between two World Model entities — e.g.
+ * "requirement req_1 is satisfied_by object envobj_2". Deliberately
+ * SEPARATE from `EngineeringObject.relationships` (P1, still intentionally
+ * `unknown[]`): that field is reserved for CAD/domain-specific structural
+ * facts an environment adapter reports (mates, joints, assembly
+ * containment — P12+), while `EntityRelationship` is NAQSH's own
+ * traceability concept (why a requirement, object, decision, or experiment
+ * matters to another) and never touches an `EnvironmentAdapter`. `type` is
+ * a freeform label (not a closed enum) — matching `EnvironmentRelationship`
+ * (P5) — because NAQSH does not prescribe a fixed relationship vocabulary;
+ * a caller (a tool, eventually a planner) chooses meaningful labels like
+ * "satisfies", "affects", "informed_by", "tested_by".
+ */
+export interface EntityRelationship {
+  id: string;
+  type: string;
+  sourceType: EntityKind;
+  sourceId: string;
+  targetType: EntityKind;
+  targetId: string;
+  source: EntitySource;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface EntityRelationshipInput {
+  id?: string;
+  type: string;
+  sourceType: EntityKind;
+  sourceId: string;
+  targetType: EntityKind;
+  targetId: string;
+  source?: EntitySource;
+  createdAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * The Project is the source of truth for a single engineering effort. It
  * deliberately has NO required geometry/objects — a from-scratch project
  * (no CAD yet, only intent) and an existing-CAD project are the same shape;
@@ -173,6 +233,7 @@ export interface Project {
   decisions: Decision[];
   experiments: Experiment[];
   preferences: Preference[];
+  relationships: EntityRelationship[];
   metadata: Record<string, unknown>;
   version: number;
   createdAt: string;
@@ -190,6 +251,7 @@ export interface ProjectInput {
   decisions?: DecisionInput[];
   experiments?: ExperimentInput[];
   preferences?: PreferenceInput[];
+  relationships?: EntityRelationshipInput[];
   metadata?: Record<string, unknown>;
   version?: number;
   createdAt?: string;
@@ -356,11 +418,22 @@ export interface ChangeInput {
  * to Gemini's function-calling `parameters` field later, unchanged — the
  * JSON-Schema bridge the P2 audit flagged as a future risk is closed by
  * construction rather than deferred again.
+ *
+ * `nullable` (P8): every leaf/array/object schema may additionally accept
+ * `null` on top of its declared `type`. Added when P8's observation tool
+ * became the first real tool needing to describe a field that is
+ * genuinely `T | null` in its underlying schemas type (e.g.
+ * `ObservationResult.scopeObjectId`) — `ToolValueSchema` has no
+ * `oneOf`/union support, so without this a tool author would have to
+ * either mis-describe the field (reject legitimately null data) or drop
+ * accurate typing altogether. Purely additive: omitted/falsy behaves
+ * identically to every schema written before P8.
  */
 export type ToolValueSchemaType = "string" | "number" | "boolean" | "null" | "array" | "object";
 
 interface ToolValueSchemaBase {
   description?: string;
+  nullable?: boolean;
 }
 
 export interface ToolStringSchema extends ToolValueSchemaBase {

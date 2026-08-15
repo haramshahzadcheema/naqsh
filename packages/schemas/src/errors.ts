@@ -1,16 +1,42 @@
 import type { ToolErrorKind } from "./types.js";
 import type { EnvironmentErrorKind } from "./environment-types.js";
 import type { ModelErrorKind } from "./model-types.js";
+import type { ObservationErrorKind } from "./observation-types.js";
 
-/** Thrown by every assert* function in validators.ts. A dedicated class
- * lets callers (e.g. a future P16 verification layer, or a P7 gate on
- * agent-authored state) distinguish "this violates the World Model
- * contract" from any other kind of failure without string-matching a
- * message. */
+/** Every distinct way `WorldModelValidationError` fires, so a caller can
+ * branch on `.kind` instead of string-matching `.message` -- the same
+ * discipline `ToolError`/`AuthorizationError`/`EnvironmentError`/
+ * `ModelError`/`ObservationError` already follow, closing the one
+ * inconsistency the P0-P8 audit found (this was the sole error class in the
+ * repo without a `.kind` discriminator):
+ *   "invalid_shape"           -- an entity, Project, SessionState,
+ *                                 WorldModelState, or ToolValueSchema
+ *                                 doesn't match its structural contract
+ *                                 (every assert* in validators.ts, plus
+ *                                 tool-schema.ts's assertValidToolValueSchema
+ *                                 -- itself the same kind of schemas-layer
+ *                                 assert function, just kept in a separate
+ *                                 file to avoid an import cycle).
+ *   "invalid_transition"      -- updateWorldModel was given an unrecognized
+ *                                 transition.kind, or a transition's own
+ *                                 internal invariant was violated (e.g. an
+ *                                 "add" transition that didn't actually add
+ *                                 anything).
+ *   "invalid_change_sequence" -- a Change (or a whole serialized
+ *                                 ChangeHistory) violates append-only chain
+ *                                 integrity: out-of-order sequence, wrong
+ *                                 parentChangeId, a duplicate id, or a
+ *                                 malformed serialized log.
+ */
+export type WorldModelValidationErrorKind = "invalid_shape" | "invalid_transition" | "invalid_change_sequence";
+
 export class WorldModelValidationError extends Error {
-  constructor(message: string) {
+  readonly kind: WorldModelValidationErrorKind;
+
+  constructor(kind: WorldModelValidationErrorKind, message: string) {
     super(message);
     this.name = "WorldModelValidationError";
+    this.kind = kind;
   }
 }
 
@@ -94,6 +120,30 @@ export class ModelError extends Error {
   constructor(kind: ModelErrorKind, message: string) {
     super(message);
     this.name = "ModelError";
+    this.kind = kind;
+  }
+}
+
+/**
+ * Thrown by `@naqsh/core`'s `observeProject` (P8) for an invalid
+ * OBSERVATION REQUEST — unlike `EnvironmentError`/`ModelError` (internal,
+ * caught by their own boundary before a caller ever sees them),
+ * `ObservationError` DOES surface directly to a caller of `observeProject`,
+ * the same way a malformed `createX` call surfaces
+ * `WorldModelValidationError`: asking to observe a specific, named object
+ * that doesn't exist (`entity_not_found`) or an invalid scope/focus
+ * request is a programmer/caller error at the call site, not a recoverable
+ * runtime condition every caller must branch on. The one place this DOES
+ * get caught and converted into a structured result is the agent-facing
+ * observation tool (`executeTool`'s boundary), exactly like any other
+ * handler exception.
+ */
+export class ObservationError extends Error {
+  readonly kind: ObservationErrorKind;
+
+  constructor(kind: ObservationErrorKind, message: string) {
+    super(message);
+    this.name = "ObservationError";
     this.kind = kind;
   }
 }

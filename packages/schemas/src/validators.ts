@@ -28,11 +28,13 @@ import {
   type ModelToolCallIntent,
   type ModelToolDeclaration
 } from "./model-types.js";
+import { OBSERVATION_SCOPES, type ObservationResult } from "./observation-types.js";
 import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
   CHANGE_CAUSE_KINDS,
+  ENTITY_KINDS,
   TOOL_ERROR_KINDS,
   TOOL_MUTATION_KINDS,
   TOOL_TARGETS,
@@ -46,6 +48,7 @@ import {
   type Constraint,
   type Decision,
   type EngineeringObject,
+  type EntityRelationship,
   type Experiment,
   type Objective,
   type Preference,
@@ -66,11 +69,11 @@ import { WorldModelValidationError } from "./errors.js";
 // The classes themselves live in errors.js, a dependency-free leaf module,
 // specifically so this file and tool-schema.ts can both throw them without
 // an import cycle between the two.
-export { AuthorizationError, EnvironmentError, ModelError, ToolError, WorldModelValidationError } from "./errors.js";
+export { AuthorizationError, EnvironmentError, ModelError, ObservationError, ToolError, WorldModelValidationError } from "./errors.js";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
-    throw new WorldModelValidationError(message);
+    throw new WorldModelValidationError("invalid_shape", message);
   }
 }
 
@@ -111,7 +114,10 @@ export function assertObjective(value: unknown): asserts value is Objective {
   invariant(isPlainObject(value), "objective must be an object");
   invariant(typeof value.summary === "string", "objective.summary must be a string");
   invariant(isEntitySource(value.source), "invalid objective source");
-  invariant(isPlainObject(value.metadata), "objective.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "objective.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertRequirement(value: unknown): asserts value is Requirement {
@@ -122,6 +128,8 @@ export function assertRequirement(value: unknown): asserts value is Requirement 
     typeof value.category === "string" && value.category.length > 0,
     "requirement.category is required"
   );
+  invariant(isJsonSafeValue(value.value), "requirement.value must be JSON-serializable");
+  invariant(value.unit === null || typeof value.unit === "string", "requirement.unit must be a string or null");
   invariant(
     value.priority === "low" || value.priority === "medium" || value.priority === "high",
     "invalid requirement priority"
@@ -134,7 +142,10 @@ export function assertRequirement(value: unknown): asserts value is Requirement 
     "invalid requirement status"
   );
   invariant(isEntitySource(value.source), "invalid requirement source");
-  invariant(isPlainObject(value.metadata), "requirement.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "requirement.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertConstraint(value: unknown): asserts value is Constraint {
@@ -145,6 +156,8 @@ export function assertConstraint(value: unknown): asserts value is Constraint {
     typeof value.category === "string" && value.category.length > 0,
     "constraint.category is required"
   );
+  invariant(isJsonSafeValue(value.value), "constraint.value must be JSON-serializable");
+  invariant(value.unit === null || typeof value.unit === "string", "constraint.unit must be a string or null");
   invariant(value.severity === "hard" || value.severity === "soft", "invalid constraint severity");
   invariant(
     value.status === "active" ||
@@ -154,7 +167,10 @@ export function assertConstraint(value: unknown): asserts value is Constraint {
     "invalid constraint status"
   );
   invariant(isEntitySource(value.source), "invalid constraint source");
-  invariant(isPlainObject(value.metadata), "constraint.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "constraint.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertEngineeringObject(value: unknown): asserts value is EngineeringObject {
@@ -162,9 +178,15 @@ export function assertEngineeringObject(value: unknown): asserts value is Engine
   invariant(typeof value.id === "string" && value.id.length > 0, "object.id is required");
   invariant(typeof value.type === "string" && value.type.length > 0, "object.type is required");
   invariant(typeof value.name === "string", "object.name must be a string");
-  invariant(isPlainObject(value.properties), "object.properties must be an object");
+  invariant(
+    isPlainObject(value.properties) && isJsonSafeValue(value.properties),
+    "object.properties must be a JSON-serializable object"
+  );
   invariant(Array.isArray(value.relationships), "object.relationships must be an array");
-  invariant(isPlainObject(value.metadata), "object.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "object.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertDecision(value: unknown): asserts value is Decision {
@@ -177,7 +199,10 @@ export function assertDecision(value: unknown): asserts value is Decision {
   invariant(typeof value.reason === "string", "decision.reason must be a string");
   invariant(isEntitySource(value.source), "invalid decision source");
   invariant(isIsoTimestamp(value.createdAt), "decision.createdAt must be an ISO timestamp");
-  invariant(isPlainObject(value.metadata), "decision.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "decision.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertExperiment(value: unknown): asserts value is Experiment {
@@ -188,7 +213,7 @@ export function assertExperiment(value: unknown): asserts value is Experiment {
     "experiment.objective is required"
   );
   invariant(typeof value.hypothesis === "string", "experiment.hypothesis must be a string");
-  invariant(Array.isArray(value.inputs), "experiment.inputs must be an array");
+  invariant(Array.isArray(value.inputs) && isJsonSafeValue(value.inputs), "experiment.inputs must be a JSON-serializable array");
   invariant(
     value.status === "planned" ||
       value.status === "running" ||
@@ -197,10 +222,18 @@ export function assertExperiment(value: unknown): asserts value is Experiment {
       value.status === "cancelled",
     "invalid experiment status"
   );
+  invariant(isJsonSafeValue(value.result), "experiment.result must be JSON-serializable");
+  invariant(
+    value.conclusion === null || typeof value.conclusion === "string",
+    "experiment.conclusion must be a string or null"
+  );
   invariant(isEntitySource(value.source), "invalid experiment source");
   invariant(isIsoTimestamp(value.createdAt), "experiment.createdAt must be an ISO timestamp");
   invariant(isIsoTimestamp(value.updatedAt), "experiment.updatedAt must be an ISO timestamp");
-  invariant(isPlainObject(value.metadata), "experiment.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "experiment.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertPreference(value: unknown): asserts value is Preference {
@@ -211,9 +244,39 @@ export function assertPreference(value: unknown): asserts value is Preference {
     typeof value.category === "string" && value.category.length > 0,
     "preference.category is required"
   );
+  invariant(isJsonSafeValue(value.value), "preference.value must be JSON-serializable");
   invariant(isEntitySource(value.source), "invalid preference source");
   invariant(value.status === "active" || value.status === "inactive", "invalid preference status");
-  invariant(isPlainObject(value.metadata), "preference.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "preference.metadata must be a JSON-serializable object"
+  );
+}
+
+function isEntityKind(value: unknown): value is (typeof ENTITY_KINDS)[number] {
+  return typeof value === "string" && (ENTITY_KINDS as readonly string[]).includes(value);
+}
+
+export function assertEntityRelationship(value: unknown): asserts value is EntityRelationship {
+  invariant(isPlainObject(value), "entity relationship must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "entityRelationship.id is required");
+  invariant(typeof value.type === "string" && value.type.length > 0, "entityRelationship.type is required");
+  invariant(isEntityKind(value.sourceType), "invalid entityRelationship.sourceType");
+  invariant(
+    typeof value.sourceId === "string" && value.sourceId.length > 0,
+    "entityRelationship.sourceId is required"
+  );
+  invariant(isEntityKind(value.targetType), "invalid entityRelationship.targetType");
+  invariant(
+    typeof value.targetId === "string" && value.targetId.length > 0,
+    "entityRelationship.targetId is required"
+  );
+  invariant(isEntitySource(value.source), "invalid entityRelationship.source");
+  invariant(isIsoTimestamp(value.createdAt), "entityRelationship.createdAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "entityRelationship.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertProject(value: unknown): asserts value is Project {
@@ -228,19 +291,24 @@ export function assertProject(value: unknown): asserts value is Project {
   invariant(Array.isArray(value.decisions), "project.decisions must be an array");
   invariant(Array.isArray(value.experiments), "project.experiments must be an array");
   invariant(Array.isArray(value.preferences), "project.preferences must be an array");
+  invariant(Array.isArray(value.relationships), "project.relationships must be an array");
   invariant(
     typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 1,
     "project.version must be a positive integer"
   );
   invariant(isIsoTimestamp(value.createdAt), "project.createdAt must be an ISO timestamp");
   invariant(isIsoTimestamp(value.updatedAt), "project.updatedAt must be an ISO timestamp");
-  invariant(isPlainObject(value.metadata), "project.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "project.metadata must be a JSON-serializable object"
+  );
   for (const requirement of value.requirements) assertRequirement(requirement);
   for (const constraint of value.constraints) assertConstraint(constraint);
   for (const object of value.objects) assertEngineeringObject(object);
   for (const decision of value.decisions) assertDecision(decision);
   for (const experiment of value.experiments) assertExperiment(experiment);
   for (const preference of value.preferences) assertPreference(preference);
+  for (const relationship of value.relationships) assertEntityRelationship(relationship);
 }
 
 export function assertSessionState(value: unknown): asserts value is SessionState {
@@ -270,7 +338,10 @@ export function assertSessionState(value: unknown): asserts value is SessionStat
     value.lastObservedAt === null || typeof value.lastObservedAt === "string",
     "session.lastObservedAt must be a string or null"
   );
-  invariant(isPlainObject(value.metadata), "session.metadata must be an object");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "session.metadata must be a JSON-serializable object"
+  );
 }
 
 export function assertWorldModelState(value: unknown): asserts value is WorldModelState {
@@ -921,6 +992,77 @@ export function assertModelProviderDescriptor(value: unknown): asserts value is 
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "modelProviderDescriptor.metadata must be a JSON-serializable object"
+  );
+}
+
+function isObservationScope(value: unknown): value is (typeof OBSERVATION_SCOPES)[number] {
+  return typeof value === "string" && (OBSERVATION_SCOPES as readonly string[]).includes(value);
+}
+
+export function assertObservationResult(value: unknown): asserts value is ObservationResult {
+  invariant(isPlainObject(value), "observation result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "observationResult.id is required");
+  invariant(
+    typeof value.projectId === "string" && value.projectId.length > 0,
+    "observationResult.projectId is required"
+  );
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "observationResult.projectVersion must be a positive integer"
+  );
+  invariant(isObservationScope(value.scope), "invalid observationResult.scope");
+  invariant(
+    value.scopeObjectId === null || typeof value.scopeObjectId === "string",
+    "observationResult.scopeObjectId must be a string or null"
+  );
+  invariant(
+    value.scope === "object" ? typeof value.scopeObjectId === "string" && value.scopeObjectId.length > 0 : true,
+    'observationResult.scopeObjectId is required when scope is "object"'
+  );
+  invariant(
+    value.objectiveSummary === null || typeof value.objectiveSummary === "string",
+    "observationResult.objectiveSummary must be a string or null"
+  );
+
+  invariant(Array.isArray(value.requirements), "observationResult.requirements must be an array");
+  for (const requirement of value.requirements) assertRequirement(requirement);
+  invariant(Array.isArray(value.constraints), "observationResult.constraints must be an array");
+  for (const constraint of value.constraints) assertConstraint(constraint);
+  invariant(Array.isArray(value.objects), "observationResult.objects must be an array");
+  for (const object of value.objects) assertEngineeringObject(object);
+  invariant(Array.isArray(value.relationships), "observationResult.relationships must be an array");
+  for (const relationship of value.relationships) assertEntityRelationship(relationship);
+  invariant(Array.isArray(value.decisions), "observationResult.decisions must be an array");
+  for (const decision of value.decisions) assertDecision(decision);
+  invariant(Array.isArray(value.experiments), "observationResult.experiments must be an array");
+  for (const experiment of value.experiments) assertExperiment(experiment);
+  invariant(Array.isArray(value.preferences), "observationResult.preferences must be an array");
+  for (const preference of value.preferences) assertPreference(preference);
+
+  invariant(
+    Array.isArray(value.focusObjectIds) && value.focusObjectIds.every((id) => typeof id === "string"),
+    "observationResult.focusObjectIds must be an array of strings"
+  );
+  invariant(
+    value.sessionMode === "idle" ||
+      value.sessionMode === "reviewing" ||
+      value.sessionMode === "designing" ||
+      value.sessionMode === "executing",
+    "invalid observationResult.sessionMode"
+  );
+  invariant(
+    Array.isArray(value.missingInformation) && value.missingInformation.every((entry) => typeof entry === "string"),
+    "observationResult.missingInformation must be an array of strings"
+  );
+  invariant(
+    Array.isArray(value.ambiguityIndicators) && value.ambiguityIndicators.every((entry) => typeof entry === "string"),
+    "observationResult.ambiguityIndicators must be an array of strings"
+  );
+  invariant(isEntitySource(value.source), "invalid observationResult.source");
+  invariant(isIsoTimestamp(value.observedAt), "observationResult.observedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "observationResult.metadata must be a JSON-serializable object"
   );
 }
 

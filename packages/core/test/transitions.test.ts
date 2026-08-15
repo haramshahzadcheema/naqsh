@@ -4,6 +4,7 @@ import {
   createConstraint,
   createDecision,
   createEngineeringObject,
+  createEntityRelationship,
   createExperiment,
   createPreference,
   createRequirement,
@@ -85,6 +86,57 @@ describe("updateWorldModel: project transitions increment version and validate",
       preference: createPreference({ description: "Prefer simple geometry", category: "complexity" })
     });
     assert.equal(next.project.preferences.length, 1);
+  });
+
+  it("adds a relationship", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, {
+      kind: "add_relationship",
+      relationship: createEntityRelationship({
+        type: "satisfies",
+        sourceType: "object",
+        sourceId: "obj_1",
+        targetType: "requirement",
+        targetId: "req_1"
+      })
+    });
+    assert.equal(next.project.version, state.project.version + 1);
+    assert.equal(next.project.relationships.length, 1);
+    assert.equal(next.project.relationships[0]?.type, "satisfies");
+  });
+
+  it("removes a relationship by id", () => {
+    const state = buildState();
+    const withRelationship = updateWorldModel(state, {
+      kind: "add_relationship",
+      relationship: createEntityRelationship({
+        type: "satisfies",
+        sourceType: "object",
+        sourceId: "obj_1",
+        targetType: "requirement",
+        targetId: "req_1"
+      })
+    });
+    const relationshipId = withRelationship.project.relationships[0]!.id;
+    const removed = updateWorldModel(withRelationship, { kind: "remove_relationship", relationshipId });
+    assert.equal(removed.project.relationships.length, 0);
+  });
+
+  it("rejects add_relationship with a malformed relationship", () => {
+    assert.throws(
+      () =>
+        updateWorldModel(buildState(), {
+          kind: "add_relationship",
+          relationship: { type: "", sourceType: "object", sourceId: "a", targetType: "requirement", targetId: "b" }
+        }),
+      WorldModelValidationError
+    );
+  });
+
+  it("removing an unknown relationship id is a no-op, not an error", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, { kind: "remove_relationship", relationshipId: "does_not_exist" });
+    assert.equal(next.project.relationships.length, 0);
   });
 
   it("updates a requirement by id while keeping the id stable", () => {

@@ -51,17 +51,19 @@ export function createChangeHistory(): ChangeHistory {
       assertChange(change);
       if (change.sequence !== nextSeq) {
         throw new WorldModelValidationError(
+          "invalid_change_sequence",
           `Change out of order: expected sequence ${nextSeq}, got ${change.sequence}`
         );
       }
       const expectedParentId = changes[changes.length - 1]?.id ?? null;
       if (change.parentChangeId !== expectedParentId) {
         throw new WorldModelValidationError(
+          "invalid_change_sequence",
           `Change has an incorrect parentChangeId: expected ${JSON.stringify(expectedParentId)}, got ${JSON.stringify(change.parentChangeId)}`
         );
       }
       if (byId.has(change.id)) {
-        throw new WorldModelValidationError(`Duplicate change id: ${change.id}`);
+        throw new WorldModelValidationError("invalid_change_sequence", `Duplicate change id: ${change.id}`);
       }
       changes.push(change);
       byId.set(change.id, change);
@@ -84,11 +86,11 @@ export function createChangeHistory(): ChangeHistory {
  * silently trusted. */
 export function deserializeChangeHistory(serialized: string): ChangeHistory {
   if (typeof serialized !== "string" || serialized.trim().length === 0) {
-    throw new WorldModelValidationError("serialized change history is required");
+    throw new WorldModelValidationError("invalid_change_sequence", "serialized change history is required");
   }
   const parsed: unknown = JSON.parse(serialized);
   if (!Array.isArray(parsed)) {
-    throw new WorldModelValidationError("serialized change history must be an array");
+    throw new WorldModelValidationError("invalid_change_sequence", "serialized change history must be an array");
   }
   const history = createChangeHistory();
   for (const raw of parsed) {

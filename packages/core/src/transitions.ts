@@ -4,6 +4,7 @@ import {
   createConstraint,
   createDecision,
   createEngineeringObject,
+  createEntityRelationship,
   createExperiment,
   createObjective,
   createPreference,
@@ -110,7 +111,7 @@ function describeAdd<E extends { id: string }>(
     const array = getArray(after);
     const entity = array[array.length - 1];
     if (!entity) {
-      throw new WorldModelValidationError(`Expected a newly added ${entityType} in the resulting project`);
+      throw new WorldModelValidationError("invalid_transition", `Expected a newly added ${entityType} in the resulting project`);
     }
     return { entityType, entityId: entity.id, before: null, after: entity };
   };
@@ -252,6 +253,33 @@ const registry: TransitionRegistry = {
     describeChange: describeAdd("preference", (project) => project.preferences),
     resolveForReplay: (transition, after) => ({ ...transition, preference: after as never })
   },
+  add_relationship: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      relationships: [...project.relationships, createEntityRelationship(transition.relationship)]
+    }),
+    describeChange: describeAdd("relationship", (project) => project.relationships),
+    resolveForReplay: (transition, after) => ({ ...transition, relationship: after as never })
+  },
+  remove_relationship: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      relationships: project.relationships.filter(
+        (relationship) => relationship.id !== transition.relationshipId
+      )
+    }),
+    describeChange: (before, _after, transition) => ({
+      entityType: "relationship",
+      entityId: transition.relationshipId,
+      before: before.relationships.find((relationship) => relationship.id === transition.relationshipId) ?? null,
+      after: null
+    }),
+    resolveForReplay: (transition) => transition
+  },
   replace_session: {
     target: "session",
     mutates: true,
@@ -322,7 +350,7 @@ export function updateWorldModel(state: WorldModelState, transition: WorldModelT
   assertWorldModelState(state);
 
   if (typeof transition !== "object" || transition === null || typeof transition.kind !== "string") {
-    throw new WorldModelValidationError("transition.kind is required");
+    throw new WorldModelValidationError("invalid_transition", "transition.kind is required");
   }
 
   const entry = registry[transition.kind as TransitionKind] as
@@ -331,7 +359,7 @@ export function updateWorldModel(state: WorldModelState, transition: WorldModelT
     | undefined;
 
   if (!entry) {
-    throw new WorldModelValidationError(`Unsupported transition kind: ${transition.kind}`);
+    throw new WorldModelValidationError("invalid_transition", `Unsupported transition kind: ${transition.kind}`);
   }
 
   if (entry.target === "project") {
