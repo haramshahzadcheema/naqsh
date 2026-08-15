@@ -615,3 +615,147 @@ describe("P9 planning: non-mutating, environment-independent, and provider-imple
     }
   });
 });
+
+describe("P10 proposals: non-mutating, non-executing, and environment-independent", () => {
+  // Mirrors P8/P9's identical guard blocks above -- a Proposal describes
+  // INTENT, never REALITY. Generating one must be exactly as structurally
+  // incapable of mutating the World Model, executing a tool, touching a
+  // concrete environment, or depending on a concrete model-provider SDK as
+  // observation/planning already are.
+  const proposalFiles = ["packages/core/src/proposal-generator.ts", "packages/core/src/proposal-tool.ts", "packages/core/src/proposal-semantics.ts"];
+
+  it("proposal files never import the World Model WRITE path -- generating a proposal cannot mutate WorldModelState", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(
+          contents.includes(forbidden),
+          false,
+          `${relativePath} must not import ${forbidden} -- proposing must never be able to mutate the World Model`
+        );
+      }
+    }
+  });
+
+  it("proposal files never import executeTool/invokeRegisteredTool -- a proposal describes an action, it never invokes one", () => {
+    // The single most important P10 invariant, checked structurally rather
+    // than by convention: PLAN -> PROPOSED CHANGE stops at "proposed" --
+    // PROPOSED CHANGE -> EXECUTION is Phase 11's job. If no P10 file ever
+    // imports the tool-execution boundary, no P10 code path can reach it,
+    // no matter what a future caller does with a generated Proposal.
+    // Matches an actual import statement or function CALL, not a doc
+    // comment that merely MENTIONS either name while explaining this exact
+    // boundary (which every P10 file's own doc comments deliberately do)
+    // -- the same reasoning the `@naqsh/adapters`/`@naqsh/model-providers`
+    // checks elsewhere in this file already apply.
+    const forbiddenPatterns = [/from\s+["'`]\.\/execute-tool\.js["'`]/, /invokeRegisteredTool\s*\(/];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern} -- creating a proposal must never execute it`);
+      }
+    }
+  });
+
+  it("no P10 file defines an approveProposal/rejectProposal/executeProposal function -- approval and execution mechanics belong to later phases", () => {
+    // Proves the "proposed -> executed" transition genuinely cannot happen
+    // through any Phase 10 operation, not just that nothing currently
+    // calls such a function -- the function itself must not exist. Matches
+    // an actual function DEFINITION (name immediately followed by an
+    // opening paren), not a doc comment that merely names the concept
+    // while explaining this exact boundary (every P10 file's own doc
+    // comments deliberately do this, in prose, with no trailing paren).
+    const forbiddenPatterns = [/function\s+approveProposal\s*\(/, /function\s+rejectProposal\s*\(/, /function\s+executeProposal\s*\(/];
+    for (const relativePath of [...proposalFiles, "packages/schemas/src/proposal-types.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not define ${pattern} -- that belongs to a later phase`);
+      }
+    }
+  });
+
+  it("no P10 file registers a tool literally named 'execute_proposal' -- that tool belongs to a later phase", () => {
+    // Matches the specific shape a real registration would take
+    // (`name: "execute_proposal"`, as `createTool`'s own input requires),
+    // not a bare backtick-quoted mention in prose.
+    const pattern = /name:\s*["'`]execute_proposal["'`]/;
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not register a tool named "execute_proposal" -- that belongs to a later phase`);
+    }
+  });
+
+  it("proposal files never import a concrete model-provider package or @google/genai -- only the provider-agnostic ModelProvider interface", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/
+    ];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern} -- proposal generation depends only on the ModelProvider interface`);
+      }
+    }
+  });
+
+  it("proposal files never import an EnvironmentAdapter or a concrete adapter package -- proposals stay environment-independent", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/adapters["'`]|require\s*\(\s*["'`]@naqsh\/adapters["'`]\s*\)/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(
+          contents,
+          pattern,
+          `${relativePath} must not import ${pattern} -- a proposal never touches a concrete environment or FreeCAD`
+        );
+      }
+    }
+  });
+
+  it("proposal files declare no module-level mutable state", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not declare module-level mutable state`);
+      }
+    }
+  });
+
+  it("no arbitrary code execution in the proposal files -- a Proposal can never carry an executable action", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of proposalFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("apps/api's proposal service stays a thin pass-through -- no Gemini, adapter, or tool-execution coupling in the API layer either", () => {
+    const relativePath = "apps/api/src/proposal-service.ts";
+    if (!existsSync(join(repoRoot, relativePath))) return;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/
+    ];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+    }
+    assert.doesNotMatch(contents, /executeTool\s*\(/, `${relativePath} must not call executeTool -- proposing is not executing`);
+  });
+});

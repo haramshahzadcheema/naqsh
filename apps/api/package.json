@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test test/observation-service.test.ts test/plan-service.test.ts",
+    "test": "node --import tsx --test test/observation-service.test.ts test/plan-service.test.ts test/proposal-service.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

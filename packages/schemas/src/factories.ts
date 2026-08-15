@@ -52,7 +52,8 @@ import type {
 } from "./model-types.js";
 import { assertObservationResult } from "./validators.js";
 import type { ObservationResult, ObservationResultInput } from "./observation-types.js";
-import { assertPlan, assertPlanAssumption, assertPlanQuestion, assertPlanRisk, assertPlanStep, WorldModelValidationError } from "./validators.js";
+import { assertPlan, assertPlanAssumption, assertPlanQuestion, assertPlanRisk, assertPlanStep, assertProposal, WorldModelValidationError } from "./validators.js";
+import type { Proposal, ProposalInput } from "./proposal-types.js";
 import type {
   Plan,
   PlanAssumption,
@@ -730,14 +731,16 @@ export function createObservationResult(input: ObservationResultInput): Observat
 
 /** `structuredClone` throws a raw, unclassified `DOMException` ("could not
  * be cloned") for a non-cloneable value (a function, a Symbol) — leaking
- * that past this factory would violate the one-error-class-per-layer
+ * that past a factory would violate the one-error-class-per-layer
  * convention every other validation failure in this file follows. Cloning
- * happens before `assertPlanStep`/`assertPlan` run (defaults must be
- * applied to build the candidate object first), so a clone failure has to
- * be caught and re-thrown as `WorldModelValidationError` here rather than
+ * happens before the corresponding assert* runs (defaults must be applied
+ * to build the candidate object first), so a clone failure has to be
+ * caught and re-thrown as `WorldModelValidationError` here rather than
  * relying on the assert call afterward to catch it — by then it's too
- * late, the throw already escaped. */
-function clonePlanField<T>(value: T, path: string): T {
+ * late, the throw already escaped. Shared by every factory in this file
+ * that needs a defensive independent copy of a caller-supplied
+ * array/object field (`Plan`/`PlanStep`, `Proposal`). */
+function safeStructuredClone<T>(value: T, path: string): T {
   try {
     return structuredClone(value);
   } catch {
@@ -783,17 +786,17 @@ export function createPlanStep(input: PlanStepInput): PlanStep {
     title: input.title,
     description: input.description,
     purpose: input.purpose,
-    dependsOn: clonePlanField(input.dependsOn ?? [], "planStep.dependsOn"),
-    inputs: clonePlanField(input.inputs ?? [], "planStep.inputs"),
-    expectedOutputs: clonePlanField(input.expectedOutputs ?? [], "planStep.expectedOutputs"),
-    relevantRequirementIds: clonePlanField(input.relevantRequirementIds ?? [], "planStep.relevantRequirementIds"),
-    relevantConstraintIds: clonePlanField(input.relevantConstraintIds ?? [], "planStep.relevantConstraintIds"),
-    relevantObjectIds: clonePlanField(input.relevantObjectIds ?? [], "planStep.relevantObjectIds"),
-    relevantDecisionIds: clonePlanField(input.relevantDecisionIds ?? [], "planStep.relevantDecisionIds"),
+    dependsOn: safeStructuredClone(input.dependsOn ?? [], "planStep.dependsOn"),
+    inputs: safeStructuredClone(input.inputs ?? [], "planStep.inputs"),
+    expectedOutputs: safeStructuredClone(input.expectedOutputs ?? [], "planStep.expectedOutputs"),
+    relevantRequirementIds: safeStructuredClone(input.relevantRequirementIds ?? [], "planStep.relevantRequirementIds"),
+    relevantConstraintIds: safeStructuredClone(input.relevantConstraintIds ?? [], "planStep.relevantConstraintIds"),
+    relevantObjectIds: safeStructuredClone(input.relevantObjectIds ?? [], "planStep.relevantObjectIds"),
+    relevantDecisionIds: safeStructuredClone(input.relevantDecisionIds ?? [], "planStep.relevantDecisionIds"),
     verificationIntent: input.verificationIntent ?? null,
-    assumptionIds: clonePlanField(input.assumptionIds ?? [], "planStep.assumptionIds"),
+    assumptionIds: safeStructuredClone(input.assumptionIds ?? [], "planStep.assumptionIds"),
     status: input.status ?? "pending",
-    metadata: clonePlanField(input.metadata ?? {}, "planStep.metadata")
+    metadata: safeStructuredClone(input.metadata ?? {}, "planStep.metadata")
   };
   assertPlanStep(step);
   return deepFreeze(step);
@@ -823,14 +826,55 @@ export function createPlan(input: PlanInput): Plan {
     assumptions: (input.assumptions ?? []).map((assumption) => createPlanAssumption(assumption)),
     unresolvedQuestions: (input.unresolvedQuestions ?? []).map((question) => createPlanQuestion(question)),
     risks: (input.risks ?? []).map((risk) => createPlanRisk(risk)),
-    missingInformation: clonePlanField(input.missingInformation ?? [], "plan.missingInformation"),
+    missingInformation: safeStructuredClone(input.missingInformation ?? [], "plan.missingInformation"),
     supersedesPlanId: input.supersedesPlanId ?? null,
     version: input.version ?? 1,
     source: input.source ?? "agent",
     createdAt,
     updatedAt: input.updatedAt ?? createdAt,
-    metadata: clonePlanField(input.metadata ?? {}, "plan.metadata")
+    metadata: safeStructuredClone(input.metadata ?? {}, "plan.metadata")
   };
   assertPlan(plan);
   return deepFreeze(plan);
+}
+
+/**
+ * `structuredClone` before `deepFreeze`, same reasoning as `createPlan`
+ * above: a caller may still hold `input.target`/`input.metadata`/etc and
+ * mutate them after this call returns, and `Proposal` claims to be an
+ * immutable, storable record. `target` is cloned as a plain spread (rather
+ * than reconstructed via a `createChangeTarget` factory — no such factory
+ * exists; `Change` itself just builds `target` with a bare
+ * `Object.freeze({...input.target})`, see `createChange` above) so this
+ * factory doesn't need to know `ChangeTarget`'s internals beyond what
+ * `assertChangeTarget` already checks; the final `deepFreeze` call below
+ * freezes it along with everything else.
+ */
+export function createProposal(input: ProposalInput): Proposal {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const proposal: Proposal = {
+    id: input.id ?? createId("proposal"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    planId: input.planId,
+    planStepId: input.planStepId,
+    objectiveSummary: input.objectiveSummary,
+    toolName: input.toolName,
+    toolTarget: input.toolTarget,
+    input: safeStructuredClone(input.input ?? {}, "proposal.input"),
+    target: input.target === undefined || input.target === null ? null : safeStructuredClone({ ...input.target }, "proposal.target"),
+    rationale: input.rationale,
+    expectedEffect: input.expectedEffect,
+    relevantRequirementIds: safeStructuredClone(input.relevantRequirementIds ?? [], "proposal.relevantRequirementIds"),
+    relevantConstraintIds: safeStructuredClone(input.relevantConstraintIds ?? [], "proposal.relevantConstraintIds"),
+    status: input.status ?? "proposed",
+    supersedesProposalId: input.supersedesProposalId ?? null,
+    version: input.version ?? 1,
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "proposal.metadata")
+  };
+  assertProposal(proposal);
+  return deepFreeze(proposal);
 }

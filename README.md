@@ -503,6 +503,104 @@ reference real objects/decisions already in the observation. Neither path
 is special-cased in `planner.ts`; both are exercised in
 `planner.test.ts`.
 
+## Proposals (P10)
+
+**PLAN is what NAQSH proposes should happen, at the level of a step. A
+`Proposal` is the concrete, single tool call that would realize one such
+step — the boundary between INTENT and REALITY, drawn one layer more
+precisely than P9's own World-Model-vs-Plan boundary.** The pipeline:
+
+```
+PLAN -> PLAN STEP -> PROPOSAL -> (later, P11) HUMAN APPROVAL -> EXECUTION
+```
+
+P10 implements only `PLAN STEP -> PROPOSAL`. There is no
+`approveProposal`, no `rejectProposal`, no `executeProposal` function
+anywhere in this repository, and no `execute_proposal` tool — all
+structurally guarded by `repo-boundaries.test.ts`'s P10 block, not merely
+by convention. `Proposal.status` defines its full future lifecycle
+(`proposed` / `approved` / `rejected` / `executed` / `superseded`, the
+identical "define the whole enum, only produce a subset now" convention
+`Plan.status` already established) but P10 code only ever produces
+`"proposed"`.
+
+**A `Proposal` is "a specific `Tool` (P3) call NAQSH proposes making, and
+why" — not a bespoke action vocabulary reinvented from scratch.**
+`toolName`/`input` mirror `ToolRequest`'s own shape exactly: the precise
+`{name, arguments}` pair that WOULD be handed to `executeTool` if this
+proposal is ever approved. This is what keeps the abstraction genuinely
+environment-independent, the explicit P10 requirement: a CAD parameter
+edit, a new CAD object, a simulation setup, or a manufacturing operation
+are all just "a call to some registered `Tool`" — P3's `Tool` system
+already IS the generic vocabulary for "an action NAQSH can take," so a
+`Proposal` is a proposed instance of exactly that. `target` reuses
+`ChangeTarget` (P2) — the identical generic "what this acts on" reference
+`Change` already uses for an APPLIED transition, now describing one that
+hasn't applied. `target: null`/`target.entityId: null` is how a proposal
+that would CREATE something new (no id exists yet) is represented — this
+is what makes P10 work for a from-scratch project (`objects: []`)
+without a special case: `packages/core/test/proposal-generator.test.ts`
+exercises exactly this.
+
+**Two validation layers, mirroring P9's exact discipline.** `createProposal`
+(`packages/schemas/src/factories.ts`) + `assertProposal` enforce SHAPE —
+every field present, correctly typed, `input`/`metadata` JSON-safe,
+`rationale`/`expectedEffect` genuinely non-empty (an unexplained proposal
+defeats the entire point of proposing instead of just acting).
+`validateProposalSemantics` (`packages/core/src/proposal-semantics.ts`)
+then enforces MEANING: the proposal's `planId`/`projectId` actually match
+its stated plan, `planStepId` actually names a real step in that plan,
+`relevantRequirementIds`/`relevantConstraintIds` are a SUBSET of what that
+plan step itself already cited (a proposal may narrow, never invent, a new
+one its plan step never vetted), a non-null `target.entityId` was likewise
+already cited by the plan step (when its `entityType` is one `PlanStep`
+tracks relevance for — `object`/`requirement`/`constraint`/`decision`;
+other `entityType`s, e.g. a future environment-specific resource kind, are
+left unchecked here rather than rejected, since `ChangeTarget.entityType`
+is deliberately open-ended), and — when a `ToolRegistry` is supplied —
+`toolName` actually names a registered tool AND `input` actually matches
+that tool's own `inputSchema`. A proposal failing either layer is
+REJECTED, never silently repaired — a hallucinated tool name or a
+parameter shape that wouldn't validate against the real tool's schema is
+never allowed to become a "successful" proposal.
+
+**`generateProposal`** (`packages/core/src/proposal-generator.ts`) is the
+P10 analogue of P9's `generatePlanProposal`: `Plan` + a `PlanStep.id` +
+a `ToolRegistry` (read-only — only `getByName`/`list`, never dispatch) +
+a `ModelProvider` -> `ProposalGenerationResult`
+(`{status:"success", proposal}` or `{status:"error", error:{kind,
+message}}`, never throwing for an expected failure). The model is shown
+the plan step's own content plus a text summary of every registered
+tool's name/description/`inputSchema` (embedded in the instruction, not
+`ModelRequest.tools` — declaring `tools` alongside `outputSchema` would
+risk the model making an actual function-call turn instead of describing
+one) and asked to propose exactly one concrete call. `toolTarget` is
+never trusted from the model — it is DERIVED from the real registered
+`Tool.target` once `toolName` is confirmed to exist, the same "don't ask
+the model to restate what the application already knows authoritatively"
+discipline applied one field further than P9 needed to.
+
+**The proposal tool.** `createProposalTool(registry, provider)`
+(`packages/core/src/proposal-tool.ts`) is the third agent-facing,
+PRODUCTION `Tool` (after P8's `observe_project` and P9's `create_plan`),
+classified `mutation: "suggest"` — the identical tier `create_plan` uses,
+verified end-to-end against the real P4 authorization engine (not just a
+static assertion) in `proposal-tool.test.ts`: allowed at autonomy level
+`"suggest"` or above with no `Approval`/`AutonomyGrant` needed, denied at
+`"observe"`. Unlike `create_plan`, this tool takes no `getState` — a
+`Proposal` is realized from an already-generated `Plan` VALUE the caller
+supplies directly (there is still no `PlanStore`; see P9's own note on
+this deferral), not from live `WorldModelState`. Its handler calls only
+`generateProposal` — never `executeTool`, never `invokeRegisteredTool` —
+confirmed by a dedicated regression test that registers a real
+`modify_object` tool with a call-tracking handler and asserts it is NEVER
+invoked by creating a proposal that names it.
+
+**API seam.** `apps/api/src/proposal-service.ts` mirrors
+`plan-service.ts`'s exact shape: one thin pass-through,
+`generatePlanStepProposal`, composing nothing beyond `generateProposal`
+itself.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`
@@ -546,7 +644,11 @@ adding a seventh throwable class: `generatePlanProposal` resolves to
 `PlanGenerationResult`, `{status: "error", error: {kind, message}}` for
 every expected failure — `invalid_input` / `model_unavailable` /
 `invalid_model_output` / `malformed_plan_shape` /
-`semantic_validation_failed` (`PlanGenerationErrorKind`).
+`semantic_validation_failed` (`PlanGenerationErrorKind`). `generateProposal`
+(P10) follows the identical shape one level down the pipeline —
+`ProposalGenerationResult`, the same five `kind` values
+(`ProposalGenerationErrorKind`), `"invalid_input"` additionally covering a
+`planStepId` that doesn't name a real step in the given plan.
 
 ## What's intentionally not implemented yet
 
@@ -566,17 +668,22 @@ CAD/simulation application; no geometry kernel, no FEA/CFD, no real
 persistence to disk. `FreeCADAdapter` does not exist yet (P12–P14) —
 nothing in `packages/adapters` imports FreeCAD, a Python runtime, or any
 vendor SDK. P9 adds a planner (`generatePlanProposal`) that turns an
-objective + `ObservationResult` into a structured, non-executing `Plan` —
-but there is still no CONCRETE modification proposal system (P10: a Plan
-step is a description of intended work, not yet a specific, executable
-World Model change) and no agent loop (P11: nothing decides WHEN to plan,
-what to do with a `Plan` once generated, how to move it past `status:
-"proposed"`, or wires it into an observe/reason/propose/approve/execute
-cycle). Nothing persists a generated `Plan` across process restarts — no
-`PlanStore` exists yet, matching `ApprovalStore`/`AutonomyGrantStore`'s own
-in-memory-only precedent; a caller holds the `Plan` value `generatePlanProposal`
-returns and decides what to do with it. Outside of tests, nothing calls a
-`ModelProvider` for either observation-adjacent reasoning or planning. `createGeminiModelProvider` has never
+objective + `ObservationResult` into a structured, non-executing `Plan`,
+and P10 adds `generateProposal`, which turns one `Plan` step into a
+concrete, non-executing `Proposal` (a specific proposed `Tool` call) — but
+there is still no agent loop (P11: nothing decides WHEN to plan, when to
+propose, what to do with a `Plan`/`Proposal` once generated, how to move a
+`Proposal` past `status: "proposed"`, or wires any of this into an
+observe/reason/propose/approve/execute cycle) and no approval mechanism
+(a later phase: nothing anywhere lets a human actually approve or reject a
+`Proposal` — `ProposalStatus` defines the shape, nothing populates it
+past `"proposed"`). Nothing persists a generated `Plan` or `Proposal`
+across process restarts — no `PlanStore`/`ProposalStore` exists yet,
+matching `ApprovalStore`/`AutonomyGrantStore`'s own in-memory-only
+precedent; a caller holds the value `generatePlanProposal`/
+`generateProposal` returns and decides what to do with it. Outside of
+tests, nothing calls a `ModelProvider` for observation-adjacent reasoning,
+planning, or proposing. `createGeminiModelProvider` has never
 been called against the real Gemini API in this environment — no
 `GEMINI_API_KEY` is configured, and none was faked; treat it as
 implemented-and-typechecked, not verified-against-the-live-service, until

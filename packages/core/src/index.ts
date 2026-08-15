@@ -25,3 +25,6 @@ export * from "./plan-semantics.js";
 export * from "./planner.js";
 export * from "./plan-tool.js";
 export * from "./plan-query.js";
+export * from "./proposal-semantics.js";
+export * from "./proposal-generator.js";
+export * from "./proposal-tool.js";

@@ -39,6 +39,7 @@ import {
   type PlanRisk,
   type PlanStep
 } from "./plan-types.js";
+import { PROPOSAL_STATUSES, type Proposal } from "./proposal-types.js";
 import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
@@ -1179,6 +1180,54 @@ export function assertPlan(value: unknown): asserts value is Plan {
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "plan.metadata must be a JSON-serializable object"
+  );
+}
+
+function isProposalStatus(value: unknown): value is (typeof PROPOSAL_STATUSES)[number] {
+  return typeof value === "string" && (PROPOSAL_STATUSES as readonly string[]).includes(value);
+}
+
+export function assertProposal(value: unknown): asserts value is Proposal {
+  invariant(isPlainObject(value), "proposal must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "proposal.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "proposal.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "proposal.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.planId === "string" && value.planId.length > 0, "proposal.planId is required");
+  invariant(typeof value.planStepId === "string" && value.planStepId.length > 0, "proposal.planStepId is required");
+  invariant(typeof value.objectiveSummary === "string", "proposal.objectiveSummary must be a string");
+  invariant(typeof value.toolName === "string" && value.toolName.length > 0, "proposal.toolName is required");
+  invariant(isToolTarget(value.toolTarget), "invalid proposal.toolTarget");
+  invariant(isJsonSafeValue(value.input), "proposal.input must be JSON-serializable");
+  if (value.target !== null) assertChangeTarget(value.target);
+  invariant(
+    typeof value.rationale === "string" && value.rationale.trim().length > 0,
+    "proposal.rationale is required -- a proposal with no stated reason cannot be meaningfully reviewed"
+  );
+  invariant(
+    typeof value.expectedEffect === "string" && value.expectedEffect.trim().length > 0,
+    "proposal.expectedEffect is required"
+  );
+  invariant(isStringArray(value.relevantRequirementIds), "proposal.relevantRequirementIds must be an array of strings");
+  invariant(isStringArray(value.relevantConstraintIds), "proposal.relevantConstraintIds must be an array of strings");
+  invariant(isProposalStatus(value.status), "invalid proposal.status");
+  invariant(
+    value.supersedesProposalId === null ||
+      (typeof value.supersedesProposalId === "string" && value.supersedesProposalId.length > 0),
+    "proposal.supersedesProposalId must be a non-empty string or null"
+  );
+  invariant(
+    typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 1,
+    "proposal.version must be a positive integer"
+  );
+  invariant(isEntitySource(value.source), "invalid proposal.source");
+  invariant(isIsoTimestamp(value.createdAt), "proposal.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "proposal.updatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "proposal.metadata must be a JSON-serializable object"
   );
 }
 
