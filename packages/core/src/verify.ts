@@ -84,6 +84,17 @@ function describeExpected(check: Check): unknown {
         maxInclusive: check.maxInclusive,
         unit: check.unit
       };
+    default: {
+      // Audit finding: unlike `evaluate()` below (whose `Outcome` return
+      // type makes a missing switch case a compile error even without this
+      // guard), this function's `unknown` return type would let a FUTURE
+      // CheckKind silently compile with no case here, producing
+      // `expected: undefined` at runtime instead of a build failure --
+      // exactly the risk `tool-schema.ts`'s identical `exhaustiveCheck:
+      // never` pattern already guards against elsewhere in this codebase.
+      const exhaustiveCheck: never = check;
+      throw new Error(`Unsupported check kind: ${JSON.stringify((exhaustiveCheck as { kind: unknown }).kind)}`);
+    }
   }
 }
 
@@ -280,6 +291,10 @@ function evaluate(check: Check, evidence: Evidence, context: EvaluateCheckContex
       return evaluateNumericComparison(check, evidence);
     case "bounds_check":
       return evaluateBoundsCheck(check, evidence);
+    default: {
+      const exhaustiveCheck: never = check;
+      throw new Error(`Unsupported check kind: ${JSON.stringify((exhaustiveCheck as { kind: unknown }).kind)}`);
+    }
   }
 }
 
