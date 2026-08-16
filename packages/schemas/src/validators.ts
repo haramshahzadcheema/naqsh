@@ -51,6 +51,7 @@ import {
   type ObjectiveConditionOutcome,
   type ObjectiveSatisfactionResult
 } from "./objective-satisfaction-types.js";
+import { REQUIREMENT_INTERPRETATION_STATUSES, type RequirementCandidate } from "./requirement-candidate-types.js";
 import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
@@ -1695,6 +1696,76 @@ export function assertObjectiveSatisfactionResult(value: unknown): asserts value
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "objectiveSatisfactionResult.metadata must be a JSON-serializable object"
+  );
+}
+
+function isRequirementInterpretationStatus(value: unknown): value is (typeof REQUIREMENT_INTERPRETATION_STATUSES)[number] {
+  return typeof value === "string" && (REQUIREMENT_INTERPRETATION_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a `RequirementCandidate` -- including the self-contained
+ * invariant Phase 18 exists to enforce: an `"ambiguous"` candidate can
+ * NEVER carry a numeric criterion. This is checked HERE (schema layer),
+ * not merely hoped for from the model's own output, matching this
+ * codebase's "the validator is authoritative, not the caller's good
+ * behavior" discipline (e.g. `assertBoundsCheck`'s identical
+ * self-contained min/max invariant, P16).
+ */
+export function assertRequirementCandidate(value: unknown): asserts value is RequirementCandidate {
+  invariant(isPlainObject(value), "requirement candidate must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "requirementCandidate.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "requirementCandidate.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "requirementCandidate.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.statementText === "string" && value.statementText.trim().length > 0, "requirementCandidate.statementText is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "requirementCandidate.description is required");
+  invariant(typeof value.category === "string" && value.category.trim().length > 0, "requirementCandidate.category is required");
+  invariant(isRequirementInterpretationStatus(value.interpretationStatus), "invalid requirementCandidate.interpretationStatus");
+  invariant(
+    value.operator === null || isNumericComparisonOperator(value.operator),
+    "requirementCandidate.operator must be a valid numeric comparison operator or null"
+  );
+  invariant(
+    value.value === null || (typeof value.value === "number" && Number.isFinite(value.value)),
+    "requirementCandidate.value must be a finite number or null"
+  );
+  assertNullableString(value.unit, "requirementCandidate.unit must be a string or null");
+  if (value.interpretationStatus === "ambiguous") {
+    invariant(value.operator === null, "an ambiguous requirementCandidate must not carry an operator");
+    invariant(value.value === null, "an ambiguous requirementCandidate must not carry a value");
+    invariant(value.unit === null, "an ambiguous requirementCandidate must not carry a unit");
+    invariant(
+      typeof value.ambiguityReason === "string" && value.ambiguityReason.trim().length > 0,
+      "an ambiguous requirementCandidate must carry a non-empty ambiguityReason"
+    );
+  } else {
+    invariant(value.ambiguityReason === null, "a specific requirementCandidate must not carry an ambiguityReason");
+    invariant(
+      value.operator === null || (typeof value.value === "number" && Number.isFinite(value.value)),
+      "a requirementCandidate with an operator must also carry a finite numeric value"
+    );
+    // Symmetric to the check above: a bare number with no operator has no
+    // defined comparison semantics (what does "value: 500" mean without
+    // knowing at-least/at-most/exactly?) and is exactly the kind of
+    // half-structured, unusable "fact" Phase 18 must not let through --
+    // reject it here rather than silently carrying an unexplained number.
+    invariant(
+      value.value === null || value.operator !== null,
+      "a requirementCandidate with a numeric value must also carry an operator"
+    );
+  }
+  invariant(
+    value.priority === "low" || value.priority === "medium" || value.priority === "high",
+    "invalid requirementCandidate.priority"
+  );
+  invariant(isEntitySource(value.source), "invalid requirementCandidate.source");
+  invariant(isIsoTimestamp(value.createdAt), "requirementCandidate.createdAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "requirementCandidate.metadata must be a JSON-serializable object"
   );
 }
 

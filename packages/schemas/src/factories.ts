@@ -88,6 +88,8 @@ import type {
   ObjectiveSatisfactionResult,
   ObjectiveSatisfactionResultInput
 } from "./objective-satisfaction-types.js";
+import { assertRequirementCandidate } from "./validators.js";
+import type { RequirementCandidate, RequirementCandidateInput } from "./requirement-candidate-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -1256,4 +1258,37 @@ export function createObjectiveSatisfactionResult(input: ObjectiveSatisfactionRe
   };
   assertObjectiveSatisfactionResult(result);
   return Object.freeze(result);
+}
+
+/**
+ * Builds a `RequirementCandidate` (P18). Note the defaulting behavior for
+ * `interpretationStatus: "ambiguous"`: `operator`/`value`/`unit` are always
+ * forced to `null` here regardless of what the caller passed, and
+ * `ambiguityReason` is required -- the factory does not TRUST an
+ * "ambiguous" candidate that also claims a numeric criterion, it
+ * NORMALIZES away the criterion (Phase 18's "the validator is
+ * authoritative over the model's output" requirement, applied at
+ * construction time rather than merely rejected after the fact).
+ */
+export function createRequirementCandidate(input: RequirementCandidateInput): RequirementCandidate {
+  const isAmbiguous = input.interpretationStatus === "ambiguous";
+  const candidate: RequirementCandidate = {
+    id: input.id ?? createId("reqcand"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    statementText: input.statementText,
+    description: input.description,
+    category: input.category,
+    operator: isAmbiguous ? null : (input.operator ?? null),
+    value: isAmbiguous ? null : (input.value ?? null),
+    unit: isAmbiguous ? null : (input.unit ?? null),
+    interpretationStatus: input.interpretationStatus,
+    ambiguityReason: isAmbiguous ? (input.ambiguityReason ?? "") : null,
+    priority: input.priority ?? "medium",
+    source: input.source ?? "agent",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "requirementCandidate.metadata")
+  };
+  assertRequirementCandidate(candidate);
+  return Object.freeze(candidate);
 }

@@ -1263,16 +1263,111 @@ to the verdict itself. `evaluateObjectiveSatisfaction` never imports a
 model-provider package or `@google/genai` (enforced structurally, matching
 P16's identical guard).
 
-**Deliberately NOT implemented (P18+ territory).** Natural-language
-requirement extraction that decides WHICH `Check`s are relevant to an
-objective (P18); soft-constraint scoring / multi-objective optimization
-(P23 — `ObjectiveSatisfactionResult`'s structured `conditions` array exists
-specifically so P23 can consume it without this phase changing); nested/nary
-composition trees beyond the flat required/optional split (no real use case
-demanded it yet); recording satisfaction results into the World Model via a
-new transition (not needed — `ObjectiveSatisfactionResult`, like
-`VerificationResult`, is an audit/evaluation record, not project domain
-content).
+**Deliberately NOT implemented (P19+ territory).** Soft-constraint scoring /
+multi-objective optimization (P23 — `ObjectiveSatisfactionResult`'s
+structured `conditions` array exists specifically so P23 can consume it
+without this phase changing); nested/nary composition trees beyond the flat
+required/optional split (no real use case demanded it yet); recording
+satisfaction results into the World Model via a new transition (not needed —
+`ObjectiveSatisfactionResult`, like `VerificationResult`, is an
+audit/evaluation record, not project domain content). Natural-language
+requirement extraction (turning free text into a structured `Requirement`)
+is now covered by P18, below.
+
+## Natural Language Requirement Interpretation (P18)
+
+**What this phase answers.** A user can type "The bracket should support at
+least 500 N." and have NAQSH turn that sentence into a structured,
+inspectable `Requirement` — but only after the sentence has passed through a
+deterministic validation gate. Natural language may *propose* meaning;
+structured state *records* meaning. Gemini may interpret language; Gemini
+may not silently invent facts or make an unsupported requirement
+authoritative.
+
+**Pipeline, kept as distinct stages (never one opaque function):**
+user text → `interpret_requirement` tool (Gemini structured-output request,
+P7 infrastructure, reused unchanged) → raw model JSON → schema validation
+(`assertRequirementCandidate`) → semantic normalization
+(`createRequirementCandidate`) → a `RequirementCandidate` (provenance-tagged,
+NOT yet World Model state) → `add_requirement` tool (deterministic
+acceptance gate) → `recordTransition` with the existing, unmodified
+`add_requirement` `WorldModelTransition` (P1/P2) → a real, audited,
+approval-gated `Requirement`.
+
+**`RequirementCandidate` is a new entity, not a mutated `Requirement`.** It
+mirrors `Proposal`'s (P10) relationship to real state exactly: it
+*describes* an interpreted requirement and is not yet real project state.
+Its `operator` field reuses P16's `NumericComparisonOperator` vocabulary
+(`eq|neq|lt|lte|gt|gte`) directly — no duplicate vocabulary invented. Its
+`interpretationStatus` is either:
+- **`"specific"`** — the statement has a clear, actionable criterion. This
+  covers both numeric-grounded requirements ("at least 500 N" →
+  `operator: "gte", value: 500, unit: "N"`) and qualitative-but-concrete
+  requirements with no numeric shape ("must be easy to manufacture" →
+  `operator/value/unit` all `null`, `category: "manufacturability"`) — the
+  test is "is there a clear criterion," not "is it a number."
+- **`"ambiguous"`** — the statement is too vague to act on ("make it
+  lightweight", "it should be strong enough"). `operator`, `value`, and
+  `unit` are forced to `null` and a non-empty `ambiguityReason` is required
+  — the schema itself rejects an ambiguous candidate carrying a smuggled
+  numeric value, and the factory strips one if a model response tries to
+  supply both.
+
+**Do not hallucinate missing engineering facts.** The Gemini system
+instruction for this interpretation (`REQUIREMENT_SYSTEM_INSTRUCTION` in
+`requirement-interpreter.ts`) explicitly forbids rounding, estimating,
+unit-converting, or adding a safety margin to a stated number, and states
+that inventing a plausible-sounding numeric threshold for a vague statement
+is the single most serious violation of these rules. It also forbids the two
+narrower forms of the same failure: inventing a unit for a bare number
+("must support at least 500" never becomes "500 N"), and guessing a
+comparison direction the statement never stated (a number with no "at
+least"/"at most"/"exactly" cue is `"ambiguous"`, not silently `>=`). Model
+output is untrusted regardless of what the instruction says —
+`assertRequirementCandidate` is the actual authority, never a blind cast of
+model JSON; it independently rejects a candidate that carries a numeric
+`value` without an `operator` (or vice versa) as a self-contradictory shape,
+the same way it rejects an `"ambiguous"` candidate that also claims a
+numeric criterion.
+
+**`Requirement` (P1) is unchanged.** Rather than adding an `operator` field
+to the already-audited P1 schema (risking a circular import between
+`types.ts` and `verification-types.ts`, or a duplicated vocabulary), the
+accepted candidate's `operator`, `statementText`, and `requirementCandidateId`
+are carried into the new `Requirement`'s existing `metadata` field — the
+same JSON-validated extension mechanism every entity already has. Zero
+schema changes to P1.
+
+**Acceptance is a real, gated mutation.** `add_requirement`
+(`mutation: "mutate"`) is the only path from a candidate to a real
+`Requirement`; it goes through the exact same P3/P4 approval boundary as
+every other World Model write — interpreting text is not exempt from
+approval just because it "only" produced words. It rejects:
+- a candidate whose `interpretationStatus` is `"ambiguous"` — an
+  underspecified statement can never become authoritative through this
+  tool; resolving the ambiguity is P19's job, not P18's;
+- a candidate from a different project (`cross_project_forbidden`) — the
+  same cross-project isolation gap the P17 audit found and fixed in
+  `evaluateObjectiveSatisfaction` is guarded against here proactively.
+
+**Gemini boundary.** Gemini → structured candidate → deterministic
+validation → `add_requirement`'s own acceptance logic → World Model. Gemini
+never has a path to `state.project.requirements` directly; `interpret_requirement`
+is `mutation: "suggest"` and performs no World Model write at all — it only
+returns a candidate for a caller (human or agent loop) to accept or discard.
+
+**API surface.** `apps/api/src/requirement-service.ts` (`interpretUserRequirement`)
+is a thin pass-through to `interpretRequirementFromText`, mirroring
+`proposal-service.ts`/`plan-service.ts`. There is deliberately no bespoke
+`acceptRequirement` API — `add_requirement` already has a generic,
+approval-gated execution surface via the agent loop (P11).
+
+**Deliberately NOT implemented (P19+ territory).** Clarifying questions or
+any interactive resolution of an ambiguous candidate; from-scratch design
+generation; requirement-to-check wiring beyond what P16/P17 already support;
+a dimensional-analysis or unit-conversion engine (normalization here is
+narrow — it does not invent unit math P1 never had); multi-requirement
+batch interpretation from a single statement.
 
 ## Error model
 

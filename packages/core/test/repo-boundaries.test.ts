@@ -1463,3 +1463,172 @@ describe("P17 objective satisfaction: pure aggregation engine, no re-verificatio
     }
   });
 });
+
+describe("P18 natural language -> structured requirement: bounded interpretation, deterministic validation, no LLM authority", () => {
+  // Phase 18's central architectural rule: "Natural language may propose
+  // meaning. Structured state records meaning. Deterministic systems
+  // validate what can be validated." interpret-requirement-tool.ts is the
+  // bounded Gemini-facing half (never touches WorldModelState);
+  // add-requirement-tool.ts is the approval-gated mutation half (never
+  // trusts a candidate's shape without re-validating it). Every check
+  // below proves one specific way that boundary could have silently
+  // eroded.
+  const interpreterFiles = ["packages/core/src/requirement-interpreter.ts"];
+  const interpretToolFiles = ["packages/core/src/interpret-requirement-tool.ts"];
+  const addToolFiles = ["packages/core/src/add-requirement-tool.ts"];
+
+  it("requirement-interpreter.ts and interpret-requirement-tool.ts never import the World Model WRITE path -- interpreting text cannot mutate anything", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const relativePath of [...interpreterFiles, ...interpretToolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- interpretation must never be able to mutate the World Model`);
+      }
+    }
+  });
+
+  it("requirement-interpreter.ts never imports executeTool/invokeRegisteredTool, an EnvironmentAdapter, or a concrete adapter package -- interpreting text cannot execute a tool or touch an environment", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]\.\/execute-tool\.js["'`]/,
+      /invokeRegisteredTool\s*\(/,
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of interpreterFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+      }
+    }
+  });
+
+  it("interpret_requirement is classified mutation:'suggest'; add_requirement is classified mutation:'mutate' -- interpreting text is never itself a World Model write", () => {
+    const interpretContents = readFileSync(join(repoRoot, "packages/core/src/interpret-requirement-tool.ts"), "utf8");
+    assert.match(interpretContents, /mutation:\s*["'`]suggest["'`]/, "interpret-requirement-tool.ts must declare mutation: \"suggest\"");
+    assert.doesNotMatch(interpretContents, /mutation:\s*["'`]mutate["'`]/, "interpret-requirement-tool.ts must never declare mutation: \"mutate\"");
+
+    const addContents = readFileSync(join(repoRoot, "packages/core/src/add-requirement-tool.ts"), "utf8");
+    assert.match(addContents, /mutation:\s*["'`]mutate["'`]/, "add-requirement-tool.ts must declare mutation: \"mutate\" -- adding a requirement is a real World Model mutation, gated the same as any other");
+  });
+
+  it("add_requirement mutates the World Model only through recordTransition, reusing the EXISTING add_requirement transition -- no direct state.project.requirements.push, no new transition kind invented", () => {
+    const relativePath = "packages/core/src/add-requirement-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /recordTransition\s*\(/, `${relativePath} must call recordTransition`);
+    assert.match(contents, /kind:\s*["'`]add_requirement["'`]/, `${relativePath} must use the existing "add_requirement" transition kind`);
+    assert.doesNotMatch(contents, /\.requirements\.push\s*\(/, `${relativePath} must never directly push onto project.requirements`);
+    assert.doesNotMatch(
+      contents,
+      /from\s+["'`]\.\/transitions\.js["'`]/,
+      `${relativePath} must not import ./transitions.js directly -- recordTransition is the sole audited write path`
+    );
+  });
+
+  it("add_requirement rejects an ambiguous candidate outright -- an underspecified natural-language statement can never become an authoritative requirement", () => {
+    const relativePath = "packages/core/src/add-requirement-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /ambiguous_candidate/, `${relativePath} must explicitly reject an ambiguous candidate`);
+  });
+
+  it("requirement-interpreter.ts never imports a concrete model-provider package or @google/genai -- only the provider-agnostic ModelProvider interface", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/
+    ];
+    for (const relativePath of interpreterFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern} -- requirement interpretation depends only on the ModelProvider interface`);
+      }
+    }
+  });
+
+  it("requirement-interpreter.ts declares no module-level mutable state", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    for (const relativePath of interpreterFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not declare module-level mutable state`);
+      }
+    }
+  });
+
+  it("no arbitrary code execution anywhere in the P18 files -- natural-language input can never become executable input", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of [...interpreterFiles, ...interpretToolFiles, ...addToolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("RequirementCandidate carries no expression/formula/script field -- interpretation output is typed data, never an executable payload", () => {
+    const relativePath = "packages/schemas/src/requirement-candidate-types.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    for (const forbiddenField of ["expression", "formula", "script", "code"]) {
+      assert.doesNotMatch(contents, new RegExp(`${forbiddenField}\\s*:`), `${relativePath} must not carry a "${forbiddenField}" field on RequirementCandidate`);
+    }
+  });
+
+  it("add-requirement-tool.ts never imports an EnvironmentAdapter, a concrete adapter package, or a model-provider package -- accepting a requirement is a pure World Model write, not an environment or Gemini operation", () => {
+    const relativePath = "packages/core/src/add-requirement-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/,
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/
+    ];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern}`);
+    }
+  });
+
+  it("apps/api's requirement service stays a thin pass-through -- no adapter coupling, no direct executeTool/invokeRegisteredTool path in the API layer either", () => {
+    const relativePath = "apps/api/src/requirement-service.ts";
+    if (!existsSync(join(repoRoot, relativePath))) return;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [/from\s+["'`]@naqsh\/adapters["'`]/, /invokeRegisteredTool\s*\(/, /from\s+["'`]\.\/execute-tool\.js["'`]/];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+    }
+  });
+
+  it("P16/P17 boundary: P18 creates requirements, it never verifies or evaluates objective satisfaction itself", () => {
+    // Phase 18 stops at producing a candidate and, once accepted, a real
+    // Requirement -- it must never re-implement or reach into P16
+    // (deterministic verification) or P17 (objective satisfaction). The
+    // pipeline stays Requirement -> Verification -> Objective Satisfaction,
+    // never collapsed or short-circuited by this phase.
+    const forbiddenImports = [
+      "./verify.js",
+      "./evidence.js",
+      "./verification-result-store.js",
+      "./run-verification-tool.js",
+      "./objective-satisfaction.js",
+      "./objective-satisfaction-store.js",
+      "./evaluate-objective-satisfaction-tool.js"
+    ];
+    for (const relativePath of [...interpreterFiles, ...interpretToolFiles, ...addToolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- P18 never performs verification or objective satisfaction`);
+      }
+    }
+  });
+
+  it("add_requirement never declares a Requirement 'satisfied'/'violated' itself -- only P16/P17 (via a separate, later pipeline stage) determine that", () => {
+    const relativePath = "packages/core/src/add-requirement-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /status:\s*["'`](satisfied|violated)["'`]/, `${relativePath} must not itself assign a satisfied/violated status to the Requirement it creates`);
+  });
+});

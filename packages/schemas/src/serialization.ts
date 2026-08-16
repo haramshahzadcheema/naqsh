@@ -12,6 +12,7 @@ import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
 import type { ObjectiveSatisfactionResult } from "./objective-satisfaction-types.js";
+import type { RequirementCandidate } from "./requirement-candidate-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
@@ -31,6 +32,7 @@ import {
   assertProject,
   assertProposal,
   assertObjectiveSatisfactionResult,
+  assertRequirementCandidate,
   assertTool,
   assertToolResult,
   assertVerificationResult,
@@ -305,5 +307,17 @@ export function deserializeObjectiveSatisfactionResult(serialized: string): Obje
   requireNonEmptyString(serialized, "serialized objective satisfaction result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertObjectiveSatisfactionResult(parsed);
+  return parsed;
+}
+
+export function serializeRequirementCandidate(candidate: RequirementCandidate): string {
+  assertRequirementCandidate(candidate);
+  return JSON.stringify(candidate);
+}
+
+export function deserializeRequirementCandidate(serialized: string): RequirementCandidate {
+  requireNonEmptyString(serialized, "serialized requirement candidate is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertRequirementCandidate(parsed);
   return parsed;
 }
