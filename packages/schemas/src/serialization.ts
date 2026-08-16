@@ -11,6 +11,7 @@ import type { Proposal } from "./proposal-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
+import type { ObjectiveSatisfactionResult } from "./objective-satisfaction-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
@@ -29,6 +30,7 @@ import {
   assertPlan,
   assertProject,
   assertProposal,
+  assertObjectiveSatisfactionResult,
   assertTool,
   assertToolResult,
   assertVerificationResult,
@@ -291,5 +293,17 @@ export function deserializeVerificationResult(serialized: string): VerificationR
   requireNonEmptyString(serialized, "serialized verification result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertVerificationResult(parsed);
+  return parsed;
+}
+
+export function serializeObjectiveSatisfactionResult(result: ObjectiveSatisfactionResult): string {
+  assertObjectiveSatisfactionResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeObjectiveSatisfactionResult(serialized: string): ObjectiveSatisfactionResult {
+  requireNonEmptyString(serialized, "serialized objective satisfaction result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertObjectiveSatisfactionResult(parsed);
   return parsed;
 }

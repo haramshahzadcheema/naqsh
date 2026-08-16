@@ -1164,12 +1164,115 @@ produced, which is what lets the same check be run again after a change and
 show the result actually changed — proven end to end in
 `run-verification-tool.test.ts`'s "the demo story" test).
 
-**Deliberately NOT implemented (P17+ territory).** Combining multiple
-`VerificationResult`s into objective satisfaction (P17 — `listForCheck`
-exists specifically so P17 can consume this without the verifier changing);
+**Deliberately NOT implemented (P18+ territory).** Combining multiple
+`VerificationResult`s into objective satisfaction now exists (P17, see
+below — `listForCheck` was built specifically so P17 could consume it
+without the verifier changing, and it did). Still not implemented:
 natural-language requirement extraction into `Check`s (P18); relationship/
 geometry-reasoning check kinds beyond what P8's `EntityRelationship` data
 already supports; unit conversion.
+
+## Objective Satisfaction (P17)
+
+**The distinction this phase exists to enforce, one level above P16's own:**
+command success ≠ state change ≠ verification result ≠ objective
+satisfaction. A tool reporting `status: "success"` only proves it ran. A
+single `VerificationResult` of `PASS` only proves ONE condition holds.
+`ObjectiveSatisfactionResult.status` — computed deterministically from the
+FULL set of relevant `VerificationResult`s — is the only thing that answers
+whether the user's actual objective has been met.
+
+**Pipeline:** `VerificationResultStore` (P16, already built) →
+`evaluateObjectiveSatisfaction` (`objective-satisfaction.ts`, a PURE
+function of `(resolvedConditions, context)` — no adapter calls, no Gemini,
+no network, no mutation, no module-level state, and critically no
+re-implementation of verification logic: it never imports `verify.ts` or
+`evidence.ts`, it only AGGREGATES `VerificationResult`s P16 already
+produced) → `ObjectiveSatisfactionResult`
+(`SATISFIED`/`NOT_SATISFIED`/`INCONCLUSIVE`) → persisted by
+`evaluate_objective_satisfaction`, kept entirely separate from the pure
+calculation, exactly like P16's own calculation/persistence split.
+
+**`Objective`/`Requirement`/`Constraint` (P1) are reused, not duplicated.**
+`Project` has exactly one `Objective` (a summary, not an id-addressable
+list), so `ObjectiveSatisfactionResult.objectiveSummary` snapshots
+`Project.objective.summary` the same way `ObservationResult.objectiveSummary`
+(P8) already does — no new id scheme invented. `Requirement.id`/
+`Constraint.id` (real, existing ids) are carried through on each
+`ObjectiveConditionOutcome` when a condition corresponds to one, closing the
+traceability chain Objective → Requirement/Constraint → Check →
+VerificationResult → Evidence without touching P16's already-audited schema
+at all.
+
+**Deterministic aggregation, not a logic language.** Every condition is
+either REQUIRED (AND-composed, the default) or OPTIONAL (OR-composed,
+`required: false`):
+- **Required (AND) group** — a single deterministic FAIL among required
+  conditions immediately produces `NOT_SATISFIED`, even if other required
+  conditions are merely `INCONCLUSIVE` (a known failure already proves the
+  objective isn't met — the brief's own explicit
+  `INCONCLUSIVE + FAIL → NOT_SATISFIED` example). Absent any FAIL, a single
+  `INCONCLUSIVE` among required conditions makes the whole objective
+  `INCONCLUSIVE`. All required conditions passing (or none existing) lets
+  evaluation proceed to the optional group.
+- **Optional (OR) group** — only consulted once every required condition has
+  passed. At least one `PASS` → `SATISFIED`; no pass but at least one
+  `INCONCLUSIVE` → `INCONCLUSIVE`; all `FAIL` → `NOT_SATISFIED`.
+- **An EMPTY condition list is `INCONCLUSIVE`, never `SATISFIED`** — an
+  objective with nothing verified provides no evidence either way; treating
+  "nothing was checked" as success would be exactly the silent-success
+  failure mode this whole phase exists to prevent (`EMPTY_CONDITIONS_REASON`
+  in `objective-satisfaction.ts`).
+- **A violated HARD `Constraint` always forces `NOT_SATISFIED`.**
+  `evaluate-objective-satisfaction-tool.ts` looks up `constraintId` in the
+  current `WorldModelState`; if it resolves to a real `Constraint` with
+  `severity: "hard"`, the condition can never be marked `required: false` —
+  an explicit attempt is rejected outright (`hard_constraint_cannot_be_optional`),
+  never silently overridden. Soft constraints get no special scoring
+  (deliberately — that belongs to P23's later optimization work).
+
+**Freshness is enforced one level up from P16's own check.** Each
+condition's backing `VerificationResult.projectVersion` is compared against
+the CURRENT project version being evaluated (the same counter P1/P2/P15/P16
+already maintain); a mismatch downgrades that condition's `effectiveStatus`
+to `inconclusive`/`stale_verification_result` regardless of what its
+original PASS/FAIL was — a stale PASS can never masquerade as current truth,
+and (proven in tests) a stale PASS never hides a genuinely fresh FAIL
+elsewhere in the same evaluation.
+
+**Resolving which `VerificationResult` backs a condition** (impure,
+`evaluate-objective-satisfaction-tool.ts`, never the pure engine): a caller
+may pin an exact `verificationResultId`, or by default the tool uses the
+MOST RECENT result for that `checkId`
+(`VerificationResultStore.listForCheck`'s own insertion order) — "verify,
+change something, verify again" always means "evaluate against the freshest
+evidence" unless a caller explicitly asks for history.
+
+**Two new stores/one new tool, reusing everything already built.**
+`ObjectiveSatisfactionStore` mirrors `VerificationResultStore`'s exact
+append-only shape. `evaluate_objective_satisfaction` is classified
+`mutation: "verify"` (the same classification `run_verification` uses, for
+the identical reason: this is a continuation of the deterministic
+verification pipeline, not a new mutation) and never even imports the
+`EnvironmentAdapter` interface — P17 has zero coupling to any environment,
+only to P16's already-produced results.
+
+**Gemini boundary.** Gemini may interpret an objective, propose which
+`Check`s are relevant, and explain a result after the fact — it has no path
+to the verdict itself. `evaluateObjectiveSatisfaction` never imports a
+model-provider package or `@google/genai` (enforced structurally, matching
+P16's identical guard).
+
+**Deliberately NOT implemented (P18+ territory).** Natural-language
+requirement extraction that decides WHICH `Check`s are relevant to an
+objective (P18); soft-constraint scoring / multi-objective optimization
+(P23 — `ObjectiveSatisfactionResult`'s structured `conditions` array exists
+specifically so P23 can consume it without this phase changing); nested/nary
+composition trees beyond the flat required/optional split (no real use case
+demanded it yet); recording satisfaction results into the World Model via a
+new transition (not needed — `ObjectiveSatisfactionResult`, like
+`VerificationResult`, is an audit/evaluation record, not project domain
+content).
 
 ## Error model
 

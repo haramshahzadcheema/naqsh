@@ -81,6 +81,13 @@ import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultI
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
 import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
 import type { Check, CheckInput, Evidence, EvidenceInput, VerificationResult, VerificationResultInput } from "./verification-types.js";
+import { assertObjectiveConditionOutcome, assertObjectiveSatisfactionResult } from "./validators.js";
+import type {
+  ObjectiveConditionOutcome,
+  ObjectiveConditionOutcomeInput,
+  ObjectiveSatisfactionResult,
+  ObjectiveSatisfactionResultInput
+} from "./objective-satisfaction-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -1201,5 +1208,52 @@ export function createVerificationResult(input: VerificationResultInput): Verifi
     metadata: safeStructuredClone(input.metadata ?? {}, "verificationResult.metadata")
   };
   assertVerificationResult(result);
+  return Object.freeze(result);
+}
+
+/**
+ * Builds ONE `ObjectiveConditionOutcome`. In practice only ever called by
+ * @naqsh/core's `evaluateObjectiveSatisfaction` (the pure Phase 17
+ * engine) while assembling the `conditions` array it hands to
+ * `createObjectiveSatisfactionResult` below -- never hand-built by a tool
+ * to fabricate an outcome.
+ */
+export function createObjectiveConditionOutcome(input: ObjectiveConditionOutcomeInput): ObjectiveConditionOutcome {
+  const outcome: ObjectiveConditionOutcome = {
+    checkId: input.checkId,
+    checkKind: input.checkKind ?? null,
+    requirementId: input.requirementId ?? null,
+    constraintId: input.constraintId ?? null,
+    required: input.required ?? true,
+    verificationResultId: input.verificationResultId ?? null,
+    effectiveStatus: input.effectiveStatus,
+    reasonKind: input.reasonKind,
+    message: input.message
+  };
+  assertObjectiveConditionOutcome(outcome);
+  return Object.freeze(outcome);
+}
+
+/**
+ * Builds an `ObjectiveSatisfactionResult`. Like `createVerificationResult`,
+ * this is only ever called by the pure evaluator
+ * (`evaluateObjectiveSatisfaction`) that computed `status`/`reason`/
+ * `conditions` together -- every field is still independently validated by
+ * `assertObjectiveSatisfactionResult` rather than trusted because "only
+ * trusted code calls this."
+ */
+export function createObjectiveSatisfactionResult(input: ObjectiveSatisfactionResultInput): ObjectiveSatisfactionResult {
+  const result: ObjectiveSatisfactionResult = {
+    id: input.id ?? createId("objsat"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    objectiveSummary: input.objectiveSummary ?? null,
+    status: input.status,
+    reason: input.reason,
+    conditions: input.conditions.map((condition) => createObjectiveConditionOutcome(condition)),
+    evaluatedAt: input.evaluatedAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "objectiveSatisfactionResult.metadata")
+  };
+  assertObjectiveSatisfactionResult(result);
   return Object.freeze(result);
 }

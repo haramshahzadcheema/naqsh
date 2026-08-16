@@ -46,3 +46,6 @@ export * from "./evidence.js";
 export * from "./verify.js";
 export * from "./create-check-tool.js";
 export * from "./run-verification-tool.js";
+export * from "./objective-satisfaction.js";
+export * from "./objective-satisfaction-store.js";
+export * from "./evaluate-objective-satisfaction-tool.js";

@@ -1342,3 +1342,124 @@ describe("P16 deterministic verification: pure evaluator, no arbitrary expressio
     }
   });
 });
+
+describe("P17 objective satisfaction: pure aggregation engine, no re-verification, no LLM verdict, no arbitrary expressions", () => {
+  // Phase 17's central architectural rule mirrors Phase 16's exactly one
+  // level up: "Gemini reasons. Tools execute. Adapters observe.
+  // Verification independently evaluates." objective-satisfaction.ts is
+  // the PURE core of that rule at the objective level -- every check below
+  // proves one specific way it could have silently stopped being pure,
+  // FreeCAD-independent, Gemini-independent, or a re-implementation of
+  // verification logic instead of a consumer of it.
+  const engineFiles = ["packages/core/src/objective-satisfaction.ts"];
+  const toolFiles = ["packages/core/src/evaluate-objective-satisfaction-tool.ts"];
+
+  it("objective-satisfaction.ts never imports the World Model WRITE path, an EnvironmentAdapter, or a store -- the pure engine cannot mutate anything or perform its own I/O", () => {
+    const forbiddenImports = [
+      "./transitions.js",
+      "./change-history.js",
+      "./record-transition.js",
+      "./bootstrap.js",
+      "./checkpoint-store.js",
+      "./artifact-store.js",
+      "./check-store.js",
+      "./verification-result-store.js",
+      "./objective-satisfaction-store.js",
+      "./environment-adapter.js"
+    ];
+    for (const relativePath of engineFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- the pure engine must never mutate anything or look anything up itself`);
+      }
+    }
+  });
+
+  it("objective-satisfaction.ts never imports a model-provider package, @google/genai, or anything FreeCAD-specific -- the verdict is never Gemini's, and stays environment-independent", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/,
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`][^"'`]*freecad[^"'`]*["'`]/i
+    ];
+    for (const relativePath of engineFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern}`);
+      }
+    }
+  });
+
+  it("objective-satisfaction.ts never re-implements deterministic verification -- it only consumes VerificationResult, it never imports or duplicates verify.ts's own check-evaluation logic", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/objective-satisfaction.ts"), "utf8");
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/verify\.js["'`]/, "objective-satisfaction.ts must not import verify.ts -- P17 consumes VerificationResults, it never re-runs a Check itself");
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/evidence\.js["'`]/, "objective-satisfaction.ts must not import evidence.ts -- P17 never builds its own Evidence");
+  });
+
+  it("objective-satisfaction.ts declares no module-level mutable state", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    const contents = readFileSync(join(repoRoot, "packages/core/src/objective-satisfaction.ts"), "utf8");
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, "objective-satisfaction.ts must not declare module-level mutable state");
+    }
+  });
+
+  it("no arbitrary code execution in the satisfaction engine or its tool -- an ObjectiveConditionOutcome can never carry an executable expression", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of [...engineFiles, ...toolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("evaluate_objective_satisfaction is classified mutation:'verify' -- it never bypasses the approval boundary a real mutation would need", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/evaluate-objective-satisfaction-tool.ts"), "utf8");
+    assert.match(contents, /mutation:\s*["'`]verify["'`]/, "evaluate-objective-satisfaction-tool.ts must declare mutation: \"verify\"");
+    assert.doesNotMatch(contents, /mutation:\s*["'`]mutate["'`]/, "evaluate-objective-satisfaction-tool.ts must never declare mutation: \"mutate\"");
+  });
+
+  it("evaluate-objective-satisfaction-tool.ts never imports an EnvironmentAdapter or a concrete adapter package -- P17 never touches the environment directly, only P16's already-produced VerificationResults", () => {
+    const relativePath = "packages/core/src/evaluate-objective-satisfaction-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import the EnvironmentAdapter interface -- it has no business talking to an environment at all`);
+  });
+
+  it("evaluate-objective-satisfaction-tool.ts never imports the World Model WRITE path -- it only reads WorldModelState, never mutates it", () => {
+    const relativePath = "packages/core/src/evaluate-objective-satisfaction-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const forbidden of forbiddenImports) {
+      assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+    }
+  });
+
+  it("ObjectiveSatisfactionStore exposes no update/delete/overwrite method -- results are append-only, matching VerificationResultStore's precedent", () => {
+    const relativePath = "packages/core/src/objective-satisfaction-store.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /(?<!\.)\bupdate\s*\(|(?<!\.)\bdelete\s*\(|(?<!\.)\bremove\s*\(|(?<!\.)\boverwrite\s*\(/,
+      `${relativePath} must not expose an update/delete/remove/overwrite method`
+    );
+  });
+
+  it("ObjectiveSatisfactionStatus is a closed allowlist (satisfied/not_satisfied/inconclusive), never an open string", () => {
+    const relativePath = "packages/schemas/src/objective-satisfaction-types.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /export const OBJECTIVE_SATISFACTION_STATUSES:/, `${relativePath} must export a closed OBJECTIVE_SATISFACTION_STATUSES allowlist`);
+    for (const forbiddenField of ["expression", "formula", "script", "code"]) {
+      assert.doesNotMatch(contents, new RegExp(`${forbiddenField}\\s*:`), `${relativePath} must not carry a "${forbiddenField}" field -- satisfaction is computed from typed VerificationResults, never an arbitrary expression`);
+    }
+  });
+});

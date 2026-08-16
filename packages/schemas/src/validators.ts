@@ -46,6 +46,12 @@ import {
 } from "./checkpoint-types.js";
 import { CHECK_KINDS, NUMERIC_COMPARISON_OPERATORS, VERIFICATION_REASON_KINDS, VERIFICATION_STATUSES, type Check, type Evidence, type VerificationResult } from "./verification-types.js";
 import {
+  OBJECTIVE_CONDITION_REASON_KINDS,
+  OBJECTIVE_SATISFACTION_STATUSES,
+  type ObjectiveConditionOutcome,
+  type ObjectiveSatisfactionResult
+} from "./objective-satisfaction-types.js";
+import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
   PLAN_STEP_STATUSES,
@@ -1647,6 +1653,49 @@ export function assertVerificationResult(value: unknown): asserts value is Verif
   assertNullableString(value.documentName, "verificationResult.documentName must be a string or null");
   invariant(isIsoTimestamp(value.evaluatedAt), "verificationResult.evaluatedAt must be an ISO timestamp");
   invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "verificationResult.metadata must be a JSON-serializable object");
+}
+
+function isObjectiveSatisfactionStatus(value: unknown): value is (typeof OBJECTIVE_SATISFACTION_STATUSES)[number] {
+  return typeof value === "string" && (OBJECTIVE_SATISFACTION_STATUSES as readonly string[]).includes(value);
+}
+
+function isObjectiveConditionReasonKind(value: unknown): value is (typeof OBJECTIVE_CONDITION_REASON_KINDS)[number] {
+  return typeof value === "string" && (OBJECTIVE_CONDITION_REASON_KINDS as readonly string[]).includes(value);
+}
+
+export function assertObjectiveConditionOutcome(value: unknown): asserts value is ObjectiveConditionOutcome {
+  invariant(isPlainObject(value), "objective condition outcome must be an object");
+  invariant(typeof value.checkId === "string" && value.checkId.length > 0, "objectiveConditionOutcome.checkId is required");
+  invariant(value.checkKind === null || isCheckKind(value.checkKind), "objectiveConditionOutcome.checkKind must be a valid check kind or null");
+  assertNullableString(value.requirementId, "objectiveConditionOutcome.requirementId must be a string or null");
+  assertNullableString(value.constraintId, "objectiveConditionOutcome.constraintId must be a string or null");
+  invariant(typeof value.required === "boolean", "objectiveConditionOutcome.required must be a boolean");
+  assertNullableString(value.verificationResultId, "objectiveConditionOutcome.verificationResultId must be a string or null");
+  invariant(isVerificationStatus(value.effectiveStatus), "invalid objectiveConditionOutcome.effectiveStatus");
+  invariant(isObjectiveConditionReasonKind(value.reasonKind), "invalid objectiveConditionOutcome.reasonKind");
+  invariant(typeof value.message === "string" && value.message.length > 0, "objectiveConditionOutcome.message is required");
+}
+
+export function assertObjectiveSatisfactionResult(value: unknown): asserts value is ObjectiveSatisfactionResult {
+  invariant(isPlainObject(value), "objective satisfaction result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "objectiveSatisfactionResult.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "objectiveSatisfactionResult.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "objectiveSatisfactionResult.projectVersion must be a positive integer"
+  );
+  assertNullableString(value.objectiveSummary, "objectiveSatisfactionResult.objectiveSummary must be a string or null");
+  invariant(isObjectiveSatisfactionStatus(value.status), "invalid objectiveSatisfactionResult.status");
+  invariant(typeof value.reason === "string" && value.reason.length > 0, "objectiveSatisfactionResult.reason is required");
+  invariant(Array.isArray(value.conditions), "objectiveSatisfactionResult.conditions must be an array");
+  for (const condition of value.conditions) {
+    assertObjectiveConditionOutcome(condition);
+  }
+  invariant(isIsoTimestamp(value.evaluatedAt), "objectiveSatisfactionResult.evaluatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "objectiveSatisfactionResult.metadata must be a JSON-serializable object"
+  );
 }
 
 /**
