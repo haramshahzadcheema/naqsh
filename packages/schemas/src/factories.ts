@@ -79,6 +79,8 @@ import {
 import type { Proposal, ProposalInput } from "./proposal-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
+import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
+import type { Check, CheckInput, Evidence, EvidenceInput, VerificationResult, VerificationResultInput } from "./verification-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -1078,4 +1080,126 @@ export function createCheckpoint(input: CheckpointInput): Checkpoint {
   };
   assertCheckpoint(checkpoint);
   return Object.freeze(checkpoint);
+}
+
+/**
+ * Phase 16: builds a `Check` from a discriminated `CheckInput` -- one
+ * factory covering every kind (mirroring `createCheckpoint`'s single-entry
+ * shape), switching on `input.kind` to apply each kind's own defaults
+ * before handing the fully-built object to `assertCheck` for validation.
+ * `id`/`createdAt` follow the exact same generated-unless-supplied
+ * convention as every other entity in this file.
+ */
+export function createCheck(input: CheckInput): Check {
+  const base = {
+    id: input.id ?? createId("check"),
+    description: input.description,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "check.metadata")
+  };
+  let check: Check;
+  switch (input.kind) {
+    case "numeric_comparison":
+      check = {
+        ...base,
+        kind: "numeric_comparison",
+        objectId: input.objectId,
+        property: input.property,
+        operator: input.operator,
+        expectedValue: input.expectedValue,
+        expectedUnit: input.expectedUnit ?? null,
+        tolerance: input.tolerance ?? null
+      };
+      break;
+    case "bounds_check":
+      check = {
+        ...base,
+        kind: "bounds_check",
+        objectId: input.objectId,
+        property: input.property,
+        min: input.min ?? null,
+        max: input.max ?? null,
+        minInclusive: input.minInclusive ?? true,
+        maxInclusive: input.maxInclusive ?? true,
+        unit: input.unit ?? null
+      };
+      break;
+    case "object_exists":
+      check = { ...base, kind: "object_exists", objectId: input.objectId };
+      break;
+    case "object_type":
+      check = { ...base, kind: "object_type", objectId: input.objectId, expectedGenericType: input.expectedGenericType };
+      break;
+    case "property_required":
+      check = {
+        ...base,
+        kind: "property_required",
+        objectId: input.objectId,
+        property: input.property,
+        requireNonNull: input.requireNonNull ?? true
+      };
+      break;
+    default: {
+      const exhaustiveCheck: never = input;
+      throw new WorldModelValidationError("invalid_shape", `Unsupported check kind: ${JSON.stringify((exhaustiveCheck as { kind: unknown }).kind)}`);
+    }
+  }
+  assertCheck(check);
+  return Object.freeze(check);
+}
+
+/**
+ * Builds `Evidence` -- see verification-types.ts's own doc comment for why
+ * this is one flat shape rather than a union: an evaluator reads only the
+ * fields its check kind cares about, and every other field defaults to
+ * "not known" (`null`) rather than being fabricated.
+ */
+export function createEvidence(input: EvidenceInput): Evidence {
+  const evidence: Evidence = {
+    id: input.id ?? createId("evidence"),
+    objectId: input.objectId ?? null,
+    objectExists: input.objectExists ?? null,
+    observedGenericType: input.observedGenericType ?? null,
+    property: input.property ?? null,
+    propertyExists: input.propertyExists ?? null,
+    observedValue: input.observedValue ?? null,
+    unit: input.unit ?? null,
+    observationId: input.observationId ?? null,
+    stateVersion: input.stateVersion ?? null,
+    environmentKind: input.environmentKind ?? null,
+    observedAt: input.observedAt ?? toIsoTimestamp(),
+    source: input.source ?? "system",
+    metadata: safeStructuredClone(input.metadata ?? {}, "evidence.metadata")
+  };
+  assertEvidence(evidence);
+  return Object.freeze(evidence);
+}
+
+/**
+ * Builds a `VerificationResult`. In practice this is only ever called by
+ * @naqsh/core's `evaluateCheck` (the pure verifier) -- never hand-assembled
+ * by a tool to fabricate a result, which is exactly why every field here is
+ * independently validated by `assertVerificationResult` rather than trusted
+ * because "only trusted code calls this."
+ */
+export function createVerificationResult(input: VerificationResultInput): VerificationResult {
+  const result: VerificationResult = {
+    id: input.id ?? createId("verif"),
+    checkId: input.checkId,
+    checkKind: input.checkKind,
+    status: input.status,
+    reasonKind: input.reasonKind,
+    message: input.message,
+    expected: safeStructuredClone(input.expected ?? null, "verificationResult.expected"),
+    actual: safeStructuredClone(input.actual ?? null, "verificationResult.actual"),
+    evidence: input.evidence ?? null,
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    environmentKind: input.environmentKind ?? null,
+    documentName: input.documentName ?? null,
+    evaluatedAt: input.evaluatedAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "verificationResult.metadata")
+  };
+  assertVerificationResult(result);
+  return Object.freeze(result);
 }

@@ -1236,3 +1236,109 @@ describe("P15 checkpoints/snapshots/rollback/history: real capability, real audi
     assert.match(contents, /cross_project_forbidden/, `${relativePath} must reject a cross-project restore with a named, specific reason`);
   });
 });
+
+describe("P16 deterministic verification: pure evaluator, no arbitrary expressions, environment-independent", () => {
+  // Phase 16's central architectural rule: "Gemini reasons and proposes.
+  // Tools execute. Adapters observe. Verification independently
+  // evaluates." verify.ts/evidence.ts are the PURE core of that rule --
+  // every check below proves one specific way they could have silently
+  // stopped being pure, environment-independent, or Gemini-independent.
+  const verifierFiles = ["packages/core/src/verify.ts", "packages/core/src/evidence.ts"];
+  const verificationToolFiles = ["packages/core/src/create-check-tool.ts", "packages/core/src/run-verification-tool.ts"];
+
+  it("verify.ts/evidence.ts never import the World Model WRITE path -- the pure evaluator cannot mutate the World Model, a checkpoint, or anything else", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js", "./checkpoint-store.js", "./artifact-store.js"];
+    for (const relativePath of verifierFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- verification must never be able to mutate anything`);
+      }
+    }
+  });
+
+  it("verify.ts/evidence.ts never import a model-provider package, @google/genai, or an EnvironmentAdapter/concrete adapter -- the verdict is never Gemini's, and the pure evaluator never talks to an environment itself", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]|require\s*\(\s*["'`]@naqsh\/model-providers["'`]\s*\)/,
+      /from\s+["'`]@google\/genai["'`]|require\s*\(\s*["'`]@google\/genai["'`]\s*\)/,
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of verifierFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern} -- the verdict must be deterministic, not Gemini's judgment, and evaluation itself never reaches into an environment`);
+      }
+    }
+  });
+
+  it("no source file under packages/core/src or packages/schemas/src imports anything FreeCAD-specific -- verification stays environment-independent (the P26 boundary this phase must not compromise)", () => {
+    const forbiddenPattern = /from\s+["'`][^"'`]*freecad[^"'`]*["'`]|require\s*\(\s*["'`][^"'`]*freecad[^"'`]*["'`]\s*\)/i;
+    for (const relativePath of [...verifierFiles, ...verificationToolFiles, "packages/schemas/src/verification-types.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import anything FreeCAD-specific`);
+    }
+  });
+
+  it("verify.ts declares no module-level mutable state -- every evaluation is a pure function of its own arguments, never a hidden global", () => {
+    const forbiddenPatterns = [/^let\s+\w/m, /^const\s+\w+\s*=\s*new\s+Map/m, /^const\s+\w+\s*=\s*new\s+Set/m];
+    const contents = readFileSync(join(repoRoot, "packages/core/src/verify.ts"), "utf8");
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, "verify.ts must not declare module-level mutable state");
+    }
+  });
+
+  it("no arbitrary code execution in the verifier -- a Check can never carry an executable expression", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of [...verifierFiles, ...verificationToolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("run_verification is classified mutation:'verify'; create_check is classified mutation:'suggest' -- neither bypasses the approval boundary a real mutation would need", () => {
+    const runContents = readFileSync(join(repoRoot, "packages/core/src/run-verification-tool.ts"), "utf8");
+    assert.match(runContents, /mutation:\s*["'`]verify["'`]/, "run-verification-tool.ts must declare mutation: \"verify\"");
+    assert.doesNotMatch(runContents, /mutation:\s*["'`]mutate["'`]/, "run-verification-tool.ts must never declare mutation: \"mutate\"");
+
+    const createContents = readFileSync(join(repoRoot, "packages/core/src/create-check-tool.ts"), "utf8");
+    assert.match(createContents, /mutation:\s*["'`]suggest["'`]/, "create-check-tool.ts must declare mutation: \"suggest\"");
+    assert.doesNotMatch(createContents, /mutation:\s*["'`]mutate["'`]/, "create-check-tool.ts must never declare mutation: \"mutate\"");
+  });
+
+  it("run-verification-tool.ts never mutates via the EnvironmentAdapter -- it only calls the read-only inspectObject, never modifyObject/createObject/deleteObject", () => {
+    const relativePath = "packages/core/src/run-verification-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /\.(modifyObject|createObject|deleteObject)\s*\(/, `${relativePath} must never call a mutating EnvironmentAdapter method`);
+    assert.match(contents, /\.inspectObject\s*\(/, `${relativePath} must call inspectObject to observe current evidence`);
+  });
+
+  it("CheckStore/VerificationResultStore expose no update/delete/overwrite method -- Checks and VerificationResults are immutable/append-only, matching CheckpointStore's precedent", () => {
+    for (const relativePath of ["packages/core/src/check-store.ts", "packages/core/src/verification-result-store.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(
+        contents,
+        /(?<!\.)\bupdate\s*\(|(?<!\.)\bdelete\s*\(|(?<!\.)\bremove\s*\(|(?<!\.)\boverwrite\s*\(/,
+        `${relativePath} must not expose an update/delete/remove/overwrite method`
+      );
+    }
+  });
+
+  it("Check.kind is a closed allowlist (CHECK_KINDS), never an open string or an executable expression field", () => {
+    const relativePath = "packages/schemas/src/verification-types.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /export const CHECK_KINDS:/, `${relativePath} must export a closed CHECK_KINDS allowlist`);
+    for (const forbiddenField of ["expression", "formula", "script", "code"]) {
+      assert.doesNotMatch(contents, new RegExp(`${forbiddenField}\\s*:`), `${relativePath} must not carry a "${forbiddenField}" field on Check -- checks are typed and allowlisted, never arbitrary expressions`);
+    }
+  });
+});

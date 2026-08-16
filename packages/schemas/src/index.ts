@@ -6,6 +6,7 @@ export * from "./plan-types.js";
 export * from "./proposal-types.js";
 export * from "./agent-loop-types.js";
 export * from "./checkpoint-types.js";
+export * from "./verification-types.js";
 export * from "./transitions.js";
 export * from "./ids.js";
 export * from "./tool-schema.js";

@@ -10,12 +10,14 @@ import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
+import type { Check, VerificationResult } from "./verification-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
   assertAuthorizationDecision,
   assertAutonomyGrant,
   assertChange,
+  assertCheck,
   assertCheckpoint,
   assertEnvironmentDocumentInspection,
   assertEnvironmentObject,
@@ -29,6 +31,7 @@ import {
   assertProposal,
   assertTool,
   assertToolResult,
+  assertVerificationResult,
   assertWorldModelState,
   WorldModelValidationError
 } from "./validators.js";
@@ -264,5 +267,29 @@ export function deserializeAgentLoopRun(serialized: string): AgentLoopRun {
   requireNonEmptyString(serialized, "serialized agent loop run is required");
   const parsed: unknown = JSON.parse(serialized);
   assertAgentLoopRun(parsed);
+  return parsed;
+}
+
+export function serializeCheck(check: Check): string {
+  assertCheck(check);
+  return JSON.stringify(check);
+}
+
+export function deserializeCheck(serialized: string): Check {
+  requireNonEmptyString(serialized, "serialized check is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertCheck(parsed);
+  return parsed;
+}
+
+export function serializeVerificationResult(result: VerificationResult): string {
+  assertVerificationResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeVerificationResult(serialized: string): VerificationResult {
+  requireNonEmptyString(serialized, "serialized verification result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertVerificationResult(parsed);
   return parsed;
 }

@@ -44,6 +44,7 @@ import {
   type CheckpointArtifactRef,
   type CheckpointEnvironmentSnapshot
 } from "./checkpoint-types.js";
+import { CHECK_KINDS, NUMERIC_COMPARISON_OPERATORS, VERIFICATION_REASON_KINDS, VERIFICATION_STATUSES, type Check, type Evidence, type VerificationResult } from "./verification-types.js";
 import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
@@ -1494,6 +1495,158 @@ export function assertCheckpoint(value: unknown): asserts value is Checkpoint {
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "checkpoint.metadata must be a JSON-serializable object"
   );
+}
+
+function isCheckKind(value: unknown): value is (typeof CHECK_KINDS)[number] {
+  return typeof value === "string" && (CHECK_KINDS as readonly string[]).includes(value);
+}
+
+function isNumericComparisonOperator(value: unknown): value is (typeof NUMERIC_COMPARISON_OPERATORS)[number] {
+  return typeof value === "string" && (NUMERIC_COMPARISON_OPERATORS as readonly string[]).includes(value);
+}
+
+function isVerificationStatus(value: unknown): value is (typeof VERIFICATION_STATUSES)[number] {
+  return typeof value === "string" && (VERIFICATION_STATUSES as readonly string[]).includes(value);
+}
+
+function isVerificationReasonKind(value: unknown): value is (typeof VERIFICATION_REASON_KINDS)[number] {
+  return typeof value === "string" && (VERIFICATION_REASON_KINDS as readonly string[]).includes(value);
+}
+
+function assertBaseCheckFields(value: Record<string, unknown>): void {
+  invariant(typeof value.id === "string" && value.id.length > 0, "check.id is required");
+  invariant(isCheckKind(value.kind), "invalid check.kind");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "check.description is required");
+  invariant(isIsoTimestamp(value.createdAt), "check.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "check.metadata must be a JSON-serializable object");
+}
+
+function assertCheckObjectId(value: Record<string, unknown>): void {
+  invariant(typeof value.objectId === "string" && value.objectId.length > 0, "check.objectId is required");
+}
+
+function assertCheckProperty(value: Record<string, unknown>): void {
+  invariant(typeof value.property === "string" && value.property.length > 0, "check.property is required");
+}
+
+function assertNumericComparisonCheck(value: Record<string, unknown>): void {
+  assertCheckObjectId(value);
+  assertCheckProperty(value);
+  invariant(isNumericComparisonOperator(value.operator), "invalid check.operator");
+  invariant(typeof value.expectedValue === "number" && Number.isFinite(value.expectedValue), "check.expectedValue must be a finite number");
+  assertNullableString(value.expectedUnit, "check.expectedUnit must be a string or null");
+  invariant(
+    value.tolerance === null || (typeof value.tolerance === "number" && Number.isFinite(value.tolerance) && value.tolerance >= 0),
+    "check.tolerance must be a non-negative finite number or null"
+  );
+}
+
+function assertBoundsCheck(value: Record<string, unknown>): void {
+  assertCheckObjectId(value);
+  assertCheckProperty(value);
+  invariant(value.min === null || (typeof value.min === "number" && Number.isFinite(value.min)), "check.min must be a finite number or null");
+  invariant(value.max === null || (typeof value.max === "number" && Number.isFinite(value.max)), "check.max must be a finite number or null");
+  invariant(value.min !== null || value.max !== null, "check must set at least one of min/max");
+  if (typeof value.min === "number" && typeof value.max === "number") {
+    invariant(value.min <= value.max, "check.min must not be greater than check.max");
+  }
+  invariant(typeof value.minInclusive === "boolean", "check.minInclusive must be a boolean");
+  invariant(typeof value.maxInclusive === "boolean", "check.maxInclusive must be a boolean");
+  assertNullableString(value.unit, "check.unit must be a string or null");
+}
+
+function assertObjectExistsCheck(value: Record<string, unknown>): void {
+  assertCheckObjectId(value);
+}
+
+function assertObjectTypeCheck(value: Record<string, unknown>): void {
+  assertCheckObjectId(value);
+  invariant(isEnvironmentObjectGenericType(value.expectedGenericType), "invalid check.expectedGenericType");
+}
+
+function assertPropertyRequiredCheck(value: Record<string, unknown>): void {
+  assertCheckObjectId(value);
+  assertCheckProperty(value);
+  invariant(typeof value.requireNonNull === "boolean", "check.requireNonNull must be a boolean");
+}
+
+/**
+ * Validates a `Check` -- a discriminated union keyed by `kind`, mirroring
+ * `WorldModelTransition`'s own established discriminated-union validation
+ * pattern (each kind gets its own field checks; the shared identity fields
+ * are checked once via `assertBaseCheckFields`). This is the ONE place
+ * every check kind's shape is enforced -- Phase 16's "no arbitrary
+ * expressions" requirement starts here: `kind` must be one of the
+ * allowlisted `CHECK_KINDS`, never an open string.
+ */
+export function assertCheck(value: unknown): asserts value is Check {
+  invariant(isPlainObject(value), "check must be an object");
+  assertBaseCheckFields(value);
+  switch (value.kind) {
+    case "numeric_comparison":
+      assertNumericComparisonCheck(value);
+      return;
+    case "bounds_check":
+      assertBoundsCheck(value);
+      return;
+    case "object_exists":
+      assertObjectExistsCheck(value);
+      return;
+    case "object_type":
+      assertObjectTypeCheck(value);
+      return;
+    case "property_required":
+      assertPropertyRequiredCheck(value);
+      return;
+    default:
+      throw new WorldModelValidationError("invalid_shape", `Unsupported check kind: ${JSON.stringify((value as { kind: unknown }).kind)}`);
+  }
+}
+
+export function assertEvidence(value: unknown): asserts value is Evidence {
+  invariant(isPlainObject(value), "evidence must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "evidence.id is required");
+  assertNullableString(value.objectId, "evidence.objectId must be a string or null");
+  invariant(value.objectExists === null || typeof value.objectExists === "boolean", "evidence.objectExists must be a boolean or null");
+  invariant(
+    value.observedGenericType === null || isEnvironmentObjectGenericType(value.observedGenericType),
+    "evidence.observedGenericType must be a valid generic type or null"
+  );
+  assertNullableString(value.property, "evidence.property must be a string or null");
+  invariant(value.propertyExists === null || typeof value.propertyExists === "boolean", "evidence.propertyExists must be a boolean or null");
+  invariant(isJsonSafeValue(value.observedValue ?? null), "evidence.observedValue must be JSON-serializable");
+  assertNullableString(value.unit, "evidence.unit must be a string or null");
+  assertNullableString(value.observationId, "evidence.observationId must be a string or null");
+  invariant(
+    value.stateVersion === null || (typeof value.stateVersion === "number" && Number.isInteger(value.stateVersion) && value.stateVersion >= 1),
+    "evidence.stateVersion must be a positive integer or null"
+  );
+  assertNullableString(value.environmentKind, "evidence.environmentKind must be a string or null");
+  invariant(isIsoTimestamp(value.observedAt), "evidence.observedAt must be an ISO timestamp");
+  invariant(isEntitySource(value.source), "invalid evidence.source");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "evidence.metadata must be a JSON-serializable object");
+}
+
+export function assertVerificationResult(value: unknown): asserts value is VerificationResult {
+  invariant(isPlainObject(value), "verification result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "verificationResult.id is required");
+  invariant(typeof value.checkId === "string" && value.checkId.length > 0, "verificationResult.checkId is required");
+  invariant(isCheckKind(value.checkKind), "invalid verificationResult.checkKind");
+  invariant(isVerificationStatus(value.status), "invalid verificationResult.status");
+  invariant(isVerificationReasonKind(value.reasonKind), "invalid verificationResult.reasonKind");
+  invariant(typeof value.message === "string" && value.message.length > 0, "verificationResult.message is required");
+  invariant(isJsonSafeValue(value.expected ?? null), "verificationResult.expected must be JSON-serializable");
+  invariant(isJsonSafeValue(value.actual ?? null), "verificationResult.actual must be JSON-serializable");
+  if (value.evidence !== null) assertEvidence(value.evidence);
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "verificationResult.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "verificationResult.projectVersion must be a positive integer"
+  );
+  assertNullableString(value.environmentKind, "verificationResult.environmentKind must be a string or null");
+  assertNullableString(value.documentName, "verificationResult.documentName must be a string or null");
+  invariant(isIsoTimestamp(value.evaluatedAt), "verificationResult.evaluatedAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "verificationResult.metadata must be a JSON-serializable object");
 }
 
 /**

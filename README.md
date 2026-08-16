@@ -960,17 +960,17 @@ value-shape-aware helpers (`isQuantityShaped`/`buildDistinctWriteValue`/
 adapter's writable property is a bare mock value or FreeCAD's
 `{value, unit}` Quantity read/write asymmetry.
 
-**Deliberately NOT implemented (P15+ territory).** Checkpoint/rollback/undo
-orchestration and persistent snapshot storage (P15) — `expectedBefore` is
-narrow optimistic-concurrency protection, not a transaction log; a full
-deterministic verification engine distinguishing "command executed" from
-"engineering objective satisfied" beyond the raw before/after values (P16)
-— `propertyChanges` reports facts, not a judgment of success; broad
-"idea → complete CAD model" generation (P20); unit-string parsing/
-conversion; arbitrary property writes, arbitrary object creation/deletion,
-or any `create`/`delete`/`checkpoint` capability. See
-`packages/adapters/freecad/README.md`'s "Scope (Phase 14)" section for the
-full validation-order and empirical-FreeCAD-behavior writeup.
+**Deliberately NOT implemented (P17+ territory).** Checkpoint/rollback/undo
+orchestration and persistent snapshot storage now exist (P15, see below), and
+deterministic verification now exists (P16, see below) — `propertyChanges`
+here still only reports facts, not a judgment of success; the judgment is
+P16's job, layered on top. Still not implemented: broad "idea → complete CAD
+model" generation (P20); unit-string parsing/conversion (P16's checks
+require matching unit strings, never convert between them); arbitrary
+property writes, arbitrary object creation/deletion, or any
+`create`/`delete` capability. See `packages/adapters/freecad/README.md`'s
+"Scope (Phase 14)" section for the full validation-order and
+empirical-FreeCAD-behavior writeup.
 
 ## Checkpoints, Snapshots, Rollback, Action History (P15)
 
@@ -1026,7 +1026,9 @@ values would be invisible to an ids-only check) against what was captured
 at checkpoint time, reporting `mismatchDetected`/`warnings` on an
 otherwise still-successful result (informational, matching P11's own
 `LoopDiscrepancy` precedent — this is Phase 15's narrow, deterministic
-integrity check, explicitly NOT the full P16 verification framework).
+integrity check: an identity/content-fingerprint comparison, not a
+judgment of engineering correctness. The latter is P16's `evaluateCheck`,
+which a caller can run separately against the same post-restore state).
 
 **"git revert," not "git reset."** `restore_project` (a new
 `WorldModelTransition`/`TransitionKind`, the project-level analog of the
@@ -1062,13 +1064,112 @@ self-consuming fault-injection controller
 (`createCheckpointFaultController()`) for deterministic failure/mismatch
 testing — omitted, it changes nothing about pre-P15 behavior.
 
-**Deliberately NOT implemented (P16+ territory).** A full checkpoint/
+**Deliberately NOT implemented (P17+ territory).** A full checkpoint/
 rollback UI; automatic/background checkpointing; a distributed
 content-addressed storage system (a plain SHA-256 hash is the whole
-integrity mechanism); the full P16 deterministic verification framework
-(mismatch detection here is a narrow content-hash comparison, not
-objective-satisfaction scoring); cross-session checkpoint sharing beyond
-the environment-identity check already described.
+integrity mechanism); cross-session checkpoint sharing beyond the
+environment-identity check already described. Deterministic verification
+itself is no longer future work — see the next section.
+
+## Deterministic Verification (P16)
+
+**The rule this phase exists to enforce:** Gemini reasons and proposes.
+Tools execute. Adapters observe. Verification independently evaluates.
+Nothing in this phase infers correctness from `tool.success === true` — a
+tool reporting it ran is a completely different claim from "the engineering
+condition now holds," and only the latter is verification's job to
+determine.
+
+**Pipeline:** `EnvironmentAdapter.inspectObject` (P5/P13, already built) →
+`buildEvidenceFromEnvironmentObject` (`evidence.ts`, a pure mapping, no I/O
+of its own) → `Evidence` → `evaluateCheck` (`verify.ts`, a PURE function of
+`(check, evidence, context)` — no adapter calls, no Gemini, no network, no
+mutation, no module-level state) → `VerificationResult`
+(`PASS`/`FAIL`/`INCONCLUSIVE`) → persisted to `VerificationResultStore` by
+the tool layer, which is kept entirely separate from evaluation itself.
+
+**`Check`, `Evidence`, and `VerificationResult` stay three separate
+concepts**, matching this phase's own explicit rule against collapsing them
+into one opaque blob. `Check` is a stable, reusable, TYPED rule —
+`CheckKind` is a closed, allowlisted union (`numeric_comparison`,
+`bounds_check`, `object_exists`, `object_type`, `property_required`), never
+an arbitrary expression, formula, or script field; there is no `eval`/
+`new Function`/expression-interpreter anywhere in the verifier by
+construction (enforced structurally in `repo-boundaries.test.ts`, not just
+by convention). `Evidence` is one flat, generic shape (mirroring
+`EnvironmentObjectGeometry`'s "every field independently nullable"
+convention) built from the SAME `EnvironmentObject` data P13's inspection
+tools already return — never a second, independent environment-access path,
+which is what keeps the verifier FreeCAD-independent (identical behavior
+whether the evidence came from the mock adapter or the real one).
+
+**PASS / FAIL / INCONCLUSIVE, never blurred.** PASS: evidence
+deterministically satisfies the check. FAIL: evidence deterministically
+violates it, OR evidence confirms the target object/property is
+definitively absent (`object_not_found`/`property_not_found` — a real,
+observed "no," not a guess). INCONCLUSIVE: evidence is missing, stale,
+targets the wrong object, carries an incompatible/missing unit, or isn't
+shaped as a value this check kind can interpret (`evidence_missing` /
+`evidence_stale` / `evidence_target_mismatch` / `unit_mismatch` /
+`invalid_evidence_value`). INCONCLUSIVE is never silently promoted to PASS.
+
+**Freshness is enforced, not assumed.** `Evidence.stateVersion` carries the
+SAME `Project.version` counter P1/P2/P15 already maintain — no second
+versioning system. `evaluateCheck` compares it against the CURRENT project
+version passed in its `context`; a mismatch is `inconclusive`/
+`evidence_stale`, even if the stale value would otherwise satisfy the
+check. Evidence with `objectId` naming a DIFFERENT object than the check
+targets is likewise rejected as `evidence_target_mismatch`, never silently
+accepted.
+
+**Explicit, tested floating-point tolerance.** `NumericComparisonCheck.
+tolerance` is a real, visible field on the check (`null` = exact
+comparison) — never a hidden epsilon baked into the comparison function.
+`compareNumeric`'s exact semantics per operator (`eq`/`neq` use a symmetric
+window; `lt`/`lte`/`gt`/`gte` widen the boundary in the permissive
+direction) are documented and unit-tested against the classic
+`0.1 + 0.2 !== 0.3` case both with and without an explicit tolerance.
+
+**Units are handled honestly, not pretended.** Reuses `Requirement`/
+`Constraint.unit`'s existing raw-string convention — no second unit system,
+no conversion table. `EnvironmentProperty` (P5/P13) does not carry a unit
+field today, so evidence built from a real adapter always reports
+`unit: null`; a check that requires a specific unit and can't confirm it
+from evidence reports `inconclusive`/`unit_mismatch` rather than silently
+assuming compatibility. Verified for real against FreeCAD's own Quantity
+properties (which report `{value, unit}`, not a bare number) — a numeric
+check against one honestly reports `inconclusive`/`invalid_evidence_value`
+rather than fabricating a PASS or FAIL from a shape it doesn't understand
+(see `packages/adapters/test/verification.integration.test.ts`).
+
+**Two tools, reusing the classification P3/P4 already reserved for this.**
+`create_check` (`mutation: "suggest"` — creates a new independent, stable
+record; never touches the World Model or the environment) and
+`run_verification` (`mutation: "verify"` — `ToolMutationKind` included
+`"verify"`, and `authorization.ts`'s `MINIMUM_LEVEL_FOR_MUTATION` already
+grouped it with `"suggest"`, both since P3/P4, before this phase existed).
+`run_verification` looks up a `Check`, calls the read-only
+`adapter.inspectObject` (never `modifyObject`/`createObject`/
+`deleteObject`), builds `Evidence`, calls the pure `evaluateCheck`, and
+persists the result — the only place any I/O happens; evaluation itself
+stays pure throughout.
+
+**`CheckStore`/`VerificationResultStore`** are the same "seam, not
+infrastructure" in-memory `Map`-behind-a-typed-interface shape
+`CheckpointStore`/`ArtifactStore` already established (P15) — `CheckStore`
+is immutable once created (a check's definition never changes underneath a
+`VerificationResult` that references it), `VerificationResultStore` is
+append-only (`listForCheck` lets a caller see every result a check has ever
+produced, which is what lets the same check be run again after a change and
+show the result actually changed — proven end to end in
+`run-verification-tool.test.ts`'s "the demo story" test).
+
+**Deliberately NOT implemented (P17+ territory).** Combining multiple
+`VerificationResult`s into objective satisfaction (P17 — `listForCheck`
+exists specifically so P17 can consume this without the verifier changing);
+natural-language requirement extraction into `Check`s (P18); relationship/
+geometry-reasoning check kinds beyond what P8's `EntityRelationship` data
+already supports; unit conversion.
 
 ## Error model
 
