@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "@naqsh/schemas";
+import type { EnvironmentDocumentInspection, EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "@naqsh/schemas";
+import { UNAVAILABLE_ENVIRONMENT_GEOMETRY } from "@naqsh/schemas";
 import { createModifyEnvironmentObjectTool } from "../src/modify-environment-object-tool.js";
 import { executeTool } from "../src/execute-tool.js";
 import { createToolRegistry } from "../src/tool-registry.js";
@@ -73,6 +74,24 @@ function buildFakeAdapter(objects: Map<string, EnvironmentObject>): EnvironmentA
       return ok("modify_object", updated);
     },
     deleteObject: async () => err("delete_object", "object_not_found", "not supported by this fake"),
+    inspectDocument: async () => {
+      const inspection: EnvironmentDocumentInspection = {
+        environmentKind: "fake",
+        documentId: null,
+        documentName: session.documentName,
+        filePath: null,
+        objectCount: objects.size,
+        objectIds: [...objects.keys()],
+        rootObjectIds: [...objects.keys()],
+        inspectedAt: now(),
+        environmentVersion: "0.0.1",
+        warnings: [],
+        unsupportedFeatures: [],
+        inspectionErrors: [],
+        metadata: {}
+      };
+      return ok("inspect_document", inspection);
+    },
     save: async () => ok("save", null),
     checkpoint: async () => ok("checkpoint", { checkpointId: "chk_1" }),
     restore: async () => ok("restore", null)
@@ -81,7 +100,21 @@ function buildFakeAdapter(objects: Map<string, EnvironmentObject>): EnvironmentA
 
 function buildHarness() {
   const objects = new Map<string, EnvironmentObject>([
-    ["envobj_1", { id: "envobj_1", type: "bracket", name: "Bracket", properties: [{ key: "material", value: "steel", readOnly: false }], relationships: [], metadata: {} }]
+    [
+      "envobj_1",
+      {
+        id: "envobj_1",
+        type: "bracket",
+        name: "Bracket",
+        genericType: "unknown",
+        parentId: null,
+        visible: null,
+        geometry: UNAVAILABLE_ENVIRONMENT_GEOMETRY,
+        properties: [{ key: "material", value: "steel", readOnly: false }],
+        relationships: [],
+        metadata: {}
+      }
+    ]
   ]);
   const adapter = buildFakeAdapter(objects);
   let session: EnvironmentSession | null = null;

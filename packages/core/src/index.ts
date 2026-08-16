@@ -31,4 +31,8 @@ export * from "./proposal-tool.js";
 export * from "./proposal-approval.js";
 export * from "./modify-object-tool.js";
 export * from "./modify-environment-object-tool.js";
+export * from "./inspect-environment-document-tool.js";
+export * from "./inspect-environment-objects-tool.js";
+export * from "./inspect-environment-object-tool.js";
+export * from "./inspect-environment-relationships-tool.js";
 export * from "./agent-loop.js";

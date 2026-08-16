@@ -967,3 +967,87 @@ describe("P12 FreeCAD adapter: isolation, single subprocess boundary, no arbitra
     }
   });
 });
+
+describe("P13 FreeCAD document/object/parameter/relationship inspection: generic contract, no FreeCAD-specific leakage, observe-only tools", () => {
+  // Phase 13 extends Phase 12's read boundary (richer per-object fields,
+  // hierarchy, differentiated relationships, bounded geometry, a new
+  // inspectDocument() operation) without turning NAQSH into a FreeCAD-
+  // specific application, adding arbitrary execution, or adding broad
+  // autonomous CAD modification. Every check below proves one specific way
+  // that could have happened, structurally -- not by re-reading the code
+  // and trusting it.
+
+  const inspectionToolFiles = [
+    "packages/core/src/inspect-environment-document-tool.ts",
+    "packages/core/src/inspect-environment-objects-tool.ts",
+    "packages/core/src/inspect-environment-object-tool.ts",
+    "packages/core/src/inspect-environment-relationships-tool.ts"
+  ];
+
+  it("no source file under packages/core/src or packages/schemas/src names a FreeCAD-specific method/type (getFreeCADFeatureTree, getPartDesignBody, getSketchObject, ...) -- the inspection contract stays generic", () => {
+    const forbiddenNames = ["getFreeCADFeatureTree", "getPartDesignBody", "getSketchObject", "runFreeCADPython", "runFreecadPython"];
+    for (const relativePath of [...listTsFiles("packages/core/src"), ...listTsFiles("packages/schemas/src")]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const name of forbiddenNames) {
+        assert.doesNotMatch(contents, new RegExp(name), `${relativePath} must not define/reference "${name}" -- FreeCAD-specific naming belongs only inside the adapter implementation, never in core/schemas`);
+      }
+    }
+  });
+
+  it("no Phase 13 inspection tool file imports WorldModelState or the World Model write path -- inspection stays entirely within the EnvironmentAdapter boundary, never reconciling into the World Model (Step 17: FreeCAD document != World Model)", () => {
+    const forbiddenPattern = /WorldModelState|updateWorldModel|recordTransition|from\s+["'`]\.\/transitions\.js["'`]/;
+    for (const relativePath of inspectionToolFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not reference the World Model at all -- reconciling an environment observation into WorldModelState remains a deferred, later concern`);
+    }
+  });
+
+  it("every Phase 13 inspection tool file imports only the generic EnvironmentAdapter interface, never a concrete adapter package", () => {
+    const forbiddenPattern = /from\s+["'`]@naqsh\/adapters["'`]|from\s+["'`][^"'`]*freecad[^"'`]*["'`]/i;
+    for (const relativePath of inspectionToolFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must depend only on the EnvironmentAdapter interface (./environment-adapter.js), never a concrete adapter package`);
+      assert.match(contents, /from\s+["'`]\.\/environment-adapter\.js["'`]/, `${relativePath} must import the EnvironmentAdapter interface`);
+    }
+  });
+
+  it("every Phase 13 inspection tool is classified mutation:'observe' -- inspection can never smuggle in a mutation", () => {
+    for (const relativePath of inspectionToolFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]observe["'`]/, `${relativePath} must declare mutation: "observe"`);
+      assert.doesNotMatch(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must never declare mutation: "mutate"`);
+    }
+  });
+
+  it("no Phase 13 inspection tool file calls modifyObject/createObject/deleteObject -- inspection tools never write to the environment", () => {
+    const forbiddenPattern = /\.(modifyObject|createObject|deleteObject)\s*\(/;
+    for (const relativePath of inspectionToolFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must never call a mutating EnvironmentAdapter method`);
+    }
+  });
+
+  it("runner.py's OPERATIONS table still dispatches through the fixed, named table, including the new inspect_document operation -- no generic execution primitive was added", () => {
+    const relativePath = "packages/adapters/freecad/runner.py";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /"inspect_document":\s*op_inspect_document/, `${relativePath} must register inspect_document in the fixed OPERATIONS table`);
+    const forbiddenPatterns: RegExp[] = [/\beval\s*\(/, /\bexec\s*\(/, /\b__import__\s*\(/, /\bcompile\s*\(/, /\bos\.system\s*\(/, /\bsubprocess\./];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern} -- Phase 13's richer inspection must not introduce an execution surface`);
+    }
+  });
+
+  it("EnvironmentAdapter still declares exactly six write-capable methods (create/modify/delete/save/checkpoint/restore) -- Phase 13 added inspectDocument as a read method, not a new write capability", () => {
+    const relativePath = "packages/core/src/environment-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    for (const method of ["createObject", "modifyObject", "deleteObject", "save", "checkpoint", "restore", "inspectDocument", "listObjects", "inspectObject"]) {
+      assert.match(contents, new RegExp(`${method}\\s*\\(`), `${relativePath} must still declare ${method}`);
+    }
+  });
+
+  it("FreeCAD's own EnvironmentAdapter still declares exactly the 'save' capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
+    const relativePath = "packages/adapters/src/freecad-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /capabilities:\s*\[\s*["'`]save["'`]\s*\]/, `${relativePath} must still declare exactly the "save" capability -- Phase 13 must not silently grant create/modify/delete/checkpoint`);
+  });
+});

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   assertEnvironmentDescriptor,
+  assertEnvironmentDocumentInspection,
   assertEnvironmentOperationResult,
+  type EnvironmentDocumentInspection,
   type EnvironmentObject,
   type EnvironmentSession
 } from "@naqsh/schemas";
@@ -99,6 +101,52 @@ export function runEnvironmentAdapterContractTests(
       const result = await adapter.inspectObject(session, "does_not_exist");
       assert.equal(result.status, "error");
       assert.equal(result.error?.kind, "object_not_found");
+    });
+
+    describe("inspectDocument() (Phase 13)", () => {
+      it("succeeds on a connected session and reports a self-consistent EnvironmentDocumentInspection", async () => {
+        const adapter = await createAdapter();
+        const session = await connectOrThrow(adapter);
+        const result = await adapter.inspectDocument(session);
+        assertEnvironmentOperationResult(result);
+        assert.equal(result.operation, "inspect_document");
+        assert.equal(result.status, "success");
+        const inspection = result.data as EnvironmentDocumentInspection;
+        assertEnvironmentDocumentInspection(inspection);
+        assert.equal(inspection.objectIds.length, inspection.objectCount);
+
+        const listed = await adapter.listObjects(session);
+        const objects = listed.data as EnvironmentObject[];
+        assert.equal(inspection.objectCount, objects.length);
+        assert.deepEqual([...inspection.objectIds].sort(), objects.map((object) => object.id).sort());
+
+        const rootIdSet = new Set(inspection.rootObjectIds);
+        const objectIdSet = new Set(inspection.objectIds);
+        for (const rootId of rootIdSet) {
+          assert.ok(objectIdSet.has(rootId), "every rootObjectId must also be an objectId");
+        }
+      });
+
+      it("fails deterministically with not_connected on a disconnected session", async () => {
+        const adapter = await createAdapter();
+        const session = await connectOrThrow(adapter);
+        await adapter.disconnect(session);
+        const result = await adapter.inspectDocument(session);
+        assert.equal(result.status, "error");
+        assert.equal(result.error?.kind, "not_connected");
+      });
+
+      it("is deterministic across repeated calls with no mutation in between", async () => {
+        const adapter = await createAdapter();
+        const session = await connectOrThrow(adapter);
+        const first = await adapter.inspectDocument(session);
+        const second = await adapter.inspectDocument(session);
+        const firstData = first.data as EnvironmentDocumentInspection;
+        const secondData = second.data as EnvironmentDocumentInspection;
+        assert.deepEqual(firstData.objectIds, secondData.objectIds);
+        assert.deepEqual(firstData.rootObjectIds, secondData.rootObjectIds);
+        assert.equal(firstData.objectCount, secondData.objectCount);
+      });
     });
 
     describe("create capability", () => {

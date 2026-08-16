@@ -1,24 +1,34 @@
 import { createId, toIsoTimestamp } from "./ids.js";
-import type {
-  EnvironmentDescriptor,
-  EnvironmentDescriptorInput,
-  EnvironmentHealth,
-  EnvironmentHealthInput,
-  EnvironmentObject,
-  EnvironmentObjectInput,
-  EnvironmentOperationResult,
-  EnvironmentOperationResultInput,
-  EnvironmentProperty,
-  EnvironmentPropertyInput,
-  EnvironmentRelationship,
-  EnvironmentRelationshipInput,
-  EnvironmentSession,
-  EnvironmentSessionInput
+import {
+  UNAVAILABLE_ENVIRONMENT_GEOMETRY,
+  type EnvironmentDescriptor,
+  type EnvironmentDescriptorInput,
+  type EnvironmentDocumentInspection,
+  type EnvironmentDocumentInspectionInput,
+  type EnvironmentHealth,
+  type EnvironmentHealthInput,
+  type EnvironmentInspectionError,
+  type EnvironmentInspectionErrorInput,
+  type EnvironmentObject,
+  type EnvironmentObjectGeometry,
+  type EnvironmentObjectGeometryInput,
+  type EnvironmentObjectInput,
+  type EnvironmentOperationResult,
+  type EnvironmentOperationResultInput,
+  type EnvironmentProperty,
+  type EnvironmentPropertyInput,
+  type EnvironmentRelationship,
+  type EnvironmentRelationshipInput,
+  type EnvironmentSession,
+  type EnvironmentSessionInput
 } from "./environment-types.js";
 import {
   assertEnvironmentDescriptor,
+  assertEnvironmentDocumentInspection,
   assertEnvironmentHealth,
+  assertEnvironmentInspectionError,
   assertEnvironmentObject,
+  assertEnvironmentObjectGeometry,
   assertEnvironmentOperationResult,
   assertEnvironmentProperty,
   assertEnvironmentRelationship,
@@ -546,11 +556,34 @@ export function createEnvironmentRelationship(input: EnvironmentRelationshipInpu
   return Object.freeze(relationship);
 }
 
+export function createEnvironmentObjectGeometry(input: EnvironmentObjectGeometryInput = {}): EnvironmentObjectGeometry {
+  const geometry: EnvironmentObjectGeometry = {
+    available: input.available ?? false,
+    reason: input.reason ?? null,
+    valid: input.valid ?? null,
+    boundingBox: input.boundingBox ?? null,
+    volume: input.volume ?? null,
+    surfaceArea: input.surfaceArea ?? null,
+    centerOfMass: input.centerOfMass ?? null,
+    solidCount: input.solidCount ?? null,
+    faceCount: input.faceCount ?? null,
+    edgeCount: input.edgeCount ?? null,
+    vertexCount: input.vertexCount ?? null,
+    shapeType: input.shapeType ?? null
+  };
+  assertEnvironmentObjectGeometry(geometry);
+  return Object.freeze(geometry);
+}
+
 export function createEnvironmentObject(input: EnvironmentObjectInput): EnvironmentObject {
   const object: EnvironmentObject = {
     id: input.id ?? createId("envobj"),
     type: input.type,
     name: input.name,
+    genericType: input.genericType ?? "unknown",
+    parentId: input.parentId ?? null,
+    visible: input.visible ?? null,
+    geometry: input.geometry ? createEnvironmentObjectGeometry(input.geometry) : UNAVAILABLE_ENVIRONMENT_GEOMETRY,
     properties: (input.properties ?? []).map((property) => createEnvironmentProperty(property)),
     relationships: (input.relationships ?? []).map((relationship) => createEnvironmentRelationship(relationship)),
     metadata: input.metadata ?? {}
@@ -584,6 +617,36 @@ export function createEnvironmentOperationResult(input: EnvironmentOperationResu
   };
   assertEnvironmentOperationResult(result);
   return Object.freeze(result);
+}
+
+export function createEnvironmentInspectionError(input: EnvironmentInspectionErrorInput): EnvironmentInspectionError {
+  const error: EnvironmentInspectionError = {
+    kind: input.kind,
+    objectId: input.objectId ?? null,
+    message: input.message
+  };
+  assertEnvironmentInspectionError(error);
+  return Object.freeze(error);
+}
+
+export function createEnvironmentDocumentInspection(input: EnvironmentDocumentInspectionInput): EnvironmentDocumentInspection {
+  const inspection: EnvironmentDocumentInspection = {
+    environmentKind: input.environmentKind,
+    documentId: input.documentId ?? null,
+    documentName: input.documentName ?? null,
+    filePath: input.filePath ?? null,
+    objectCount: input.objectCount,
+    objectIds: [...(input.objectIds ?? [])],
+    rootObjectIds: [...(input.rootObjectIds ?? [])],
+    inspectedAt: input.inspectedAt ?? toIsoTimestamp(),
+    environmentVersion: input.environmentVersion ?? null,
+    warnings: [...(input.warnings ?? [])],
+    unsupportedFeatures: [...(input.unsupportedFeatures ?? [])],
+    inspectionErrors: (input.inspectionErrors ?? []).map((error) => createEnvironmentInspectionError(error)),
+    metadata: input.metadata ?? {}
+  };
+  assertEnvironmentDocumentInspection(inspection);
+  return Object.freeze(inspection);
 }
 
 export function createModelRequestConfig(input: ModelRequestConfigInput): ModelRequestConfig {

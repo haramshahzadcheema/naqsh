@@ -1,5 +1,6 @@
 import {
   createEnvironmentDescriptor,
+  createEnvironmentDocumentInspection,
   createEnvironmentHealth,
   createEnvironmentObject,
   createEnvironmentOperationResult,
@@ -238,6 +239,40 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
         return failure("inspect_object", session.id, objectId, "object_not_found", `No object with id "${objectId}"`);
       }
       return success("inspect_object", session.id, objectId, snapshot(object));
+    },
+
+    /** Phase 13: this engine has no richer "document" concept than its own
+     * in-memory `objects` map, so `documentId`/`filePath` are honestly
+     * `null` rather than fabricated -- `documentName` is passed through
+     * from whatever `connect({ documentName })` was given. `rootObjectIds`
+     * is every object whose `parentId` is `null`, which for this engine's
+     * flat seed data is normally all of them (no mock currently seeds
+     * containment) -- correct, not a limitation to work around here. */
+    async inspectDocument(session) {
+      const guard = requireConnected(session, "inspect_document");
+      if (guard) return guard;
+      const currentObjects = Array.from(objects.values());
+      const objectIds = currentObjects.map((object) => object.id).sort();
+      const rootObjectIds = currentObjects
+        .filter((object) => object.parentId === null)
+        .map((object) => object.id)
+        .sort();
+      return success(
+        "inspect_document",
+        session.id,
+        null,
+        createEnvironmentDocumentInspection({
+          environmentKind: descriptor.kind,
+          documentId: null,
+          documentName: session.documentName,
+          filePath: null,
+          objectCount: objectIds.length,
+          objectIds,
+          rootObjectIds,
+          inspectedAt: now(),
+          environmentVersion: descriptor.version
+        })
+      );
     },
 
     async createObject(session, input) {

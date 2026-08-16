@@ -92,6 +92,19 @@ export interface EnvironmentAdapter {
    * "object_not_found" if `objectId` doesn't exist in this session. */
   inspectObject(session: EnvironmentSession, objectId: EnvironmentObjectId): Promise<EnvironmentOperationResult>;
 
+  /** `data` is a single `EnvironmentDocumentInspection` on success (Phase
+   * 13) — the CHEAPEST inspection tier: document identity, object
+   * count/ids, and hierarchy roots, with no per-object properties,
+   * relationships, or geometry (call `listObjects`/`inspectObject` for
+   * those). Every adapter MUST implement this the same way it must
+   * implement every other method on this interface — an adapter that has
+   * no richer document concept than "the current session" still returns a
+   * well-formed `EnvironmentDocumentInspection` (e.g. built entirely from
+   * `session`/its own seed state), never `unsupported_capability`:
+   * inspecting what is currently connected is baseline, not optional,
+   * exactly like `listObjects`/`inspectObject` already are. */
+  inspectDocument(session: EnvironmentSession): Promise<EnvironmentOperationResult>;
+
   /** Requires the "create" capability. `data` is the newly created
    * `EnvironmentObject` (with its assigned id) on success. */
   createObject(session: EnvironmentSession, input: EnvironmentObjectInput): Promise<EnvironmentOperationResult>;

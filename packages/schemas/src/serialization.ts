@@ -1,5 +1,10 @@
 import type { Approval, AuthorizationDecision, AutonomyGrant, Change, Project, Tool, ToolResult, WorldModelState } from "./types.js";
-import type { EnvironmentObject, EnvironmentOperationResult, EnvironmentSession } from "./environment-types.js";
+import type {
+  EnvironmentDocumentInspection,
+  EnvironmentObject,
+  EnvironmentOperationResult,
+  EnvironmentSession
+} from "./environment-types.js";
 import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model-types.js";
 import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
@@ -10,6 +15,7 @@ import {
   assertAuthorizationDecision,
   assertAutonomyGrant,
   assertChange,
+  assertEnvironmentDocumentInspection,
   assertEnvironmentObject,
   assertEnvironmentOperationResult,
   assertEnvironmentSession,
@@ -160,6 +166,18 @@ export function deserializeEnvironmentOperationResult(serialized: string): Envir
   requireNonEmptyString(serialized, "serialized environment operation result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertEnvironmentOperationResult(parsed);
+  return parsed;
+}
+
+export function serializeEnvironmentDocumentInspection(inspection: EnvironmentDocumentInspection): string {
+  assertEnvironmentDocumentInspection(inspection);
+  return JSON.stringify(inspection);
+}
+
+export function deserializeEnvironmentDocumentInspection(serialized: string): EnvironmentDocumentInspection {
+  requireNonEmptyString(serialized, "serialized environment document inspection is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertEnvironmentDocumentInspection(parsed);
   return parsed;
 }
 

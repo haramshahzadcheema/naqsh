@@ -117,31 +117,276 @@ def get_properties(obj):
     return properties
 
 
-def get_relationships(obj):
-    """Only FreeCAD-reported dependency links (OutList) are exposed -- see
-    Phase 12 Step 9: represent a relationship only where the environment
-    provides reliable information, never fabricate one."""
+def get_relationships(obj, errors):
+    """Only FreeCAD-reported dependency links are exposed, differentiated by
+    the MECHANISM that reported them (Phase 13 Step 9/11) -- never inferred
+    from naming/position/likelihood:
+
+    - "contains": from a container's own `.Group` list (App::Part,
+      App::DocumentObjectGroup). Reported once per child, on the container.
+    - "links_to": from `App::Link`'s own `.LinkedObject` property.
+    - "references": the residual generic dependency, from `obj.OutList`,
+      for every target not already classified above (unchanged from Phase
+      12 -- e.g. Part::Cut's Base/Tool). A target already reported as
+      "contains"/"links_to" is not ALSO reported as "references" here.
+
+    Sorted by (type, targetId) for deterministic output (Phase 13 Step 14):
+    FreeCAD's own `.Group`/`.OutList` ordering is not a documented
+    contract, so this script imposes one rather than depending on it.
+
+    `errors` (a mutable list this function appends to) records any
+    candidate relationship this function could not safely describe --
+    audit finding: an earlier version silently `continue`d past these with
+    no trace at all (no warning, no error), which is exactly the "swallowed
+    exception" this repository's error-handling discipline forbids
+    elsewhere (see normalize_value's own `{unsupported: true, ...}` marker
+    for the equivalent property-level case). A candidate relationship
+    failing to resolve is unlikely in practice (it would require an object
+    reference obtained directly from `.Group`/`.OutList`/`.LinkedObject` to
+    not have a working `.Name`), but "unlikely" is not "impossible" for a
+    real, imperfect engineering file, so it is still reported rather than
+    silently dropped.
+    """
     relationships = []
+    seen_targets = set()
+
+    try:
+        group = getattr(obj, "Group", None)
+    except Exception:
+        group = None
+    if isinstance(group, (list, tuple)):
+        for child in group:
+            try:
+                relationships.append({"type": "contains", "targetId": child.Name, "metadata": {}})
+                seen_targets.add(child.Name)
+            except Exception as error:
+                errors.append(
+                    {
+                        "kind": "relationship_inspection_failed",
+                        "objectId": obj.Name,
+                        "message": "contains: %s: %s" % (type(error).__name__, str(error)),
+                    }
+                )
+
+    try:
+        linked = getattr(obj, "LinkedObject", None)
+    except Exception:
+        linked = None
+    if linked is not None:
+        try:
+            relationships.append({"type": "links_to", "targetId": linked.Name, "metadata": {}})
+            seen_targets.add(linked.Name)
+        except Exception as error:
+            errors.append(
+                {
+                    "kind": "relationship_inspection_failed",
+                    "objectId": obj.Name,
+                    "message": "links_to: %s: %s" % (type(error).__name__, str(error)),
+                }
+            )
+
     try:
         out_list = obj.OutList
     except Exception:
         out_list = []
     for other in out_list:
         try:
+            if other.Name in seen_targets:
+                continue
             relationships.append({"type": "references", "targetId": other.Name, "metadata": {}})
-        except Exception:
-            continue
+        except Exception as error:
+            errors.append(
+                {
+                    "kind": "relationship_inspection_failed",
+                    "objectId": obj.Name,
+                    "message": "references: %s: %s" % (type(error).__name__, str(error)),
+                }
+            )
+
+    relationships.sort(key=lambda relationship: (relationship["type"], relationship["targetId"]))
     return relationships
 
 
-def object_to_dict(obj):
+# Reliable, mechanism-based classification rules for
+# EnvironmentObjectGenericType (Phase 13 Step 6) -- checked in order, first
+# match wins. Sketch is checked BEFORE Part::Feature because
+# Sketcher::SketchObject is ALSO derived from Part::Feature (confirmed
+# empirically against a real FreeCAD 1.1.3 install) -- without this
+# ordering every sketch would be misclassified as "solid". Deliberately
+# small: only categories this script can classify via a genuine FreeCAD API
+# check are included, matching the "unknown is better than a false
+# classification" rule -- no speculative "feature"/"assembly" buckets that
+# nothing here actually produces.
+_GENERIC_TYPE_RULES = (
+    (("App::Part", "App::DocumentObjectGroup"), "container"),
+    (("App::Link",), "link"),
+    (("Sketcher::SketchObject",), "sketch"),
+    (("Part::Datum", "App::OriginFeature", "App::Origin"), "datum"),
+    (("Part::Feature",), "solid"),
+)
+
+
+def get_generic_type(obj):
+    for base_types, generic_type in _GENERIC_TYPE_RULES:
+        for base_type in base_types:
+            try:
+                if obj.isDerivedFrom(base_type):
+                    return generic_type
+            except Exception:
+                continue
+    return "unknown"
+
+
+def find_parent_id(obj):
+    """The container (if any) whose `.Group` lists `obj` as a child --
+    Phase 13 Step 5/10: only a RELIABLE, FreeCAD-reported containment
+    mechanism, never inferred. Searches `obj.InList` (objects that
+    reference `obj` in some way, typically small) rather than scanning the
+    whole document, and sorts candidates by name first so the result is
+    deterministic even in the unusual case of more than one candidate
+    genuinely containing the same object."""
+    try:
+        candidates = sorted(obj.InList, key=lambda candidate: candidate.Name)
+    except Exception:
+        return None
+    for candidate in candidates:
+        try:
+            group = getattr(candidate, "Group", None)
+            if isinstance(group, (list, tuple)) and obj in group:
+                return candidate.Name
+        except Exception:
+            continue
+    return None
+
+
+def get_visibility(obj):
+    try:
+        value = getattr(obj, "Visibility", None)
+        if isinstance(value, bool):
+            return value
+    except Exception:
+        pass
+    return None
+
+
+EMPTY_GEOMETRY = {
+    "available": False,
+    "reason": "no_shape",
+    "valid": None,
+    "boundingBox": None,
+    "volume": None,
+    "surfaceArea": None,
+    "centerOfMass": None,
+    "solidCount": None,
+    "faceCount": None,
+    "edgeCount": None,
+    "vertexCount": None,
+    "shapeType": None,
+}
+
+# Distinct reason from "no_shape"/"invalid_shape" (both genuine facts about
+# the object itself) -- this one means geometry was never ATTEMPTED for
+# this call, a caller-visible, honest signal rather than looking identical
+# to "this object truly has no geometry" (Phase 13 Step 22 audit finding:
+# see get_geometry()'s own comment for why list_objects passes
+# include_geometry=False).
+GEOMETRY_NOT_REQUESTED_REASON = "not_requested_in_listing"
+
+
+def get_geometry(obj):
+    """BOUNDED, best-effort geometry metadata (Phase 13 Step 12) -- never a
+    geometry kernel abstraction, never a BREP dump. Every metric is
+    computed independently (`_safe`) so one unreadable metric (observed
+    empirically: a Sketch's `.Shape` exists but raises on `.Volume`/etc
+    with "shape is invalid") never blanks out the others or aborts object
+    inspection -- it just becomes `null` for that one field."""
+    try:
+        shape = getattr(obj, "Shape", None)
+    except Exception:
+        shape = None
+    if shape is None:
+        return dict(EMPTY_GEOMETRY)
+
+    def _safe(fn):
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    valid = _safe(lambda: bool(shape.isValid()))
+    if not valid:
+        geometry = dict(EMPTY_GEOMETRY)
+        geometry["reason"] = "invalid_shape"
+        geometry["valid"] = valid
+        return geometry
+
+    bbox = _safe(lambda: shape.BoundBox)
+    bounding_box = None
+    if bbox is not None:
+        bounding_box = _safe(
+            lambda: {
+                "min": {"x": bbox.XMin, "y": bbox.YMin, "z": bbox.ZMin},
+                "max": {"x": bbox.XMax, "y": bbox.YMax, "z": bbox.ZMax},
+            }
+        )
+
+    center = _safe(lambda: shape.CenterOfMass)
+    center_of_mass = None
+    if center is not None:
+        center_of_mass = _safe(lambda: {"x": center.x, "y": center.y, "z": center.z})
+
+    return {
+        "available": True,
+        "reason": None,
+        "valid": valid,
+        "boundingBox": bounding_box,
+        "volume": _safe(lambda: shape.Volume),
+        "surfaceArea": _safe(lambda: shape.Area),
+        "centerOfMass": center_of_mass,
+        "solidCount": _safe(lambda: len(shape.Solids)),
+        "faceCount": _safe(lambda: len(shape.Faces)),
+        "edgeCount": _safe(lambda: len(shape.Edges)),
+        "vertexCount": _safe(lambda: len(shape.Vertexes)),
+        "shapeType": _safe(lambda: shape.ShapeType),
+    }
+
+
+def object_to_dict(obj, include_geometry=True, errors=None):
+    """`include_geometry=False` (used by `op_list_objects`, Phase 13 Step
+    22 audit finding) skips `get_geometry()` entirely -- computing bounding
+    box/volume/area/center-of-mass/topology counts for EVERY object on
+    EVERY `list_objects()` call is real, repeated, UNCACHED cost (each
+    call reopens the document fresh; there is no cross-call FreeCAD state
+    to memoize against). A real engineering assembly can have hundreds of
+    complex solids -- forcing full geometry for the whole inventory every
+    time it's listed does not "degrade predictably". `inspect_object`
+    (exactly one object) always computes it: that cost is bounded by
+    definition and is exactly what a caller asking for ONE object's full
+    detail is asking for.
+
+    `errors` is an optional mutable list `get_relationships()` appends to
+    -- passed through from the caller (`op_list_objects`/`op_inspect_object`)
+    so a relationship-inspection failure for THIS object is reported
+    alongside the document/object's other diagnostics rather than only
+    ever being visible to a caller that happens to pass one in."""
+    if errors is None:
+        errors = []
     label = getattr(obj, "Label", None) or obj.Name
+    if include_geometry:
+        geometry = get_geometry(obj)
+    else:
+        geometry = dict(EMPTY_GEOMETRY)
+        geometry["reason"] = GEOMETRY_NOT_REQUESTED_REASON
     return {
         "id": obj.Name,
         "type": getattr(obj, "TypeId", "Unknown"),
         "name": label,
+        "genericType": get_generic_type(obj),
+        "parentId": find_parent_id(obj),
+        "visible": get_visibility(obj),
+        "geometry": geometry,
         "properties": get_properties(obj),
-        "relationships": get_relationships(obj),
+        "relationships": get_relationships(obj, errors),
         "metadata": {},
     }
 
@@ -182,10 +427,55 @@ def op_connect(params):
 
 
 def op_list_objects(params):
+    """Sorted by `.Name` for deterministic output (Phase 13 Step 14) --
+    FreeCAD's own `doc.Objects` iteration order is not a documented
+    contract. Per-object failures are collected into `inspectionErrors`
+    rather than aborting the whole call (Phase 13 Step 16): one object this
+    script cannot safely describe must not make an entire real, otherwise-
+    healthy document un-inspectable."""
     file_path = params["filePath"]
     doc = _open(file_path)
     try:
-        return {"objects": [object_to_dict(obj) for obj in doc.Objects]}
+        objects = []
+        errors = []
+        for obj in sorted(doc.Objects, key=lambda candidate: candidate.Name):
+            try:
+                objects.append(object_to_dict(obj, include_geometry=False, errors=errors))
+            except Exception as error:
+                errors.append(
+                    {
+                        "kind": "object_unavailable",
+                        "objectId": getattr(obj, "Name", None),
+                        "message": "%s: %s" % (type(error).__name__, str(error)),
+                    }
+                )
+        return {"objects": objects, "inspectionErrors": errors}
+    finally:
+        _close(doc)
+
+
+def op_inspect_document(params):
+    """The cheapest inspection tier (Phase 13 Step 3/4/13): document
+    identity, object count/ids, and hierarchy roots only -- no per-object
+    properties/relationships/geometry, so an agent can get a document
+    overview without paying for a full `list_objects` call."""
+    import FreeCAD
+
+    file_path = params["filePath"]
+    doc = _open(file_path)
+    try:
+        object_ids = sorted(obj.Name for obj in doc.Objects)
+        root_ids = sorted(obj.Name for obj in doc.RootObjects)
+        version = FreeCAD.Version()
+        return {
+            "documentId": doc.Name,
+            "documentName": getattr(doc, "Label", None) or doc.Name,
+            "filePath": getattr(doc, "FileName", None) or file_path,
+            "objectCount": len(object_ids),
+            "objectIds": object_ids,
+            "rootObjectIds": root_ids,
+            "environmentVersion": ".".join(str(part) for part in version[0:3]),
+        }
     finally:
         _close(doc)
 
@@ -198,7 +488,8 @@ def op_inspect_object(params):
         obj = doc.getObject(object_id)
         if obj is None:
             return {"found": False}
-        return {"found": True, "object": object_to_dict(obj)}
+        errors = []
+        return {"found": True, "object": object_to_dict(obj, errors=errors), "inspectionErrors": errors}
     finally:
         _close(doc)
 
@@ -219,6 +510,7 @@ OPERATIONS = {
     "connect": op_connect,
     "list_objects": op_list_objects,
     "inspect_object": op_inspect_object,
+    "inspect_document": op_inspect_document,
     "save": op_save,
 }
 

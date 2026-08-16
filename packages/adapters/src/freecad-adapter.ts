@@ -2,7 +2,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   createEnvironmentDescriptor,
+  createEnvironmentDocumentInspection,
   createEnvironmentHealth,
+  createEnvironmentInspectionError,
   createEnvironmentObject,
   createEnvironmentOperationResult,
   createEnvironmentSession,
@@ -10,10 +12,16 @@ import {
   toIsoTimestamp,
   type EnvironmentCapability,
   type EnvironmentErrorKind,
+  type EnvironmentInspectionError,
+  type EnvironmentInspectionErrorKind,
   type EnvironmentObject,
+  type EnvironmentObjectGenericType,
+  type EnvironmentObjectGeometryInput,
   type EnvironmentObjectId,
   type EnvironmentOperationKind,
   type EnvironmentOperationResult,
+  type EnvironmentPropertyInput,
+  type EnvironmentRelationshipInput,
   type EnvironmentSession
 } from "@naqsh/schemas";
 import type { EnvironmentAdapter } from "@naqsh/core";
@@ -32,16 +40,18 @@ import { runFreecadOperation, type FreeCadRuntimeConfig, type FreeCadRuntimeResu
  * separate, later concern (see README's P5/P12 notes) -- this file's job
  * ends at producing a trustworthy `EnvironmentOperationResult`.
  *
- * Scope (Phase 12): read/inspect/save only. `capabilities` is exactly
- * `["save"]` -- `create`/`modify`/`delete`/`checkpoint` are all real,
- * present methods (the `EnvironmentAdapter` interface requires them
- * unconditionally, see environment-adapter.ts) but every one of them is
- * capability-gated to `unsupported_capability` in this phase, deliberately:
- * Phase 12's own brief lists inspection/discovery/save as the priority
- * (items 1-10), never modification, and repeatedly warns against turning
- * this phase into full CAD manipulation. A minimal `modifyObject` is a
- * natural, well-scoped Phase 13 starting point once this read boundary is
- * trusted -- not implemented here.
+ * Scope (Phase 12, extended by Phase 13's much deeper read boundary --
+ * see `inspectDocument()` and the richer `EnvironmentObject` fields):
+ * read/inspect/save only. `capabilities` is exactly `["save"]` --
+ * `create`/`modify`/`delete`/`checkpoint` are all real, present methods
+ * (the `EnvironmentAdapter` interface requires them unconditionally, see
+ * environment-adapter.ts) but every one of them is capability-gated to
+ * `unsupported_capability` through Phase 13, deliberately: Phase 12/13's
+ * own briefs list inspection/discovery/save as the priority, never
+ * modification, and repeatedly warn against turning this into full CAD
+ * manipulation. A minimal `modifyObject` is a natural, well-scoped Phase
+ * 14 starting point once this read boundary is trusted -- not implemented
+ * here.
  *
  * Stateless-per-call design: each operation spawns a fresh
  * `freecadcmd` process (via freecad-runtime.ts) that opens the target
@@ -103,9 +113,19 @@ interface RawFreecadObject {
   id?: unknown;
   type?: unknown;
   name?: unknown;
+  genericType?: unknown;
+  parentId?: unknown;
+  visible?: unknown;
+  geometry?: unknown;
   properties?: unknown;
   relationships?: unknown;
   metadata?: unknown;
+}
+
+interface RawFreecadInspectionError {
+  kind?: unknown;
+  objectId?: unknown;
+  message?: unknown;
 }
 
 export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): EnvironmentAdapter {
@@ -139,7 +159,8 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
     operation: EnvironmentOperationKind,
     sessionId: string | null,
     objectId: EnvironmentObjectId | null,
-    data: unknown
+    data: unknown,
+    metadata: Record<string, unknown> = {}
   ): EnvironmentOperationResult {
     const startedAt = now();
     return createEnvironmentOperationResult({
@@ -150,7 +171,8 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       status: "success",
       data,
       startedAt,
-      completedAt: now()
+      completedAt: now(),
+      metadata
     });
   }
 
@@ -222,18 +244,60 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
     if (typeof record.id !== "string" || record.id.length === 0) {
       return { message: "FreeCAD object is missing a valid, non-empty id (expected obj.Name)" };
     }
+    const baseMetadata = typeof record.metadata === "object" && record.metadata !== null ? (record.metadata as Record<string, unknown>) : {};
     try {
       return createEnvironmentObject({
         id: record.id,
         type: typeof record.type === "string" ? record.type : "",
         name: typeof record.name === "string" ? record.name : "",
-        properties: Array.isArray(record.properties) ? (record.properties as never) : [],
-        relationships: Array.isArray(record.relationships) ? (record.relationships as never) : [],
-        metadata: typeof record.metadata === "object" && record.metadata !== null ? (record.metadata as Record<string, unknown>) : {}
+        genericType: record.genericType as EnvironmentObjectGenericType | undefined,
+        parentId: typeof record.parentId === "string" ? record.parentId : null,
+        visible: typeof record.visible === "boolean" ? record.visible : null,
+        geometry: record.geometry as EnvironmentObjectGeometryInput | undefined,
+        properties: Array.isArray(record.properties) ? (record.properties as EnvironmentPropertyInput[]) : [],
+        relationships: Array.isArray(record.relationships) ? (record.relationships as EnvironmentRelationshipInput[]) : [],
+        // Object-level provenance (Phase 13 Step 17): every EnvironmentObject
+        // this adapter returns remains identifiable as FreeCAD-observed data
+        // -- NOT a claim about WorldModelState (this adapter never touches
+        // that), just an honest "where did this come from" stamp on the raw
+        // observation. Deliberately excludes a per-object timestamp: WHEN
+        // this observation happened is already carried at the OPERATION
+        // level (`EnvironmentOperationResult.completedAt`, stamped once per
+        // listObjects/inspectObject call) -- duplicating a live clock read
+        // into every object's metadata would make `listObjects()` produce a
+        // DIFFERENT `data` value on every repeated call even with zero
+        // mutation in between, breaking the generic contract-test
+        // invariant every adapter must satisfy (discovered via a genuine
+        // test failure against real FreeCAD, not by inspection alone).
+        metadata: { ...baseMetadata, provenance: { environmentKind: descriptor.kind } }
       });
     } catch (error) {
       return { message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** Best-effort: a malformed inspection-error entry from runner.py is
+   * itself just diagnostic metadata, not core data -- skipped rather than
+   * failing the whole (otherwise successful) list_objects/inspect_document
+   * call over it. */
+  function tryBuildInspectionErrors(raw: unknown): EnvironmentInspectionError[] {
+    if (!Array.isArray(raw)) return [];
+    const errors: EnvironmentInspectionError[] = [];
+    for (const entry of raw) {
+      const record = entry as RawFreecadInspectionError;
+      try {
+        errors.push(
+          createEnvironmentInspectionError({
+            kind: record.kind as EnvironmentInspectionErrorKind,
+            objectId: typeof record.objectId === "string" ? record.objectId : null,
+            message: typeof record.message === "string" ? record.message : "unknown inspection error"
+          })
+        );
+      } catch {
+        continue;
+      }
+    }
+    return errors;
   }
 
   return {
@@ -271,17 +335,26 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       if (guard.result) return guard.result;
       const result = await runOperation("list_objects", { filePath: guard.filePath });
       if (result.status === "error") return failure("list_objects", session.id, null, result.kind, result.message);
-      const data = result.data as { objects?: unknown };
+      const data = result.data as { objects?: unknown; inspectionErrors?: unknown };
       const rawObjects = Array.isArray(data.objects) ? data.objects : [];
       const built: EnvironmentObject[] = [];
+      const warnings: string[] = [];
+      // Partial success (Phase 13 Step 16): a single malformed object must
+      // never take down an otherwise-successful listing of a real
+      // document -- skip it, record why, and keep going. Contrast with
+      // inspectObject below, which targets exactly ONE object and has
+      // nothing meaningful to return in a "partial" sense if that one
+      // object is malformed.
       for (const raw of rawObjects) {
         const object = tryBuildObject(raw);
         if ("message" in object) {
-          return failure("list_objects", session.id, null, "environment_failure", `Malformed object from FreeCAD: ${object.message}`);
+          warnings.push(`Skipped a malformed object from FreeCAD: ${object.message}`);
+          continue;
         }
         built.push(object);
       }
-      return success("list_objects", session.id, null, built);
+      const inspectionErrors = tryBuildInspectionErrors(data.inspectionErrors);
+      return success("list_objects", session.id, null, built, { warnings, inspectionErrors });
     },
 
     async inspectObject(session, objectId) {
@@ -289,7 +362,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       if (guard.result) return guard.result;
       const result = await runOperation("inspect_object", { filePath: guard.filePath, objectId });
       if (result.status === "error") return failure("inspect_object", session.id, objectId, result.kind, result.message);
-      const data = result.data as { found?: unknown; object?: unknown };
+      const data = result.data as { found?: unknown; object?: unknown; inspectionErrors?: unknown };
       if (!data.found) {
         return failure("inspect_object", session.id, objectId, "object_not_found", `No object with id "${objectId}"`);
       }
@@ -297,7 +370,51 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       if ("message" in object) {
         return failure("inspect_object", session.id, objectId, "environment_failure", `Malformed object from FreeCAD: ${object.message}`);
       }
-      return success("inspect_object", session.id, objectId, object);
+      // A relationship (or other per-object detail) FreeCAD reported but
+      // this adapter could not safely describe for THIS object -- Phase
+      // 13 Step 15/16: never silently drop it, surface it alongside the
+      // still-successful object (mirrors listObjects' own
+      // metadata.inspectionErrors, same partial-success discipline).
+      const inspectionErrors = tryBuildInspectionErrors(data.inspectionErrors);
+      return success("inspect_object", session.id, objectId, object, inspectionErrors.length > 0 ? { inspectionErrors } : {});
+    },
+
+    async inspectDocument(session) {
+      const guard = requireConnected(session, "inspect_document");
+      if (guard.result) return guard.result;
+      const result = await runOperation("inspect_document", { filePath: guard.filePath });
+      if (result.status === "error") return failure("inspect_document", session.id, null, result.kind, result.message);
+      const data = result.data as {
+        documentId?: unknown;
+        documentName?: unknown;
+        filePath?: unknown;
+        objectCount?: unknown;
+        objectIds?: unknown;
+        rootObjectIds?: unknown;
+        environmentVersion?: unknown;
+      };
+      try {
+        const inspection = createEnvironmentDocumentInspection({
+          environmentKind: descriptor.kind,
+          documentId: typeof data.documentId === "string" ? data.documentId : null,
+          documentName: typeof data.documentName === "string" ? data.documentName : null,
+          filePath: typeof data.filePath === "string" ? data.filePath : null,
+          objectCount: typeof data.objectCount === "number" ? data.objectCount : 0,
+          objectIds: Array.isArray(data.objectIds) ? (data.objectIds as string[]) : [],
+          rootObjectIds: Array.isArray(data.rootObjectIds) ? (data.rootObjectIds as string[]) : [],
+          inspectedAt: now(),
+          environmentVersion: typeof data.environmentVersion === "string" ? data.environmentVersion : null
+        });
+        return success("inspect_document", session.id, null, inspection);
+      } catch (error) {
+        return failure(
+          "inspect_document",
+          session.id,
+          null,
+          "environment_failure",
+          `Malformed document inspection from FreeCAD: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     },
 
     async createObject(session) {

@@ -125,12 +125,138 @@ export interface EnvironmentRelationshipInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * A NORMALIZED, small, extensible object category (Phase 13 Step 6) — every
+ * adapter maps its own environment-specific type string (still carried
+ * verbatim in `EnvironmentObject.type`, e.g. FreeCAD's `"Part::Box"`) onto
+ * one of these. Deliberately NOT a giant universal engineering ontology:
+ * only categories a real adapter can classify RELIABLY (via an explicit,
+ * documented mechanism, never a guess) are included. `"unknown"` is the
+ * correct, honest answer whenever an object doesn't match a reliable rule —
+ * a false-but-specific classification is worse than an honest "unknown".
+ * Closed-but-additive, matching `ToolTarget`/`EntitySource`'s convention:
+ * extend only when a real adapter can reliably produce a new value, never
+ * speculatively.
+ */
+export type EnvironmentObjectGenericType = "solid" | "sketch" | "container" | "datum" | "link" | "unknown";
+
+export const ENVIRONMENT_OBJECT_GENERIC_TYPES: readonly EnvironmentObjectGenericType[] = [
+  "solid",
+  "sketch",
+  "container",
+  "datum",
+  "link",
+  "unknown"
+];
+
+/** A plain 3-component vector — reused by bounding box corners and center
+ * of mass. Not `EnvironmentProperty`'s normalized `{x,y,z}` Vector shape
+ * (that one is a property VALUE); this is a fixed geometry field shape. */
+export interface EnvironmentVector3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface EnvironmentBoundingBox {
+  min: EnvironmentVector3;
+  max: EnvironmentVector3;
+}
+
+/**
+ * BOUNDED, best-effort geometry metadata (Phase 13 Step 12) — never a full
+ * geometry kernel abstraction and never a BREP/topology dump. `available`
+ * is false whenever no shape exists or the shape is invalid/unreadable;
+ * `reason` explains why in that case (e.g. `"no_shape"`, `"invalid_shape"`).
+ * When `available` is true, every OTHER field is still independently
+ * nullable — a single metric an adapter could not safely compute (Phase 13
+ * Step 7's "one bad property must not destroy the whole inspection", applied
+ * to geometry) becomes `null` for just that field, never a reason to blank
+ * out the rest or fail the object.
+ */
+export interface EnvironmentObjectGeometry {
+  available: boolean;
+  reason: string | null;
+  valid: boolean | null;
+  boundingBox: EnvironmentBoundingBox | null;
+  volume: number | null;
+  surfaceArea: number | null;
+  centerOfMass: EnvironmentVector3 | null;
+  solidCount: number | null;
+  faceCount: number | null;
+  edgeCount: number | null;
+  vertexCount: number | null;
+  shapeType: string | null;
+}
+
+export interface EnvironmentObjectGeometryInput {
+  available?: boolean;
+  reason?: string | null;
+  valid?: boolean | null;
+  boundingBox?: EnvironmentBoundingBox | null;
+  volume?: number | null;
+  surfaceArea?: number | null;
+  centerOfMass?: EnvironmentVector3 | null;
+  solidCount?: number | null;
+  faceCount?: number | null;
+  edgeCount?: number | null;
+  vertexCount?: number | null;
+  shapeType?: string | null;
+}
+
+/** The canonical "nothing computed" geometry value — what an adapter that
+ * never attempts geometry inspection (e.g. a non-CAD mock) should report,
+ * and the default `createEnvironmentObject` applies when a caller supplies
+ * no `geometry` input at all. */
+export const UNAVAILABLE_ENVIRONMENT_GEOMETRY: EnvironmentObjectGeometry = Object.freeze({
+  available: false,
+  reason: null,
+  valid: null,
+  boundingBox: null,
+  volume: null,
+  surfaceArea: null,
+  centerOfMass: null,
+  solidCount: null,
+  faceCount: null,
+  edgeCount: null,
+  vertexCount: null,
+  shapeType: null
+});
+
 /** A raw, adapter-reported object — deliberately NOT `EngineeringObject`.
- * See this file's header comment for why the two stay separate. */
+ * See this file's header comment for why the two stay separate.
+ *
+ * Object identity (Phase 13 Step 5): `id` is only as stable as the
+ * ADAPTER that issued it documents it to be — this generic type makes no
+ * universal promise beyond "stable enough to re-identify this object
+ * across calls within the SAME connected session". A real adapter (see
+ * FreeCADAdapter) must document its own, possibly weaker, guarantee (e.g.
+ * "document-stable, not globally unique, not persistence-guaranteed")
+ * rather than letting a caller assume more than the environment actually
+ * provides. */
 export interface EnvironmentObject {
   id: EnvironmentObjectId;
   type: string;
   name: string;
+  /** Normalized category — see `EnvironmentObjectGenericType`. `type`
+   * above remains the environment-specific type string; this is the
+   * additional, generic classification derived from it. */
+  genericType: EnvironmentObjectGenericType;
+  /** The `id` of this object's containing object (a group/assembly/part),
+   * or `null` if this object has no known container (top-level, or the
+   * environment doesn't expose containment). Only ever set from a
+   * RELIABLE, environment-reported containment mechanism — never inferred
+   * from position, naming, or proximity (Phase 13 Step 9/10). */
+  parentId: EnvironmentObjectId | null;
+  /** Whether the object is currently shown/hidden in the environment, or
+   * `null` if the environment doesn't expose this for this object. */
+  visible: boolean | null;
+  /** Bounded, best-effort geometry metadata — see
+   * `EnvironmentObjectGeometry`. Always present (never a separate optional
+   * field) so every caller can check `.available` uniformly; defaults to
+   * `UNAVAILABLE_ENVIRONMENT_GEOMETRY` when an adapter/mock never attempts
+   * geometry inspection. */
+  geometry: EnvironmentObjectGeometry;
   properties: EnvironmentProperty[];
   relationships: EnvironmentRelationship[];
   metadata: Record<string, unknown>;
@@ -138,11 +264,19 @@ export interface EnvironmentObject {
 
 /** Input for creating one. Properties are a flat, caller-supplied list
  * (no `readOnly` — that's an adapter-determined trait reported back on
- * the resulting `EnvironmentObject`, not something a caller declares). */
+ * the resulting `EnvironmentObject`, not something a caller declares).
+ * `genericType`/`parentId`/`visible`/`geometry` are all optional and
+ * default to "nothing known" — existing callers (mock seed data, the
+ * `create_object` capability) do not need to supply Phase 13's richer
+ * inspection fields to keep constructing valid objects. */
 export interface EnvironmentObjectInput {
   id?: EnvironmentObjectId;
   type: string;
   name: string;
+  genericType?: EnvironmentObjectGenericType;
+  parentId?: EnvironmentObjectId | null;
+  visible?: boolean | null;
+  geometry?: EnvironmentObjectGeometryInput;
   properties?: EnvironmentPropertyInput[];
   relationships?: EnvironmentRelationshipInput[];
   metadata?: Record<string, unknown>;
@@ -182,6 +316,7 @@ export type EnvironmentOperationKind =
   | "disconnect"
   | "list_objects"
   | "inspect_object"
+  | "inspect_document"
   | "create_object"
   | "modify_object"
   | "delete_object"
@@ -195,6 +330,7 @@ export const ENVIRONMENT_OPERATION_KINDS: readonly EnvironmentOperationKind[] = 
   "disconnect",
   "list_objects",
   "inspect_object",
+  "inspect_document",
   "create_object",
   "modify_object",
   "delete_object",
@@ -279,3 +415,110 @@ export interface EnvironmentOperationResultInput {
  * are aliases rather than separate validated shapes. */
 export type InspectionResult = EnvironmentOperationResult;
 export type ModificationResult = EnvironmentOperationResult;
+
+/**
+ * Every distinct way inspecting ONE PART of a document/object can fail
+ * without failing the inspection as a whole (Phase 13 Step 15/16) — a
+ * strictly finer-grained vocabulary than `EnvironmentErrorKind`, which
+ * describes why an entire OPERATION failed. An `EnvironmentInspectionError`
+ * never appears as `EnvironmentOperationResult.error` (that field is still
+ * exactly the whole-operation outcome); it appears inside
+ * `EnvironmentDocumentInspection.inspectionErrors` and inside a
+ * successful `list_objects` result's `metadata.inspectionErrors`,
+ * alongside objects that DID succeed — "one bad object/property must not
+ * destroy the whole result" applies to inspection specifically.
+ */
+export type EnvironmentInspectionErrorKind =
+  | "object_unavailable"
+  | "unsupported_object_type"
+  | "property_inspection_failed"
+  | "relationship_inspection_failed"
+  | "geometry_inspection_failed"
+  | "serialization_failed";
+
+export const ENVIRONMENT_INSPECTION_ERROR_KINDS: readonly EnvironmentInspectionErrorKind[] = [
+  "object_unavailable",
+  "unsupported_object_type",
+  "property_inspection_failed",
+  "relationship_inspection_failed",
+  "geometry_inspection_failed",
+  "serialization_failed"
+];
+
+export interface EnvironmentInspectionError {
+  kind: EnvironmentInspectionErrorKind;
+  /** Which object this failure concerns, or `null` for a document-wide
+   * failure not attributable to one object. */
+  objectId: EnvironmentObjectId | null;
+  message: string;
+}
+
+export interface EnvironmentInspectionErrorInput {
+  kind: EnvironmentInspectionErrorKind;
+  objectId?: EnvironmentObjectId | null;
+  message: string;
+}
+
+/**
+ * Document-level inspection summary (Phase 13 Step 3/4) — the CHEAPEST
+ * inspection tier: identity, object count/ids, and hierarchy roots, with
+ * NO per-object properties/relationships/geometry (those come from
+ * `listObjects`/`inspectObject`). Deliberately separate from
+ * `EnvironmentSession`: a session is "what NAQSH has open"; this is "what
+ * the environment reports the open document CURRENTLY contains", captured
+ * at one point in time (`inspectedAt`) — calling `inspectDocument()` again
+ * after a mutation can report a different value, exactly like every other
+ * inspection call.
+ *
+ * FreeCAD document ≠ World Model (Phase 13 Step 17): this type is exactly
+ * as far as the EnvironmentAdapter boundary goes. Reconciling it into
+ * `WorldModelState` remains a separate, later concern, same as every other
+ * `EnvironmentOperationResult.data` shape.
+ */
+export interface EnvironmentDocumentInspection {
+  environmentKind: string;
+  /** The environment's own internal document identifier (e.g. FreeCAD's
+   * `doc.Name`), or `null` if the environment has none distinct from
+   * `documentName`. */
+  documentId: string | null;
+  /** Human-facing document name/label, or `null` if unavailable. */
+  documentName: string | null;
+  /** Where the document is stored, if the environment exposes one (e.g. a
+   * file path), or `null` for an in-memory-only/unsaved document. */
+  filePath: string | null;
+  objectCount: number;
+  /** Every object id currently in the document, in a deterministic
+   * (sorted) order — see Phase 13 Step 14. */
+  objectIds: EnvironmentObjectId[];
+  /** Object ids with no known containing object (top-level) — a
+   * deterministic subset of `objectIds`. */
+  rootObjectIds: EnvironmentObjectId[];
+  /** When this inspection was performed. */
+  inspectedAt: string;
+  /** The environment's own reported version (e.g. "1.1.3"), or `null` if
+   * genuinely unavailable — never fabricated (Phase 13 Step 3). */
+  environmentVersion: string | null;
+  warnings: string[];
+  /** Environment features this adapter knows it cannot inspect (e.g. a
+   * workbench-specific object kind), reported honestly rather than
+   * silently ignored. */
+  unsupportedFeatures: string[];
+  inspectionErrors: EnvironmentInspectionError[];
+  metadata: Record<string, unknown>;
+}
+
+export interface EnvironmentDocumentInspectionInput {
+  environmentKind: string;
+  documentId?: string | null;
+  documentName?: string | null;
+  filePath?: string | null;
+  objectCount: number;
+  objectIds?: EnvironmentObjectId[];
+  rootObjectIds?: EnvironmentObjectId[];
+  inspectedAt?: string;
+  environmentVersion?: string | null;
+  warnings?: string[];
+  unsupportedFeatures?: string[];
+  inspectionErrors?: EnvironmentInspectionErrorInput[];
+  metadata?: Record<string, unknown>;
+}

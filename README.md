@@ -784,6 +784,88 @@ failed; `npm test` exits `0` either way. Both are wired into
 `packages/adapters/package.json`'s `test` script and run as part of the
 normal test suite.
 
+## FreeCAD Adapter: Deep Inspection (P13)
+
+**Extends P12's read boundary** — `list_objects`/`inspect_object` now
+report far more per object, and a new `inspect_document`
+operation/`inspectDocument()` method gives the cheapest inspection tier
+(document identity, object count/ids, hierarchy roots, no per-object
+payload). `capabilities` is still exactly `["save"]` — P13 adds no
+mutation capability, verified structurally by `repo-boundaries.test.ts`'s
+P13 guard block.
+
+**Richer `EnvironmentObject`.** Every object now also carries: `genericType`
+(a small, normalized category — `"solid"`/`"sketch"`/`"container"`/
+`"datum"`/`"link"`/`"unknown"` — derived from a reliable
+`obj.isDerivedFrom(...)` check, never a guess; `"unknown"` is the honest
+answer when no rule applies, deliberately not a giant universal CAD
+ontology); `parentId` (the containing object's id, found via that
+container's own `.Group` list, or `null`); `visible` (FreeCAD's own
+`.Visibility`, or `null`); and `geometry` (bounded, best-effort metadata
+from `obj.Shape` — bounding box, volume, surface area, center of mass,
+solid/face/edge/vertex counts, validity — computed defensively PER METRIC
+so one unreadable value never blanks out the rest or aborts the object;
+`geometry.available` is honestly `false`, with a `reason`, whenever no
+shape exists or the shape is invalid). Cost-tiered (audit finding):
+`listObjects()` (inventory tier) skips geometry entirely
+(`available: false, reason: "not_requested_in_listing"`) rather than
+recomputing bounding box/volume/topology for every object on every call —
+real, repeated, uncached cost for a large assembly; `inspectObject()`
+(single-object detail tier) always computes it, a cost bounded by
+definition.
+
+**Differentiated relationships**, no longer collapsed into one blanket
+type: `"contains"` (a container's own `.Group` list), `"links_to"`
+(`App::Link`'s own `.LinkedObject`), `"references"` (the residual generic
+`OutList` dependency, unchanged from P12). Every type is derived from a
+genuine, distinct FreeCAD mechanism — never inferred merely because two
+objects seem related.
+
+**Object identity, stated honestly (Phase 13 Step 5).**
+`EnvironmentObjectId` is FreeCAD's own `obj.Name` — stable *within one open
+document session*, NOT globally unique, and NOT preserved for the
+*document itself* across a save/reopen cycle: confirmed empirically that
+`FreeCAD.openDocument(path)` assigns the document a NEW internal `.Name`
+derived from the file's basename, even if it was created under a different
+name. `EnvironmentDocumentInspection.documentId` reports whatever FreeCAD
+actually says at inspection time — never a value this adapter assumes or
+remembers from creation. See `packages/adapters/freecad/README.md` for the
+full discussion.
+
+**Partial success (Phase 13 Step 16).** `list_objects` continues past a
+single object it cannot describe, returning every object it COULD build
+plus a `metadata.inspectionErrors` list for the ones it couldn't — a
+malformed/unsupported object in an otherwise-healthy real document no
+longer fails the entire call. `FreeCadAdapter.listObjects` mirrors this on
+the TypeScript side: a malformed raw object is skipped with a warning
+(`result.metadata.warnings`), never aborting. The same discipline reaches
+one level deeper: a single relationship candidate `get_relationships()`
+cannot safely describe is reported as `relationship_inspection_failed`
+rather than silently dropped (an audit-caught fix — an earlier version
+swallowed this case with no trace at all).
+
+**Determinism.** Object listings are sorted by `.Name`; relationships are
+sorted by `(type, targetId)`; `metadata.provenance` on every object carries
+only a static `environmentKind` marker, deliberately no per-call
+timestamp — an earlier version of this stamped a live `observedAt` into
+every object and broke the generic "repeated `listObjects()` calls with no
+mutation return identical data" contract invariant every adapter must
+satisfy (caught by running the real-FreeCAD test suite, not by inspection
+alone). "When" is already carried once per call by the surrounding
+`EnvironmentOperationResult.completedAt`.
+
+**Four new observe-tier tools** (`packages/core/src`, all
+`mutation: "observe"`, `target: "environment"`, none importing a concrete
+adapter package): `inspect_environment_document`,
+`inspect_environment_objects`, `inspect_environment_object`,
+`inspect_environment_relationships` (a lighter, relationship-only
+reshaping of `listObjects`'s own result — not a new adapter capability).
+
+**Deliberately NOT implemented (P14+ territory).** Creating objects,
+modifying parameters, deleting objects, geometry generation/editing,
+feature-tree rewriting, simulation, optimization, and environment↔World-Model
+reconciliation — all unchanged from P12's own scope statement above.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`

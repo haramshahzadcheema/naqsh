@@ -112,6 +112,31 @@ describe("Mock environment: deterministic initialization and inspection", () => 
   });
 });
 
+describe("Mock environment: inspectDocument (Phase 13)", () => {
+  it("reports the seeded object count/ids and passes through the session's documentName", async () => {
+    const adapter = createMockEnvironment();
+    const connectResult = await adapter.connect({ documentName: "my-doc" });
+    const session = connectResult.data as EnvironmentSession;
+    const result = await adapter.inspectDocument(session);
+    assert.equal(result.status, "success");
+    const inspection = result.data as { environmentKind: string; documentName: string | null; objectCount: number; objectIds: string[]; rootObjectIds: string[] };
+    assert.equal(inspection.environmentKind, "mock");
+    assert.equal(inspection.documentName, "my-doc");
+    assert.equal(inspection.objectCount, 2);
+    assert.deepEqual(inspection.objectIds.sort(), ["widget_a", "widget_b"]);
+    // Neither seeded widget declares a parentId -- both are roots.
+    assert.deepEqual(inspection.rootObjectIds.sort(), ["widget_a", "widget_b"]);
+  });
+
+  it("reflects object creation/deletion in subsequent inspectDocument calls", async () => {
+    const adapter = createMockEnvironment();
+    const session = await connect(adapter);
+    await adapter.createObject(session, { type: "part", name: "extra" });
+    const afterCreate = (await adapter.inspectDocument(session)).data as { objectCount: number };
+    assert.equal(afterCreate.objectCount, 3);
+  });
+});
+
 describe("Mock environment: object creation and modification", () => {
   it("creates a new object with a deterministic id", async () => {
     const adapter = createMockEnvironment();

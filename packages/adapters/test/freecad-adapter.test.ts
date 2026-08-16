@@ -61,6 +61,19 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
         const found = objects.find((object) => object.id === objectId);
         return found ? { status: "success", data: { found: true, object: found } } : { status: "success", data: { found: false } };
       }
+      case "inspect_document":
+        return {
+          status: "success",
+          data: {
+            documentId: "FakeDoc",
+            documentName: "FakeDoc",
+            filePath: params.filePath,
+            objectCount: objects.length,
+            objectIds: objects.map((object) => object.id).sort(),
+            rootObjectIds: objects.map((object) => object.id).sort(),
+            environmentVersion: "1.1.3-fake"
+          }
+        };
       case "save":
         return { status: "success", data: { saved: true } };
       default:
@@ -217,7 +230,44 @@ describe("createFreeCadAdapter: object enumeration and inspection", () => {
     assert.equal(missing.error?.kind, "object_not_found");
   });
 
-  it("REGRESSION: a malformed object from the runtime becomes a structured error, never an uncaught exception or a silently-empty result", async () => {
+  it("REGRESSION (Phase 13 audit): a relationship-inspection failure the runtime reports for inspectObject's single object is surfaced via metadata, never silently dropped", async () => {
+    // Mirrors the equivalent listObjects test below, but for the
+    // single-object detail path (op_inspect_object in runner.py) -- an
+    // earlier version of get_relationships() silently `continue`d past a
+    // relationship it could not describe, with no trace anywhere.
+    const fake = buildFakeRuntime();
+    const withRelationshipError = async (operation: string, params: Record<string, unknown>) => {
+      if (operation === "inspect_object") {
+        return {
+          status: "success" as const,
+          data: {
+            found: true,
+            object: { id: "Box", type: "Part::Box", name: "Test Box", properties: [], relationships: [] },
+            inspectionErrors: [{ kind: "relationship_inspection_failed", objectId: "Box", message: "contains: AttributeError: ..." }]
+          }
+        };
+      }
+      return fake.runOperation(operation, params);
+    };
+    const { adapter } = buildAdapter({}, { ...fake, runOperation: withRelationshipError });
+    const session = await connect(adapter);
+    const result = await adapter.inspectObject(session, "Box");
+    assert.equal(result.status, "success");
+    const inspectionErrors = result.metadata.inspectionErrors as Array<{ kind: string; objectId: string | null }>;
+    assert.equal(inspectionErrors.length, 1);
+    assert.equal(inspectionErrors[0]!.kind, "relationship_inspection_failed");
+    assert.equal(inspectionErrors[0]!.objectId, "Box");
+  });
+
+  it("inspectObject's metadata carries no inspectionErrors key at all when the runtime reports none (no noisy empty array on the common path)", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.inspectObject(session, "Box");
+    assert.equal(result.status, "success");
+    assert.equal(Object.hasOwn(result.metadata, "inspectionErrors"), false);
+  });
+
+  it("REGRESSION (Phase 13 Step 16 supersedes Phase 12's fail-fast): a malformed object from the runtime is skipped with a warning, never an uncaught exception and never silently fabricated data -- the overall call still succeeds", async () => {
     const fake = buildFakeRuntime();
     const malformedRunOperation = async (operation: string, params: Record<string, unknown>): Promise<FreeCadRuntimeResult> => {
       if (operation === "list_objects") {
@@ -228,11 +278,13 @@ describe("createFreeCadAdapter: object enumeration and inspection", () => {
     const { adapter } = buildAdapter({}, { ...fake, runOperation: malformedRunOperation });
     const session = await connect(adapter);
     const result = await adapter.listObjects(session);
-    assert.equal(result.status, "error");
-    assert.equal(result.error?.kind, "environment_failure");
+    assert.equal(result.status, "success");
+    assert.deepEqual(result.data, []);
+    const warnings = result.metadata.warnings as string[];
+    assert.ok(warnings.length > 0, "the malformed object must still be reported as a warning, not silently dropped");
   });
 
-  it("SECURITY/STABILITY REGRESSION: a raw object with a MISSING id is rejected outright -- never silently assigned a fresh, unstable, fabricated id", async () => {
+  it("SECURITY/STABILITY REGRESSION: a raw object with a MISSING id is skipped, never silently assigned a fresh, unstable, fabricated id (Phase 13: skipped-with-warning, not a whole-call failure)", async () => {
     // The specific bug this proves stays fixed: createEnvironmentObject
     // defaults a missing `id` to a freshly-generated random one
     // (`createId("envobj")`). If freecad-adapter.ts ever again passed
@@ -241,7 +293,10 @@ describe("createFreeCadAdapter: object enumeration and inspection", () => {
     // NAQSH-facing id on every single listObjects/inspectObject call --
     // breaking any caller (a Proposal referencing an object by id, the
     // P11 loop's before/after discrepancy comparison) that assumes object
-    // identity is stable across observations.
+    // identity is stable across observations. Under Phase 13's
+    // partial-success listObjects, the security property now shows up as
+    // "no such object ever appears in `data`" rather than "the whole call
+    // errors" -- either way, no fabricated id ever crosses the boundary.
     const fake = buildFakeRuntime();
     const noIdRunOperation = async (operation: string, params: Record<string, unknown>): Promise<FreeCadRuntimeResult> => {
       if (operation === "list_objects") {
@@ -253,9 +308,10 @@ describe("createFreeCadAdapter: object enumeration and inspection", () => {
     const session = await connect(adapter);
 
     const first = await adapter.listObjects(session);
-    assert.equal(first.status, "error");
-    assert.equal(first.error?.kind, "environment_failure");
-    assert.match(first.error!.message, /missing a valid, non-empty id/);
+    assert.equal(first.status, "success");
+    assert.deepEqual(first.data, []);
+    const warnings = first.metadata.warnings as string[];
+    assert.ok(warnings.some((warning) => warning.includes("missing a valid, non-empty id")));
   });
 
   it("maps a real FreeCAD dependency relationship (OutList) into EnvironmentObject.relationships -- never fabricated, only what FreeCAD itself reports", async () => {
@@ -349,6 +405,161 @@ describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD
     // spawning FreeCAD -- proves there is no hidden path where a
     // rejected-by-capability call still touches the real environment.
     assert.equal(fake.calls.length, callsBefore);
+  });
+});
+
+describe("createFreeCadAdapter: Phase 13 inspection fields", () => {
+  it("passes through genericType/parentId/visible/geometry from the runtime, defaulting missing fields honestly", async () => {
+    const fake = buildFakeRuntime();
+    // Simulate a runner.py payload richer than FakeObjectFixture's own type
+    // (genericType/parentId/visible/geometry) by overriding runOperation
+    // directly rather than widening the shared fixture type.
+    const richRunOperation = async (operation: string, params: Record<string, unknown>) => {
+      if (operation === "list_objects") {
+        return {
+          status: "success" as const,
+          data: {
+            objects: [
+              {
+                id: "Box1",
+                type: "Part::Box",
+                name: "Box1",
+                genericType: "solid",
+                parentId: "Group1",
+                visible: false,
+                geometry: { available: true, reason: null, valid: true, boundingBox: null, volume: 42, surfaceArea: null, centerOfMass: null, solidCount: 1, faceCount: null, edgeCount: null, vertexCount: null, shapeType: "Solid" },
+                properties: [],
+                relationships: []
+              }
+            ],
+            inspectionErrors: []
+          }
+        };
+      }
+      return fake.runOperation(operation, params);
+    };
+    const { adapter } = buildAdapter({}, { ...fake, runOperation: richRunOperation });
+    const session = await connect(adapter);
+    const result = await adapter.listObjects(session);
+    assert.equal(result.status, "success");
+    const object = (result.data as EnvironmentObject[])[0]!;
+    assert.equal(object.genericType, "solid");
+    assert.equal(object.parentId, "Group1");
+    assert.equal(object.visible, false);
+    assert.deepEqual(object.geometry.volume, 42);
+    assert.equal(object.geometry.available, true);
+  });
+
+  it("defaults genericType/parentId/visible/geometry when the runtime omits them (backward compatible with a leaner payload)", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.listObjects(session);
+    const object = (result.data as EnvironmentObject[])[0]!;
+    assert.equal(object.genericType, "unknown");
+    assert.equal(object.parentId, null);
+    assert.equal(object.visible, null);
+    assert.equal(object.geometry.available, false);
+  });
+
+  it("stamps object-level provenance (environmentKind) on every returned EnvironmentObject", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.listObjects(session);
+    const object = (result.data as EnvironmentObject[])[0]!;
+    const provenance = object.metadata.provenance as { environmentKind: string };
+    assert.equal(provenance.environmentKind, "freecad");
+  });
+
+  it("provenance is stable across repeated calls (no per-object timestamp) so listObjects() stays deterministic with no mutation in between", async () => {
+    // The specific bug this proves stays fixed: an earlier version stamped
+    // a live `observedAt` timestamp into every object's provenance, which
+    // made two back-to-back listObjects() calls return DIFFERENT `data`
+    // even with zero mutation -- breaking the generic EnvironmentAdapter
+    // contract-test invariant every adapter must satisfy. `completedAt` on
+    // the surrounding EnvironmentOperationResult already carries "when",
+    // once per call; provenance only needs to carry "where from".
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const first = await adapter.listObjects(session);
+    const second = await adapter.listObjects(session);
+    assert.deepEqual(first.data, second.data);
+  });
+
+  it("PARTIAL SUCCESS: a malformed object among otherwise-good ones is skipped with a warning, not an outright failure (Phase 13 Step 16)", async () => {
+    const fake = buildFakeRuntime();
+    const mixedRunOperation = async (operation: string, params: Record<string, unknown>) => {
+      if (operation === "list_objects") {
+        return {
+          status: "success" as const,
+          data: {
+            objects: [
+              { id: "Good1", type: "Part::Box", name: "Good1", properties: [], relationships: [] },
+              { id: "", type: "Bad", name: "Bad" },
+              { id: "Good2", type: "Part::Box", name: "Good2", properties: [], relationships: [] }
+            ],
+            inspectionErrors: [{ kind: "object_unavailable", objectId: "Ghost", message: "RuntimeError: shape is invalid" }]
+          }
+        };
+      }
+      return fake.runOperation(operation, params);
+    };
+    const { adapter } = buildAdapter({}, { ...fake, runOperation: mixedRunOperation });
+    const session = await connect(adapter);
+    const result = await adapter.listObjects(session);
+    assert.equal(result.status, "success");
+    const objects = result.data as EnvironmentObject[];
+    assert.deepEqual(
+      objects.map((object) => object.id).sort(),
+      ["Good1", "Good2"]
+    );
+    const warnings = result.metadata.warnings as string[];
+    assert.ok(warnings.some((warning) => warning.includes("malformed object")));
+    const inspectionErrors = result.metadata.inspectionErrors as Array<{ kind: string; objectId: string | null }>;
+    assert.equal(inspectionErrors.length, 1);
+    assert.equal(inspectionErrors[0]!.objectId, "Ghost");
+  });
+});
+
+describe("createFreeCadAdapter: inspectDocument (Phase 13)", () => {
+  it("reports a well-formed EnvironmentDocumentInspection built from the runtime's document summary", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.inspectDocument(session);
+    assert.equal(result.status, "success");
+    const inspection = result.data as {
+      environmentKind: string;
+      objectCount: number;
+      objectIds: string[];
+      environmentVersion: string | null;
+    };
+    assert.equal(inspection.environmentKind, "freecad");
+    assert.equal(inspection.objectCount, 1);
+    assert.deepEqual(inspection.objectIds, ["Box"]);
+    assert.equal(inspection.environmentVersion, "1.1.3-fake");
+  });
+
+  it("fails deterministically with not_connected on a disconnected session, never invoking the runtime", async () => {
+    const { adapter, fake } = buildAdapter();
+    const session = await connect(adapter);
+    await adapter.disconnect(session);
+    const callsBefore = fake.calls.length;
+    const result = await adapter.inspectDocument(session);
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "not_connected");
+    assert.equal(fake.calls.length, callsBefore);
+  });
+
+  it("a runtime-level failure surfaces as a structured error, never a fake empty inspection", async () => {
+    const fake = buildFakeRuntime();
+    const failingRunOperation = async (operation: string, params: Record<string, unknown>) => {
+      if (operation === "inspect_document") return { status: "error" as const, kind: "environment_failure" as const, message: "document closed unexpectedly" };
+      return fake.runOperation(operation, params);
+    };
+    const { adapter } = buildAdapter({}, { ...fake, runOperation: failingRunOperation });
+    const session = await connect(adapter);
+    const result = await adapter.inspectDocument(session);
+    assert.equal(result.status, "error");
+    assert.match(result.error!.message, /document closed unexpectedly/);
   });
 });
 

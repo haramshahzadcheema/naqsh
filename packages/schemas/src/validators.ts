@@ -4,16 +4,23 @@ import {
   ENVIRONMENT_CAPABILITIES,
   ENVIRONMENT_ERROR_KINDS,
   ENVIRONMENT_HEALTH_STATUSES,
+  ENVIRONMENT_INSPECTION_ERROR_KINDS,
+  ENVIRONMENT_OBJECT_GENERIC_TYPES,
   ENVIRONMENT_OPERATION_KINDS,
   ENVIRONMENT_SESSION_STATUSES,
+  type EnvironmentBoundingBox,
   type EnvironmentDescriptor,
+  type EnvironmentDocumentInspection,
   type EnvironmentHealth,
+  type EnvironmentInspectionError,
   type EnvironmentObject,
+  type EnvironmentObjectGeometry,
   type EnvironmentOperationError,
   type EnvironmentOperationResult,
   type EnvironmentProperty,
   type EnvironmentRelationship,
-  type EnvironmentSession
+  type EnvironmentSession,
+  type EnvironmentVector3
 } from "./environment-types.js";
 import {
   MODEL_ERROR_KINDS,
@@ -673,6 +680,52 @@ function isEnvironmentErrorKind(value: unknown): value is (typeof ENVIRONMENT_ER
   return typeof value === "string" && (ENVIRONMENT_ERROR_KINDS as readonly string[]).includes(value);
 }
 
+function isEnvironmentObjectGenericType(value: unknown): value is (typeof ENVIRONMENT_OBJECT_GENERIC_TYPES)[number] {
+  return typeof value === "string" && (ENVIRONMENT_OBJECT_GENERIC_TYPES as readonly string[]).includes(value);
+}
+
+function isEnvironmentInspectionErrorKind(value: unknown): value is (typeof ENVIRONMENT_INSPECTION_ERROR_KINDS)[number] {
+  return typeof value === "string" && (ENVIRONMENT_INSPECTION_ERROR_KINDS as readonly string[]).includes(value);
+}
+
+function assertEnvironmentVector3(value: unknown, message: string): asserts value is EnvironmentVector3 {
+  invariant(
+    isPlainObject(value) && typeof value.x === "number" && typeof value.y === "number" && typeof value.z === "number",
+    message
+  );
+}
+
+function assertEnvironmentBoundingBox(value: unknown): asserts value is EnvironmentBoundingBox {
+  invariant(isPlainObject(value), "environmentBoundingBox must be an object");
+  assertEnvironmentVector3(value.min, "environmentBoundingBox.min must be an {x,y,z} vector of numbers");
+  assertEnvironmentVector3(value.max, "environmentBoundingBox.max must be an {x,y,z} vector of numbers");
+}
+
+function assertNullableNumber(value: unknown, message: string): void {
+  invariant(value === null || typeof value === "number", message);
+}
+
+export function assertEnvironmentObjectGeometry(value: unknown): asserts value is EnvironmentObjectGeometry {
+  invariant(isPlainObject(value), "environment object geometry must be an object");
+  invariant(typeof value.available === "boolean", "environmentObjectGeometry.available must be a boolean");
+  assertNullableString(value.reason, "environmentObjectGeometry.reason must be a string or null");
+  invariant(
+    value.valid === null || typeof value.valid === "boolean",
+    "environmentObjectGeometry.valid must be a boolean or null"
+  );
+  if (value.boundingBox !== null) assertEnvironmentBoundingBox(value.boundingBox);
+  assertNullableNumber(value.volume, "environmentObjectGeometry.volume must be a number or null");
+  assertNullableNumber(value.surfaceArea, "environmentObjectGeometry.surfaceArea must be a number or null");
+  if (value.centerOfMass !== null) {
+    assertEnvironmentVector3(value.centerOfMass, "environmentObjectGeometry.centerOfMass must be an {x,y,z} vector of numbers or null");
+  }
+  assertNullableNumber(value.solidCount, "environmentObjectGeometry.solidCount must be a number or null");
+  assertNullableNumber(value.faceCount, "environmentObjectGeometry.faceCount must be a number or null");
+  assertNullableNumber(value.edgeCount, "environmentObjectGeometry.edgeCount must be a number or null");
+  assertNullableNumber(value.vertexCount, "environmentObjectGeometry.vertexCount must be a number or null");
+  assertNullableString(value.shapeType, "environmentObjectGeometry.shapeType must be a string or null");
+}
+
 export function assertEnvironmentDescriptor(value: unknown): asserts value is EnvironmentDescriptor {
   invariant(isPlainObject(value), "environment descriptor must be an object");
   invariant(typeof value.kind === "string" && value.kind.length > 0, "environmentDescriptor.kind is required");
@@ -739,6 +792,13 @@ export function assertEnvironmentObject(value: unknown): asserts value is Enviro
   invariant(typeof value.id === "string" && value.id.length > 0, "environmentObject.id is required");
   invariant(typeof value.type === "string" && value.type.length > 0, "environmentObject.type is required");
   invariant(typeof value.name === "string", "environmentObject.name must be a string");
+  invariant(isEnvironmentObjectGenericType(value.genericType), "invalid environmentObject.genericType");
+  assertNullableString(value.parentId, "environmentObject.parentId must be a string or null");
+  invariant(
+    value.visible === null || typeof value.visible === "boolean",
+    "environmentObject.visible must be a boolean or null"
+  );
+  assertEnvironmentObjectGeometry(value.geometry);
   invariant(Array.isArray(value.properties), "environmentObject.properties must be an array");
   for (const property of value.properties) assertEnvironmentProperty(property);
   invariant(Array.isArray(value.relationships), "environmentObject.relationships must be an array");
@@ -791,6 +851,65 @@ export function assertEnvironmentOperationResult(value: unknown): asserts value 
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "environmentOperationResult.metadata must be a JSON-serializable object"
+  );
+}
+
+export function assertEnvironmentInspectionError(value: unknown): asserts value is EnvironmentInspectionError {
+  invariant(isPlainObject(value), "environment inspection error must be an object");
+  invariant(isEnvironmentInspectionErrorKind(value.kind), "invalid environment inspection error kind");
+  assertNullableString(value.objectId, "environmentInspectionError.objectId must be a string or null");
+  invariant(typeof value.message === "string", "environmentInspectionError.message must be a string");
+}
+
+export function assertEnvironmentDocumentInspection(value: unknown): asserts value is EnvironmentDocumentInspection {
+  invariant(isPlainObject(value), "environment document inspection must be an object");
+  invariant(
+    typeof value.environmentKind === "string" && value.environmentKind.length > 0,
+    "environmentDocumentInspection.environmentKind is required"
+  );
+  assertNullableString(value.documentId, "environmentDocumentInspection.documentId must be a string or null");
+  assertNullableString(value.documentName, "environmentDocumentInspection.documentName must be a string or null");
+  assertNullableString(value.filePath, "environmentDocumentInspection.filePath must be a string or null");
+  invariant(
+    typeof value.objectCount === "number" && Number.isInteger(value.objectCount) && value.objectCount >= 0,
+    "environmentDocumentInspection.objectCount must be a non-negative integer"
+  );
+  invariant(Array.isArray(value.objectIds), "environmentDocumentInspection.objectIds must be an array");
+  invariant(
+    value.objectIds.every((id: unknown) => typeof id === "string" && id.length > 0),
+    "environmentDocumentInspection.objectIds must contain only non-empty strings"
+  );
+  invariant(
+    value.objectIds.length === value.objectCount,
+    "environmentDocumentInspection.objectIds length must match objectCount"
+  );
+  invariant(Array.isArray(value.rootObjectIds), "environmentDocumentInspection.rootObjectIds must be an array");
+  invariant(
+    value.rootObjectIds.every((id: unknown) => typeof id === "string" && id.length > 0),
+    "environmentDocumentInspection.rootObjectIds must contain only non-empty strings"
+  );
+  const objectIdSet = new Set(value.objectIds as string[]);
+  invariant(
+    (value.rootObjectIds as string[]).every((id) => objectIdSet.has(id)),
+    "environmentDocumentInspection.rootObjectIds must be a subset of objectIds"
+  );
+  invariant(isIsoTimestamp(value.inspectedAt), "environmentDocumentInspection.inspectedAt must be an ISO timestamp");
+  assertNullableString(value.environmentVersion, "environmentDocumentInspection.environmentVersion must be a string or null");
+  invariant(Array.isArray(value.warnings), "environmentDocumentInspection.warnings must be an array");
+  invariant(
+    value.warnings.every((warning: unknown) => typeof warning === "string"),
+    "environmentDocumentInspection.warnings must contain only strings"
+  );
+  invariant(Array.isArray(value.unsupportedFeatures), "environmentDocumentInspection.unsupportedFeatures must be an array");
+  invariant(
+    value.unsupportedFeatures.every((feature: unknown) => typeof feature === "string"),
+    "environmentDocumentInspection.unsupportedFeatures must contain only strings"
+  );
+  invariant(Array.isArray(value.inspectionErrors), "environmentDocumentInspection.inspectionErrors must be an array");
+  for (const error of value.inspectionErrors) assertEnvironmentInspectionError(error);
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "environmentDocumentInspection.metadata must be a JSON-serializable object"
   );
 }
 
