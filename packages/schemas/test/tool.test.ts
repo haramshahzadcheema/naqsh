@@ -123,6 +123,56 @@ describe("matchesToolValueSchema: nullable (P8)", () => {
   });
 });
 
+describe("ToolScalarSchema: a genuinely polymorphic string|number|boolean field (Phase 14 audit finding)", () => {
+  // Regression for a real, showstopping bug found during the Phase 14
+  // audit: `modify_object`/`modify_environment_object` both originally
+  // declared their `value` field as `{ type: "string" }`, which made a
+  // NUMERIC value (e.g. FreeCAD's Length: 42, exactly Phase 14's own
+  // flagship real mutation) rejected by executeTool's own schema
+  // validation before the handler ever ran -- the typed tool boundary made
+  // the real capability unreachable. `ToolScalarSchema` closes the gap the
+  // same way P8's `nullable` did: additive, narrow, no `oneOf`/union system.
+  it("accepts a schema whose type is an array of scalar kinds", () => {
+    assert.doesNotThrow(() => assertValidToolValueSchema({ type: ["string", "number"] }));
+  });
+
+  it("rejects an empty type array", () => {
+    assert.throws(() => assertValidToolValueSchema({ type: [] }), /non-empty array/);
+  });
+
+  it("rejects a type array containing a non-scalar entry", () => {
+    assert.throws(() => assertValidToolValueSchema({ type: ["string", "object"] }), /non-empty array drawn from/);
+  });
+
+  it("rejects a type array listing the same scalar twice", () => {
+    assert.throws(() => assertValidToolValueSchema({ type: ["string", "string"] }), /must not list the same scalar type twice/);
+  });
+
+  it("matches a string value against a string|number schema", () => {
+    assert.deepEqual(matchesToolValueSchema({ type: ["string", "number"] }, "aluminum_6061"), []);
+  });
+
+  it("matches a number value against a string|number schema -- the exact FreeCAD Length case", () => {
+    assert.deepEqual(matchesToolValueSchema({ type: ["string", "number"] }, 42), []);
+  });
+
+  it("rejects a boolean against a string|number schema (boolean not listed)", () => {
+    assert.notEqual(matchesToolValueSchema({ type: ["string", "number"] }, true).length, 0);
+  });
+
+  it("rejects NaN/Infinity for the number branch, matching the plain number schema's own strictness", () => {
+    assert.notEqual(matchesToolValueSchema({ type: ["string", "number"] }, Number.NaN).length, 0);
+    assert.notEqual(matchesToolValueSchema({ type: ["string", "number"] }, Number.POSITIVE_INFINITY).length, 0);
+  });
+
+  it("composes with nullable exactly like every other schema node", () => {
+    const schema: ToolValueSchema = { type: ["string", "number"], nullable: true };
+    assert.deepEqual(matchesToolValueSchema(schema, null), []);
+    assert.deepEqual(matchesToolValueSchema(schema, "steel"), []);
+    assert.notEqual(matchesToolValueSchema(schema, {}).length, 0);
+  });
+});
+
 describe("matchesToolValueSchema: validating a VALUE against a schema", () => {
   it("accepts a value matching the schema", () => {
     assert.deepEqual(matchesToolValueSchema(inspectProjectInputSchema, { projectId: "proj_1" }), []);

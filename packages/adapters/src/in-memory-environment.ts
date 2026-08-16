@@ -105,7 +105,8 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
     operation: EnvironmentOperationKind,
     sessionId: string | null,
     objectId: EnvironmentObjectId | null,
-    data: unknown
+    data: unknown,
+    metadata: Record<string, unknown> = {}
   ): EnvironmentOperationResult {
     const startedAt = now();
     return createEnvironmentOperationResult({
@@ -116,7 +117,8 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       status: "success",
       data,
       startedAt,
-      completedAt: now()
+      completedAt: now(),
+      metadata
     });
   }
 
@@ -297,7 +299,7 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       return success("create_object", session.id, built.id, snapshot(built));
     },
 
-    async modifyObject(session, objectId, changes) {
+    async modifyObject(session, objectId, changes, options) {
       const guard = requireConnected(session, "modify_object", objectId);
       if (guard) return guard;
       const capabilityGuard = requireCapability("modify", "modify_object", session.id, objectId);
@@ -315,6 +317,49 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
           return failure("modify_object", session.id, objectId, "invalid_operation", `Property "${key}" is read-only`);
         }
       }
+
+      // Phase 14 Step 14: stale-state protection. Checked against the
+      // CURRENT stored value, before anything else applies -- a mismatch
+      // means the caller's observation is stale (something else changed
+      // this object since), and the whole call is rejected, mutating
+      // nothing, exactly like a real environment must.
+      if (options?.expectedBefore) {
+        for (const key of Object.keys(options.expectedBefore)) {
+          const property = existing.properties.find((candidate) => candidate.key === key);
+          const currentValue = property ? property.value : undefined;
+          if (JSON.stringify(currentValue) !== JSON.stringify(options.expectedBefore[key])) {
+            return failure(
+              "modify_object",
+              session.id,
+              objectId,
+              "conflict",
+              `expectedBefore mismatch for "${key}": current value has changed since it was last observed`
+            );
+          }
+        }
+      }
+
+      // Phase 14 Step 16: idempotency. If every requested value already
+      // equals the current one, this call is a no-op -- report success
+      // (the desired state already holds) without touching `objects`.
+      const requestedKeys = Object.keys(changes);
+      const alreadySatisfied = requestedKeys.every((key) => {
+        const property = existing.properties.find((candidate) => candidate.key === key);
+        return property !== undefined && JSON.stringify(property.value) === JSON.stringify(changes[key]);
+      });
+
+      const beforeValues = new Map(existing.properties.map((property) => [property.key, property.value]));
+
+      if (alreadySatisfied) {
+        const propertyChanges = requestedKeys.map((key) => ({
+          key,
+          before: beforeValues.get(key) ?? null,
+          requested: changes[key],
+          after: beforeValues.get(key) ?? null
+        }));
+        return success("modify_object", session.id, objectId, snapshot(existing), { propertyChanges, alreadySatisfied: true });
+      }
+
       const built = tryBuildObject({
         id: existing.id,
         type: existing.type,
@@ -329,7 +374,14 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
         return failure("modify_object", session.id, objectId, "invalid_operation", built.message);
       }
       objects.set(objectId, built);
-      return success("modify_object", session.id, objectId, snapshot(built));
+      const afterValues = new Map(built.properties.map((property) => [property.key, property.value]));
+      const propertyChanges = requestedKeys.map((key) => ({
+        key,
+        before: beforeValues.get(key) ?? null,
+        requested: changes[key],
+        after: afterValues.get(key) ?? null
+      }));
+      return success("modify_object", session.id, objectId, snapshot(built), { propertyChanges, alreadySatisfied: false });
     },
 
     async deleteObject(session, objectId) {

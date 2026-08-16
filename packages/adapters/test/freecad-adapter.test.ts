@@ -26,6 +26,19 @@ interface FakeObjectFixture {
   relationships?: Array<{ type: string; targetId: string; metadata: Record<string, unknown> }>;
 }
 
+/** Mirrors runner.py's own read-shape convention just enough to exercise
+ * the adapter's real logic: a Quantity-like property is `{value, unit}`
+ * on READ, but `modify_object`'s `changes`/`expectedBefore` always carry
+ * the bare, unwrapped value (Phase 14's own documented "no unit-string
+ * parsing" scope decision) -- matching exactly what real FreeCAD does. */
+function unwrapPropertyValue(raw: unknown): unknown {
+  return raw !== null && typeof raw === "object" && "value" in (raw as object) ? (raw as { value: unknown }).value : raw;
+}
+
+function rewrapPropertyValue(raw: unknown, newValue: unknown): unknown {
+  return raw !== null && typeof raw === "object" && "unit" in (raw as object) ? { ...(raw as object), value: newValue } : newValue;
+}
+
 function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectFor?: string } = {}) {
   const objects: FakeObjectFixture[] = options.objects ?? [
     {
@@ -74,6 +87,67 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
             environmentVersion: "1.1.3-fake"
           }
         };
+      case "modify_object": {
+        // A small, honest simulation of op_modify_object's own contract
+        // (allowlist via readOnly, expectedBefore, idempotency, before/
+        // requested/after) -- NOT a reimplementation of FreeCAD-specific
+        // validation (no range/NaN checks here; that behavior is only
+        // ever proven for real against actual FreeCAD, in
+        // freecad-adapter.integration.test.ts).
+        const objectId = params.objectId as string;
+        const changes = (params.changes as Record<string, unknown> | undefined) ?? {};
+        const expectedBefore = params.expectedBefore as Record<string, unknown> | null | undefined;
+        const object = objects.find((candidate) => candidate.id === objectId);
+        if (!object) return { status: "success", data: { found: false } };
+
+        for (const key of Object.keys(changes)) {
+          const property = object.properties.find((candidate) => candidate.key === key);
+          if (!property || property.readOnly) {
+            return {
+              status: "success",
+              data: { found: true, rejected: true, reason: "unsupported_property", message: `Property "${key}" is not a supported mutation` }
+            };
+          }
+        }
+
+        const currentValue = (key: string) => unwrapPropertyValue(object.properties.find((candidate) => candidate.key === key)!.value);
+
+        if (expectedBefore) {
+          for (const key of Object.keys(expectedBefore)) {
+            if (currentValue(key) !== expectedBefore[key]) {
+              return {
+                status: "success",
+                data: { found: true, rejected: true, reason: "stale_state", message: `expectedBefore mismatch for "${key}"` }
+              };
+            }
+          }
+        }
+
+        const requestedKeys = Object.keys(changes);
+        const beforeValues: Record<string, unknown> = {};
+        for (const key of requestedKeys) beforeValues[key] = currentValue(key);
+        const alreadySatisfied = requestedKeys.length > 0 && requestedKeys.every((key) => beforeValues[key] === changes[key]);
+
+        if (!alreadySatisfied) {
+          object.properties = object.properties.map((property) =>
+            Object.hasOwn(changes, property.key) ? { ...property, value: rewrapPropertyValue(property.value, changes[property.key]) } : property
+          );
+        }
+
+        const afterValues: Record<string, unknown> = {};
+        for (const key of requestedKeys) afterValues[key] = currentValue(key);
+
+        return {
+          status: "success",
+          data: {
+            found: true,
+            rejected: false,
+            alreadySatisfied,
+            propertyChanges: requestedKeys.map((key) => ({ key, before: beforeValues[key], requested: changes[key], after: afterValues[key] })),
+            object
+          }
+        };
+      }
       case "save":
         return { status: "success", data: { saved: true } };
       default:
@@ -110,15 +184,16 @@ async function connect(adapter: ReturnType<typeof createFreeCadAdapter>): Promis
 runEnvironmentAdapterContractTests("freecad (fake runtime)", () => buildAdapter().adapter);
 
 describe("createFreeCadAdapter: identity and capabilities", () => {
-  it("declares kind 'freecad' and exactly the 'save' capability -- no modification claimed in Phase 12", () => {
+  it("declares kind 'freecad' and exactly 'save'+'modify' -- create/delete/checkpoint remain unsupported through Phase 14", () => {
     const { adapter } = buildAdapter();
     const descriptor = adapter.describe();
     assert.equal(descriptor.kind, "freecad");
-    assert.deepEqual(descriptor.capabilities, ["save"]);
-    for (const capability of ["create", "modify", "delete", "checkpoint"] as const) {
+    assert.deepEqual(descriptor.capabilities, ["save", "modify"]);
+    for (const capability of ["create", "delete", "checkpoint"] as const) {
       assert.equal(supportsCapability(descriptor, capability), false);
     }
     assert.equal(supportsCapability(descriptor, "save"), true);
+    assert.equal(supportsCapability(descriptor, "modify"), true);
   });
 
   it("does not hardcode a fake FreeCAD version in the static descriptor", () => {
@@ -386,18 +461,17 @@ describe("createFreeCadAdapter: not_connected guard", () => {
 });
 
 describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD runtime", () => {
-  it("create/modify/delete/checkpoint/restore all fail with unsupported_capability and never invoke runOperation", async () => {
+  it("create/delete/checkpoint/restore all fail with unsupported_capability and never invoke runOperation -- Phase 14 grants ONLY modify, nothing else", async () => {
     const { adapter, fake } = buildAdapter();
     const session = await connect(adapter);
     const callsBefore = fake.calls.length;
 
     const createResult = await adapter.createObject(session, { type: "Part::Box", name: "x" });
-    const modifyResult = await adapter.modifyObject(session, "Box", { Length: 20 });
     const deleteResult = await adapter.deleteObject(session, "Box");
     const checkpointResult = await adapter.checkpoint(session);
     const restoreResult = await adapter.restore(session, "chk_1");
 
-    for (const result of [createResult, modifyResult, deleteResult, checkpointResult, restoreResult]) {
+    for (const result of [createResult, deleteResult, checkpointResult, restoreResult]) {
       assert.equal(result.status, "error");
       assert.equal(result.error?.kind, "unsupported_capability");
     }
@@ -405,6 +479,34 @@ describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD
     // spawning FreeCAD -- proves there is no hidden path where a
     // rejected-by-capability call still touches the real environment.
     assert.equal(fake.calls.length, callsBefore);
+  });
+});
+
+describe("createFreeCadAdapter: modifyObject (Phase 14)", () => {
+  it("genuinely invokes the runtime and succeeds for the fake fixture's allowlisted (readOnly: false) property", async () => {
+    const { adapter, fake } = buildAdapter();
+    const session = await connect(adapter);
+    const callsBefore = fake.calls.length;
+    const result = await adapter.modifyObject(session, "Box", { Length: 25 });
+    assert.equal(result.status, "success");
+    assert.ok(fake.calls.length > callsBefore, "modifyObject must genuinely invoke the runtime when the capability is supported");
+    assert.ok(fake.calls.some((call) => call.operation === "modify_object"));
+  });
+
+  it("rejecting a read-only/unsupported property is invalid_operation, not unsupported_capability", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.modifyObject(session, "Box", { TypeId: "SomethingElse" });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+  });
+
+  it("a runtime-reported stale expectedBefore maps to a conflict error", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.modifyObject(session, "Box", { Length: 25 }, { expectedBefore: { Length: 999 } });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "conflict");
   });
 });
 

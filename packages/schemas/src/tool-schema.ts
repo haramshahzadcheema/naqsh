@@ -1,8 +1,20 @@
 import { WorldModelValidationError } from "./errors.js";
-import type { ToolValueSchema } from "./types.js";
+import type { ToolScalarSchema, ToolScalarSchemaType, ToolValueSchema } from "./types.js";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const SCALAR_TYPES: readonly ToolScalarSchemaType[] = ["string", "number", "boolean"];
+
+/** Explicit type-predicate form (rather than an inline `Array.isArray(schema.type)`
+ * check) so TypeScript reliably narrows `schema` to exclude `ToolScalarSchema`
+ * in the branch that falls through to the single-type `switch` below —
+ * plain control-flow analysis does not always propagate that exclusion for
+ * a discriminated union whose discriminant is checked via a general type
+ * guard on a property access rather than a literal comparison. */
+function isToolScalarSchema(schema: ToolValueSchema): schema is ToolScalarSchema {
+  return Array.isArray(schema.type);
 }
 
 /**
@@ -22,6 +34,15 @@ export function assertValidToolValueSchema(value: unknown, path = "schema"): ass
   }
   if (value.nullable !== undefined && typeof value.nullable !== "boolean") {
     throw new WorldModelValidationError("invalid_shape", `${path}.nullable must be a boolean`);
+  }
+  if (Array.isArray(value.type)) {
+    if (value.type.length === 0 || !value.type.every((entry) => SCALAR_TYPES.includes(entry as ToolScalarSchemaType))) {
+      throw new WorldModelValidationError("invalid_shape", `${path}.type must be a non-empty array drawn from string, number, boolean`);
+    }
+    if (new Set(value.type).size !== value.type.length) {
+      throw new WorldModelValidationError("invalid_shape", `${path}.type must not list the same scalar type twice`);
+    }
+    return;
   }
   switch (value.type) {
     case "string": {
@@ -79,6 +100,13 @@ export function assertValidToolValueSchema(value: unknown, path = "schema"): ass
 export function matchesToolValueSchema(schema: ToolValueSchema, value: unknown, path = "value"): string[] {
   if (schema.nullable && value === null) {
     return [];
+  }
+  if (isToolScalarSchema(schema)) {
+    const matches = schema.type.some((entry) => {
+      if (entry === "number") return typeof value === "number" && Number.isFinite(value);
+      return typeof value === entry;
+    });
+    return matches ? [] : [`${path} must be one of: ${schema.type.join(", ")}`];
   }
   switch (schema.type) {
     case "string": {

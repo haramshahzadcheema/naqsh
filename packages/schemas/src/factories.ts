@@ -16,6 +16,8 @@ import {
   type EnvironmentOperationResult,
   type EnvironmentOperationResultInput,
   type EnvironmentProperty,
+  type EnvironmentPropertyChange,
+  type EnvironmentPropertyChangeInput,
   type EnvironmentPropertyInput,
   type EnvironmentRelationship,
   type EnvironmentRelationshipInput,
@@ -31,6 +33,7 @@ import {
   assertEnvironmentObjectGeometry,
   assertEnvironmentOperationResult,
   assertEnvironmentProperty,
+  assertEnvironmentPropertyChange,
   assertEnvironmentRelationship,
   assertEnvironmentSession,
   assertModelContext,
@@ -554,6 +557,17 @@ export function createEnvironmentRelationship(input: EnvironmentRelationshipInpu
   };
   assertEnvironmentRelationship(relationship);
   return Object.freeze(relationship);
+}
+
+export function createEnvironmentPropertyChange(input: EnvironmentPropertyChangeInput): EnvironmentPropertyChange {
+  const change: EnvironmentPropertyChange = {
+    key: input.key,
+    before: input.before ?? null,
+    requested: input.requested,
+    after: input.after ?? null
+  };
+  assertEnvironmentPropertyChange(change);
+  return Object.freeze(change);
 }
 
 export function createEnvironmentObjectGeometry(input: EnvironmentObjectGeometryInput = {}): EnvironmentObjectGeometry {

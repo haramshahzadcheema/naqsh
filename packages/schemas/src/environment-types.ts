@@ -522,3 +522,54 @@ export interface EnvironmentDocumentInspectionInput {
   inspectionErrors?: EnvironmentInspectionErrorInput[];
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * ONE property's before/requested/after values for a single `modifyObject`
+ * call (Phase 14 Step 5) — the "actual resulting state" record every real
+ * mutation must produce, deliberately NOT a second Change/History
+ * architecture: this rides inside `EnvironmentOperationResult.metadata.
+ * propertyChanges` (see `FreeCadAdapter`/`createInMemoryEnvironmentAdapter`'s
+ * `modifyObject`), which the existing P10/P11 audit trail
+ * (`Proposal`/`Approval`/`ExecutionResult`/`AgentLoopRun`) already carries
+ * end to end — it does not need its own storage/history/query layer.
+ *
+ * `requested` and `after` are NOT guaranteed equal: an environment may
+ * clamp, round, or otherwise normalize a value (confirmed empirically
+ * against real FreeCAD — an out-of-range value is silently clamped rather
+ * than rejected by FreeCAD itself, which is exactly why an adapter must
+ * report what ACTUALLY happened, not assume the setter's own "success"
+ * means the requested value took effect verbatim).
+ */
+export interface EnvironmentPropertyChange {
+  key: string;
+  before: unknown;
+  requested: unknown;
+  after: unknown;
+}
+
+export interface EnvironmentPropertyChangeInput {
+  key: string;
+  before?: unknown;
+  requested: unknown;
+  after?: unknown;
+}
+
+/**
+ * Optional per-call guards for `EnvironmentAdapter.modifyObject` (Phase 14
+ * Step 14) — additive to the existing `(session, objectId, changes)`
+ * signature established in P5, so every existing caller/adapter/mock that
+ * omits this argument keeps working unchanged.
+ *
+ * `expectedBefore` protects against a STALE observation: if the caller
+ * last observed a property's value as X and wants to change it only if it
+ * is STILL X (nobody/nothing else changed it in between), it supplies
+ * `{[key]: X}` here. An adapter that receives a mismatching current value
+ * must reject the call with kind `"conflict"` and mutate nothing — never
+ * blindly overwrite a environment that has moved on since it was last
+ * observed. This is deliberately narrow: an equality guard per property,
+ * not a general optimistic-concurrency/versioning system (that scope
+ * belongs to a much later phase, if ever).
+ */
+export interface EnvironmentModifyObjectOptions {
+  expectedBefore?: Record<string, unknown>;
+}

@@ -35,7 +35,10 @@ const inputSchema: ToolValueSchema = {
   properties: {
     objectId: { type: "string", description: "id of the existing EngineeringObject to modify." },
     propertyKey: { type: "string", description: "Which property to set." },
-    value: { type: "string", description: "The new value for this property." }
+    value: {
+      type: ["string", "number", "boolean"],
+      description: "The new value for this property. A property value is genuinely polymorphic (string, number, or boolean depending on the property)."
+    }
   },
   required: ["objectId", "propertyKey", "value"]
 };

@@ -32,6 +32,7 @@ written to stderr for debugging, never swallowed.
 import sys
 import json
 import base64
+import math
 import traceback
 
 RESULT_PREFIX = "@@NAQSH_RESULT@@"
@@ -97,17 +98,34 @@ def normalize_value(value, depth=0):
 
 
 def get_properties(obj):
+    """`readOnly` (Phase 14 audit finding) reflects whether NAQSH itself
+    will let this property be written through `modify_object`, NOT merely
+    whether FreeCAD's own UI hides the edit box for it. A real Part::Box
+    reports ~15 properties FreeCAD itself considers editable (AttacherEngine,
+    AttachmentSupport, Placement, ...), but Phase 14's SUPPORTED_MUTATIONS
+    allowlist (Step 8) exposes exactly THREE of them -- reporting the other
+    twelve as `readOnly: false` would be actively misleading (a caller
+    inspecting this object would have no way to know `modify_object` will
+    reject them) and would silently violate the "no arbitrary property
+    writes" security requirement's spirit even though the allowlist itself
+    still enforces it correctly. `SUPPORTED_MUTATIONS` is referenced here
+    even though it's defined later in this module -- safe in Python, since
+    a function body resolves a global name at CALL time, and by the time
+    any operation actually runs, the whole module has already finished
+    loading."""
+    type_id = getattr(obj, "TypeId", None)
+    allowed_mutations = SUPPORTED_MUTATIONS.get(type_id, {})
+
     properties = []
     try:
         names = list(obj.PropertiesList)
     except Exception:
         names = []
     for name in names:
-        try:
-            editor_mode = set(obj.getEditorMode(name))
-            read_only = bool(editor_mode & NON_WRITABLE_EDITOR_MODES)
-        except Exception:
+        if name in allowed_mutations:
             read_only = False
+        else:
+            read_only = True
         try:
             raw_value = getattr(obj, name)
             value = normalize_value(raw_value)
@@ -504,6 +522,230 @@ def op_save(params):
         _close(doc)
 
 
+# Phase 14 Step 8: the FIRST real mutation capability against a real
+# FreeCAD document -- deliberately an explicit ALLOWLIST, not a generic
+# "write any property" path. Adding a new writable mutation means adding an
+# entry here; there is no other way to reach setattr() on a FreeCAD object
+# from this script. FreeCAD reports ~15-20 properties even on a bare
+# Part::Box (see get_properties()'s own PropertiesList enumeration); this
+# table intentionally exposes exactly THREE of them, the ones that are
+# genuinely simple, dimensional, and safe to validate exhaustively.
+# `min`/`max` are deliberately conservative sanity bounds (not real
+# engineering constraints) -- see op_modify_object's own docstring for why
+# they exist at all (FreeCAD does not reject an out-of-range value itself).
+SUPPORTED_MUTATIONS = {
+    "Part::Box": {
+        "Length": {"min": 0.001, "max": 100000.0},
+        "Width": {"min": 0.001, "max": 100000.0},
+        "Height": {"min": 0.001, "max": 100000.0},
+    }
+}
+
+
+def _is_finite_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _numeric_property_value(value):
+    """Extracts a plain, JSON-comparable number from a FreeCAD property
+    value for before/after/expectedBefore comparison. Every property this
+    script currently allows mutating is a Quantity (Length/Width/Height on
+    Part::Box) -- `.Value` is its plain float in the document's current
+    unit. Raises for anything else rather than silently guessing, since
+    SUPPORTED_MUTATIONS should never name a non-numeric property in the
+    first place (a mismatch here means this table and this function have
+    drifted apart, which must fail loudly, not guess)."""
+    type_name = type(value).__name__
+    if type_name == "Quantity":
+        return value.Value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    raise TypeError("unsupported numeric property type: %s" % type_name)
+
+
+def _rejected(reason, message):
+    return {"found": True, "rejected": True, "reason": reason, "message": message}
+
+
+def op_modify_object(params):
+    """Phase 14: validate everything BEFORE mutating anything, mutate,
+    recompute, verify the result is genuinely valid, and ONLY THEN persist
+    -- see this module's Phase 14 audit comments below for exactly why each
+    step exists. FreeCAD itself does NOT raise for an out-of-range or NaN
+    value (confirmed empirically against a real FreeCAD 1.1.3 install): an
+    out-of-range Part::Box.Length is silently CLAMPED (e.g. -5 becomes
+    0.0), and a NaN Length is accepted outright, only surfacing as an
+    invalid Shape after recompute. This function is the only thing
+    standing between "the agent asked for something dangerous" and
+    "FreeCAD quietly did something else instead" -- every validation below
+    happens before any setattr(), and the document is never saved unless
+    the resulting geometry actually recomputes into a valid state (Phase
+    14 Step 10's "transaction-like safety": a crash or a rejected result
+    leaves the on-disk file exactly as it was, because save() was never
+    reached).
+    """
+    file_path = params["filePath"]
+    object_id = params["objectId"]
+    changes = params.get("changes") or {}
+    expected_before = params.get("expectedBefore")
+
+    doc = _open(file_path)
+    try:
+        obj = doc.getObject(object_id)
+        if obj is None:
+            return {"found": False}
+
+        type_id = getattr(obj, "TypeId", None)
+        allowed = SUPPORTED_MUTATIONS.get(type_id)
+        if allowed is None:
+            return _rejected("unsupported_target_type", 'Object type "%s" has no supported mutations in Phase 14' % (type_id,))
+
+        for key in changes:
+            if key not in allowed:
+                return _rejected("unsupported_property", 'Property "%s" is not a supported mutation for "%s"' % (key, type_id))
+            try:
+                editor_mode = set(obj.getEditorMode(key))
+            except Exception:
+                editor_mode = set()
+            if editor_mode & NON_WRITABLE_EDITOR_MODES:
+                return _rejected("read_only_property", 'Property "%s" is currently read-only on this object' % (key,))
+
+        # Read CURRENT values before anything mutates -- needed for both
+        # the expectedBefore stale-state check and the before/after record.
+        # Deliberately BEFORE value-type/range validation below: staleness
+        # is a precondition about the ENVIRONMENT's current state, entirely
+        # independent of whether the NEWLY requested value would otherwise
+        # be valid -- a stale/conflicting call should be reported as stale,
+        # not as "invalid value", even if the requested value also happens
+        # to be malformed.
+        before_values = {}
+        for key in changes:
+            try:
+                before_values[key] = _numeric_property_value(getattr(obj, key))
+            except Exception as error:
+                return _rejected("property_read_failed", 'Could not read current value of "%s": %s' % (key, str(error)))
+
+        if expected_before:
+            for key, expected in expected_before.items():
+                if key in before_values and before_values[key] != expected:
+                    return _rejected(
+                        "stale_state",
+                        'expectedBefore mismatch for "%s": current value is %r, expected %r' % (key, before_values[key], expected),
+                    )
+
+        # Phase 14 Step 16: idempotency -- every requested value already
+        # matches the current one, so there is genuinely nothing to do.
+        # Also checked before value-type/range validation: a request that
+        # merely re-states the current (necessarily already-valid) value
+        # should short-circuit as a no-op, not be re-validated. Deliberately
+        # NOT guarded by `changes and ...`: `all()` of an empty generator is
+        # `True`, so an EMPTY `changes` dict also takes this same safe,
+        # no-op, no-save path (matching in-memory-environment.ts's identical
+        # `[].every(...) === true` behavior for zero requested changes) --
+        # audit fix: the earlier `changes and` guard let an empty request
+        # fall through all the way to an unconditional `doc.save()` with
+        # nothing actually changed, reporting a "successful" mutation that
+        # mutated nothing.
+        if all(before_values[key] == changes[key] for key in changes):
+            errors = []
+            return {
+                "found": True,
+                "rejected": False,
+                "alreadySatisfied": True,
+                "propertyChanges": [
+                    {"key": key, "before": before_values[key], "requested": changes[key], "after": before_values[key]} for key in changes
+                ],
+                "object": object_to_dict(obj, errors=errors),
+                "inspectionErrors": errors,
+            }
+
+        for key, value in changes.items():
+            if not _is_finite_number(value):
+                return _rejected("invalid_value", 'Value for "%s" must be a finite number (got %r)' % (key, value))
+            constraints = allowed[key]
+            if value < constraints["min"] or value > constraints["max"]:
+                return _rejected(
+                    "value_out_of_range",
+                    '"%s" must be between %s and %s (got %s)' % (key, constraints["min"], constraints["max"], value),
+                )
+
+        for key, value in changes.items():
+            setattr(obj, key, value)
+
+        doc.recompute()
+
+        # Do not assume a successful setter means the modification
+        # succeeded (Phase 14 Step 4) -- verify the RESULTING geometry.
+        shape = getattr(obj, "Shape", None)
+        if shape is not None:
+            try:
+                shape_valid = bool(shape.isValid())
+            except Exception:
+                shape_valid = False
+            if not shape_valid:
+                # NEVER call doc.save() here -- the on-disk file stays
+                # exactly as it was; closing this document without saving
+                # discards the attempted mutation entirely.
+                return _rejected("invalid_resulting_geometry", "The requested change produced an invalid shape and was not saved")
+
+        doc.save()
+
+        # From here on, the mutation has ALREADY happened and been
+        # persisted -- Phase 14 Step 13/16 audit finding: a failure in the
+        # POST-modification re-read (extremely unlikely for a simple
+        # Quantity property, but not impossible) must never be reported as
+        # "the modification failed". Doing so would silently discard proof
+        # of a real, saved, successful change -- worse than the failure it
+        # would be reporting. Every step below degrades to a warning, never
+        # an exception that would make main() report status "error" for an
+        # already-successful mutation.
+        warnings = []
+
+        after_values = {}
+        for key in changes:
+            try:
+                after_values[key] = _numeric_property_value(getattr(obj, key))
+            except Exception as error:
+                after_values[key] = None
+                warnings.append('Could not confirm the actual resulting value of "%s" after a successful, saved mutation: %s' % (key, str(error)))
+
+        errors = []
+        try:
+            object_dict = object_to_dict(obj, errors=errors)
+        except Exception as error:
+            warnings.append("Could not fully re-inspect the object after a successful, saved mutation -- falling back to a lighter inspection: %s" % str(error))
+            try:
+                object_dict = object_to_dict(obj, include_geometry=False, errors=errors)
+            except Exception as fallback_error:
+                warnings.append("Falling back to a minimal object record: %s" % str(fallback_error))
+                object_dict = {
+                    "id": object_id,
+                    "type": type_id or "Unknown",
+                    "name": object_id,
+                    "genericType": "unknown",
+                    "parentId": None,
+                    "visible": None,
+                    "geometry": dict(EMPTY_GEOMETRY),
+                    "properties": [],
+                    "relationships": [],
+                    "metadata": {},
+                }
+
+        return {
+            "found": True,
+            "rejected": False,
+            "alreadySatisfied": False,
+            "propertyChanges": [
+                {"key": key, "before": before_values[key], "requested": changes[key], "after": after_values[key]} for key in changes
+            ],
+            "object": object_dict,
+            "inspectionErrors": errors,
+            "warnings": warnings,
+        }
+    finally:
+        _close(doc)
+
+
 # The complete, fixed operation table -- see this module's docstring.
 OPERATIONS = {
     "health": op_health,
@@ -511,6 +753,7 @@ OPERATIONS = {
     "list_objects": op_list_objects,
     "inspect_object": op_inspect_object,
     "inspect_document": op_inspect_document,
+    "modify_object": op_modify_object,
     "save": op_save,
 }
 

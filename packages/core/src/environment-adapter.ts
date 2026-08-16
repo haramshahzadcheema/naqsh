@@ -1,6 +1,7 @@
 import type {
   EnvironmentCapability,
   EnvironmentDescriptor,
+  EnvironmentModifyObjectOptions,
   EnvironmentObjectId,
   EnvironmentObjectInput,
   EnvironmentOperationResult,
@@ -111,11 +112,28 @@ export interface EnvironmentAdapter {
 
   /** Requires the "modify" capability. `changes` is a flat key -> new
    * value map. `data` is the updated `EnvironmentObject` on success;
-   * kind "invalid_operation" if a targeted key is `readOnly`. */
+   * kind "invalid_operation" if a targeted key is `readOnly`, unsupported,
+   * or the requested value fails validation (wrong type, NaN/Infinity,
+   * out of range).
+   *
+   * `options` (Phase 14 Step 14) is additive and optional -- every adapter
+   * written before this option existed remains a valid implementation of
+   * this interface. `options.expectedBefore`, when supplied, is a
+   * stale-state guard: an adapter MUST compare each named key's CURRENT
+   * value against the expected one before mutating anything, and reject
+   * the whole call with kind "conflict" (mutating nothing) if any key has
+   * moved on since the caller last observed it. `EnvironmentOperationResult
+   * .metadata.propertyChanges` (an `EnvironmentPropertyChange[]`) reports
+   * what ACTUALLY happened per requested key on success -- `requested` and
+   * the resulting `after` are not guaranteed equal (an environment may
+   * clamp/normalize a value); `metadata.alreadySatisfied` (boolean) is set
+   * when every requested value already matched the current one and no
+   * mutation was necessary (Phase 14 Step 16). */
   modifyObject(
     session: EnvironmentSession,
     objectId: EnvironmentObjectId,
-    changes: Record<string, unknown>
+    changes: Record<string, unknown>,
+    options?: EnvironmentModifyObjectOptions
   ): Promise<EnvironmentOperationResult>;
 
   /** Requires the "delete" capability. `data` is null on success. */

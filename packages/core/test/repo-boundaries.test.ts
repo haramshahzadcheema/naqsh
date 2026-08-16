@@ -951,10 +951,21 @@ describe("P12 FreeCAD adapter: isolation, single subprocess boundary, no arbitra
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter never claims create/modify/delete/checkpoint capabilities in Phase 12 -- no CAD manipulation, no fabricated rollback", () => {
+  it("FreeCAD's own EnvironmentAdapter never claims create/delete/checkpoint capabilities in Phase 12 -- no fabricated rollback, no unbounded object lifecycle", () => {
+    // Superseded from its original Phase 12 form ("exactly the save
+    // capability") once Phase 14 deliberately added "modify" -- this guard
+    // still proves the important thing Phase 12 established and Phase 14
+    // does NOT touch: create/delete/checkpoint remain unsupported. See the
+    // dedicated P14 guard block below for the modify-specific assertions.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    assert.match(contents, /capabilities:\s*\[\s*["'`]save["'`]\s*\]/, `${relativePath} must declare exactly the "save" capability in Phase 12`);
+    for (const capability of ["create", "delete", "checkpoint"]) {
+      assert.doesNotMatch(
+        contents,
+        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
+        `${relativePath} must not declare the "${capability}" capability`
+      );
+    }
   });
 
   it("apps/api never imports anything FreeCAD-specific or spawns a subprocess -- the application layer stays behind the adapter boundary too", () => {
@@ -994,11 +1005,18 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
     }
   });
 
-  it("no Phase 13 inspection tool file imports WorldModelState or the World Model write path -- inspection stays entirely within the EnvironmentAdapter boundary, never reconciling into the World Model (Step 17: FreeCAD document != World Model)", () => {
-    const forbiddenPattern = /WorldModelState|updateWorldModel|recordTransition|from\s+["'`]\.\/transitions\.js["'`]/;
+  it("no Phase 13 inspection tool file imports the World Model WRITE path -- inspection stays entirely within the EnvironmentAdapter boundary, never reconciling into the World Model (Step 17: FreeCAD document != World Model)", () => {
+    // Precision import-specifier match, not a bare word-match regex (the
+    // same fix applied to the P14 guard below after it was caught
+    // false-flagging a legitimate doc-comment mention) -- a file is free
+    // to DISCUSS WorldModelState in prose while never importing the write
+    // path that could actually mutate it.
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
     for (const relativePath of inspectionToolFiles) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not reference the World Model at all -- reconciling an environment observation into WorldModelState remains a deferred, later concern`);
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+      }
     }
   });
 
@@ -1045,9 +1063,94 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter still declares exactly the 'save' capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
+  it("FreeCAD's own EnvironmentAdapter still declares no create/delete/checkpoint capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
+    // Superseded from its original Phase 13 form the same way the P12
+    // guard above was -- Phase 14 deliberately adds "modify"; this guard
+    // still proves Phase 13 itself granted nothing beyond inspection/save.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    assert.match(contents, /capabilities:\s*\[\s*["'`]save["'`]\s*\]/, `${relativePath} must still declare exactly the "save" capability -- Phase 13 must not silently grant create/modify/delete/checkpoint`);
+    for (const capability of ["create", "delete", "checkpoint"]) {
+      assert.doesNotMatch(
+        contents,
+        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
+        `${relativePath} must not declare the "${capability}" capability`
+      );
+    }
+  });
+});
+
+describe("P14 safe real CAD modification: narrow allowlist, validated before mutation, no arbitrary property writes", () => {
+  // Phase 14 grants the FreeCAD adapter its FIRST genuine mutation
+  // capability -- deliberately narrow (Step 8's explicit allowlist), with
+  // every requested change validated (target/property/value/state) BEFORE
+  // anything touches FreeCAD, and never through a generic "write any
+  // property" escape hatch. Every check below proves one specific way
+  // this narrowness/safety could have been silently lost, structurally.
+
+  it("FreeCAD's own EnvironmentAdapter now declares exactly 'save' and 'modify' -- create/delete/checkpoint remain unsupported", () => {
+    const relativePath = "packages/adapters/src/freecad-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(
+      contents,
+      /capabilities:\s*\[\s*["'`]save["'`]\s*,\s*["'`]modify["'`]\s*\]/,
+      `${relativePath} must declare exactly ["save", "modify"] in Phase 14`
+    );
+  });
+
+  it("runner.py's mutation allowlist (SUPPORTED_MUTATIONS) is the ONLY path to setattr() on a FreeCAD object -- no generic property-write primitive exists", () => {
+    const relativePath = "packages/adapters/freecad/runner.py";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /^SUPPORTED_MUTATIONS\s*=\s*\{/m, `${relativePath} must define an explicit SUPPORTED_MUTATIONS allowlist`);
+    // The only setattr(obj, ...) call site in this script must be inside
+    // op_modify_object, gated by that allowlist -- not a bare, unguarded
+    // "set any attribute the caller names" helper anywhere else. Matches
+    // the real call shape (`setattr(obj, key, value)`) specifically, not
+    // this file's own prose mentions of "setattr()" in comments (the exact
+    // "match code, not comments" precision-regex lesson this suite already
+    // applies everywhere else -- see the P8-P13 guard blocks above).
+    const setattrCallSites = contents.match(/setattr\s*\(\s*obj\s*,/g) ?? [];
+    assert.equal(setattrCallSites.length, 1, `${relativePath} must contain exactly one real setattr(obj, ...) call site (inside op_modify_object's own validated loop)`);
+  });
+
+  it("no source file anywhere in the repo defines executePython/executeFreeCADScript/runFreeCADCode or an equivalent arbitrary-execution tool name", () => {
+    const forbiddenNames = ["executePython", "executeFreeCADScript", "runFreeCADCode", "execute_python", "execute_freecad_script", "run_freecad_code"];
+    const allSourceFiles = [
+      ...listTsFiles("packages/core/src"),
+      ...listTsFiles("packages/schemas/src"),
+      ...listTsFiles("packages/adapters/src"),
+      ...listTsFiles("packages/model-providers/src"),
+      ...listTsFiles("apps/api/src")
+    ];
+    for (const relativePath of allSourceFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const name of forbiddenNames) {
+        assert.doesNotMatch(contents, new RegExp(name, "i"), `${relativePath} must not define/reference "${name}"`);
+      }
+    }
+    const runnerContents = readFileSync(join(repoRoot, "packages/adapters/freecad/runner.py"), "utf8");
+    for (const name of forbiddenNames) {
+      assert.doesNotMatch(runnerContents, new RegExp(name, "i"), `runner.py must not define/reference "${name}"`);
+    }
+  });
+
+  it("modify_environment_object is classified mutation:'mutate' -- Phase 14's real mutation still goes through P4's approval-required path, not observe/suggest", () => {
+    const relativePath = "packages/core/src/modify-environment-object-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must declare mutation: "mutate"`);
+  });
+
+  it("modify-environment-object-tool.ts never imports the World Model WRITE path -- an environment mutation still never touches the World Model directly", () => {
+    // Same precision-import-specifier convention the P8/P9/P10 guards
+    // above already use (matching an actual import specifier string, not
+    // a bare word) -- this file's own doc comments legitimately DISCUSS
+    // WorldModelState/reconciliation in prose (explaining what it
+    // deliberately does NOT do), which a broader word-match regex would
+    // wrongly flag.
+    const relativePath = "packages/core/src/modify-environment-object-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const forbidden of forbiddenImports) {
+      assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+    }
   });
 });

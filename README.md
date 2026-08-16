@@ -866,6 +866,112 @@ modifying parameters, deleting objects, geometry generation/editing,
 feature-tree rewriting, simulation, optimization, and environment↔World-Model
 reconciliation — all unchanged from P12's own scope statement above.
 
+## FreeCAD Adapter: Safe Real CAD Modification (P14)
+
+**One narrow, real mutation capability** — `capabilities` becomes
+`["save", "modify"]`; `create`/`delete`/`checkpoint` remain unimplemented.
+The correct flow, end to end, is unchanged from every earlier phase and
+deliberately NOT "Gemini → FreeCAD Python → hope": agent intent →
+`create_proposal` (P10) → `Approval` (P4) → `executeTool`'s
+permission-checked boundary (P3/P4) → `EnvironmentAdapter.modifyObject`
+(P5, now genuinely implemented for FreeCAD) → `runner.py`'s
+`op_modify_object` → FreeCAD → a real result → P11's `AgentLoopRun`
+records what actually happened. Gemini can propose a modification; it
+cannot execute one.
+
+**The allowlist, not a generic setter.** `SUPPORTED_MUTATIONS` in
+`runner.py` is a small, explicit, module-level dict — today exactly
+`Part::Box`'s `Length`/`Width`/`Height`, each with a `{min, max}` range.
+"If FreeCAD contains 500 writable properties, P14 might intentionally
+expose only 1–5. That is a feature, not a limitation." Structurally
+enforced by `repo-boundaries.test.ts`'s P14 guard block, which counts real
+`setattr(obj, ...)` call sites in `runner.py`'s source (not prose in
+comments) and asserts there is exactly **one**, inside
+`op_modify_object`'s own validated loop — there is no other path to a
+FreeCAD property write anywhere in this repository, and no `eval`/`exec`/
+arbitrary-Python/arbitrary-shell primitive was added to reach it.
+
+**Validate → mutate → re-observe, never "hope it worked."**
+`op_modify_object`'s order: target exists → target type is allowlisted
+(`unsupported_target_type`) → each property is allowlisted and writable
+(`unsupported_property`/`read_only_property`) → current values are read →
+**stale-state check**: an optional caller-supplied `expectedBefore` is
+compared against the CURRENT value, rejecting as `conflict` (mutating
+nothing) if something else already changed it — the narrowest correct
+protection the brief asked for, not distributed locking → **idempotency
+check**: if every requested value already matches, skip the mutation and
+return `alreadySatisfied: true` — no unnecessary write → value-type
+(`invalid_value`, rejects `NaN`/non-finite) and range (`value_out_of_range`)
+validation → the single `setattr()` call → `doc.recompute()` →
+`shape.isValid()` (rejects `invalid_resulting_geometry` WITHOUT saving if
+recompute produced a broken shape — a successful setter call is explicitly
+not trusted as proof the engineering modification succeeded) → `doc.save()`
+→ a three-tier defensive post-save re-read that can never turn an
+already-persisted mutation into a reported failure (read problems at this
+stage become `warnings`, not a false failure). Eleven distinct failure
+kinds stay distinct end to end — `target_not_found`/
+`unsupported_target_type`/`unsupported_property`/`read_only_property`/
+`invalid_value`/`value_out_of_range`/`conflict`/`invalid_resulting_geometry`/
+`environment_failure`/`policy_rejected` — never collapsed into one generic
+"modification failed."
+
+**Before/requested/after, not assumed equal.** `EnvironmentAdapter.
+modifyObject` gained a 4th, optional, backward-compatible parameter
+(`options?: { expectedBefore?: Record<string, unknown> }`) and its result
+now carries `metadata.propertyChanges: {key, before, requested, after}[]`
+and `metadata.alreadySatisfied`. This deliberately rides on the existing
+`EnvironmentOperationResult` metadata bag rather than inventing a second
+Change/History architecture next to P2's `Change` model — `Change` stays
+structurally bound to `WorldModelTransition` exactly as P2 defined it, and
+P10/P11's existing `Proposal`/`Approval`/`ExecutionResult`/`AgentLoopRun`
+trail is reused as the audit record (requested value + reason on the
+proposal, actor + authorization on the approval, actual outcome + timestamp
+on the execution result) rather than building a parallel one. `requested`
+and `after` are tracked separately and never assumed equal — confirmed
+empirically against real FreeCAD that a value CAN be silently
+clamped/normalized, so P14 rejects invalid values itself before they ever
+reach FreeCAD, and still reports what FreeCAD actually returned afterward.
+
+**Permission enforcement is real, not a formality.** `modify_environment_object`
+is `mutation: "mutate"`, so it goes through the exact same P4
+`executeTool` boundary as every other mutating tool — approval state is
+read from `ApprovalStore`'s actual persisted state, never trusted from a
+model's claim. Proven end to end with the real, unmodified P4 machinery
+(`createApprovalStore`/`createAutonomyGrantStore`/
+`createExecuteToolAuthorizer`) against the real tool: no approval, a
+wrong-scope approval (a different target object), and an explicitly
+rejected approval each fail as `policy_rejected` with the document
+genuinely unmutated; a real approval succeeds.
+
+**Proposal vs. execution stays separated.** Generating a proposal for a
+modification never calls `EnvironmentAdapter.modifyObject` — P10/P11's
+existing proposal/execution boundary already enforced this; P14 adds
+nothing that weakens it, and regression tests confirm a pending proposal
+leaves the target object untouched.
+
+**Mock environment matches the real contract, not a superset of it.**
+`packages/adapters/src/in-memory-environment.ts`'s `modifyObject` supports
+the identical `expectedBefore`/idempotency/`propertyChanges` contract, but
+does NOT reimplement FreeCAD-specific numeric range/NaN validation — that
+behavior is only proven for real against actual FreeCAD, not simulated.
+The shared `runEnvironmentAdapterContractTests` suite (P5) gained
+value-shape-aware helpers (`isQuantityShaped`/`buildDistinctWriteValue`/
+`comparableValue`) so the same generic tests run correctly whether an
+adapter's writable property is a bare mock value or FreeCAD's
+`{value, unit}` Quantity read/write asymmetry.
+
+**Deliberately NOT implemented (P15+ territory).** Checkpoint/rollback/undo
+orchestration and persistent snapshot storage (P15) — `expectedBefore` is
+narrow optimistic-concurrency protection, not a transaction log; a full
+deterministic verification engine distinguishing "command executed" from
+"engineering objective satisfied" beyond the raw before/after values (P16)
+— `propertyChanges` reports facts, not a judgment of success; broad
+"idea → complete CAD model" generation (P20); unit-string parsing/
+conversion; arbitrary property writes, arbitrary object creation/deletion,
+or any `create`/`delete`/`checkpoint` capability. See
+`packages/adapters/freecad/README.md`'s "Scope (Phase 14)" section for the
+full validation-order and empirical-FreeCAD-behavior writeup.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`

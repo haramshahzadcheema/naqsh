@@ -428,8 +428,29 @@ export interface ChangeInput {
  * either mis-describe the field (reject legitimately null data) or drop
  * accurate typing altogether. Purely additive: omitted/falsy behaves
  * identically to every schema written before P8.
+ *
+ * `ToolScalarSchema` (Phase 14 audit finding): the same "no oneOf/union
+ * support" gap, hit for a different reason. `modify_object`/
+ * `modify_environment_object`'s own `value` field is a genuinely
+ * polymorphic property value — a mock CAD environment's "material" is a
+ * string, a real FreeCAD `Length`/`Width`/`Height` is a number — but both
+ * tools originally declared `value: { type: "string" }`, which silently
+ * made the entire real Phase 14 FreeCAD mutation capability UNREACHABLE
+ * through `executeTool`'s own schema validation (a numeric `value` was
+ * rejected before the handler ever ran). `type` as a JSON-Schema-native
+ * ARRAY of types (`["string", "number", "boolean"]`) is standard JSON
+ * Schema, not a NAQSH invention — `@google/genai`'s `parametersJsonSchema`
+ * (the raw-JSON-Schema field this repo's schema bridge uses, see
+ * `packages/model-providers/src/schema-bridge.ts`) accepts it unchanged,
+ * unlike the older OpenAPI-restricted `parameters` field this repo does
+ * NOT use. Deliberately restricted to the three JSON-safe PRIMITIVE
+ * scalars an environment/world-model property value actually needs —
+ * combine with `nullable: true` for a value that may also be `null`,
+ * exactly like every other schema node.
  */
 export type ToolValueSchemaType = "string" | "number" | "boolean" | "null" | "array" | "object";
+
+export type ToolScalarSchemaType = "string" | "number" | "boolean";
 
 interface ToolValueSchemaBase {
   description?: string;
@@ -470,13 +491,22 @@ export interface ToolObjectSchema extends ToolValueSchemaBase {
   additionalProperties?: boolean;
 }
 
+/** A genuinely polymorphic scalar — see this file's "Phase 14 audit
+ * finding" comment above `ToolValueSchemaType`. `type` must list at least
+ * one of the three scalar kinds, with no duplicates (enforced by
+ * `assertValidToolValueSchema`). */
+export interface ToolScalarSchema extends ToolValueSchemaBase {
+  type: ToolScalarSchemaType[];
+}
+
 export type ToolValueSchema =
   | ToolStringSchema
   | ToolNumberSchema
   | ToolBooleanSchema
   | ToolNullSchema
   | ToolArraySchema
-  | ToolObjectSchema;
+  | ToolObjectSchema
+  | ToolScalarSchema;
 
 /**
  * What domain a tool acts on. Deliberately NOT "freecad" / "gemini" /

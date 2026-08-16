@@ -175,7 +175,7 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     assert.equal(result.error?.kind, "environment_failure");
   });
 
-  it("create/modify/delete/checkpoint/restore are genuinely unsupported against the real adapter, not just the fake one", async () => {
+  it("create/delete/checkpoint/restore remain genuinely unsupported against the real adapter -- Phase 14 grants ONLY the narrow modify capability, nothing else", async () => {
     const fixture = buildFixture();
     try {
       const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
@@ -184,7 +184,6 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
 
       const results = await Promise.all([
         adapter.createObject(session, { type: "Part::Box", name: "x" }),
-        adapter.modifyObject(session, "Box", { Length: 99 }),
         adapter.deleteObject(session, "Box"),
         adapter.checkpoint(session),
         adapter.restore(session, "chk_1")
@@ -202,6 +201,134 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
       assert.deepEqual(lengthProperty!.value, { value: 10, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 14: modifyObject genuinely mutates a real FreeCAD document for an allowlisted property, and persists across reconnect", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const result = await adapter.modifyObject(session, "Box", { Length: 42 });
+      assert.equal(result.status, "success");
+      const updated = result.data as EnvironmentObject;
+      const lengthProperty = updated.properties.find((property) => property.key === "Length");
+      assert.deepEqual(lengthProperty!.value, { value: 42, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
+      const propertyChanges = result.metadata.propertyChanges as Array<{ key: string; before: unknown; requested: unknown; after: unknown }>;
+      assert.deepEqual(propertyChanges, [{ key: "Length", before: 10, requested: 42, after: 42 }]);
+      assert.equal(result.metadata.alreadySatisfied, false);
+
+      // Persistence (Phase 14 Step 10): a genuinely NEW connect() (fresh
+      // subprocess) still sees 42 -- op_modify_object's own doc.save()
+      // actually happened, this isn't just an in-memory artifact of the
+      // single call above.
+      const reconnected = await adapter.connect({ filePath: fixture.path });
+      const reconnectedSession = reconnected.data as EnvironmentSession;
+      const reinspected = await adapter.inspectObject(reconnectedSession, "Box");
+      const reinspectedLength = (reinspected.data as EnvironmentObject).properties.find((property) => property.key === "Length");
+      assert.deepEqual(reinspectedLength!.value, { value: 42, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
+
+      // A non-allowlisted property is rejected as invalid_operation, NOT
+      // unsupported_capability -- the capability itself is genuinely
+      // supported; this specific property simply isn't in Phase 14 Step
+      // 8's narrow allowlist.
+      const rejected = await adapter.modifyObject(reconnectedSession, "Box", { Placement: "somewhere" });
+      assert.equal(rejected.status, "error");
+      assert.equal(rejected.error?.kind, "invalid_operation");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 14: value validation happens BEFORE anything reaches FreeCAD -- NaN, negative/out-of-range, and non-numeric values are all rejected, never silently clamped or invalidated by FreeCAD itself", async () => {
+    // FreeCAD itself does NOT reject these the way a naive implementation
+    // might assume: a negative Part::Box.Length is silently CLAMPED to 0
+    // (confirmed empirically), and a NaN Length is accepted outright, only
+    // surfacing as an invalid Shape after recompute. Permanent regression
+    // coverage for exactly the class of bug Phase 14 Step 9 warns about --
+    // this was previously only checked via a throwaway probe script during
+    // development, never a durable test.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const nanResult = await adapter.modifyObject(session, "Box", { Length: Number.NaN });
+      assert.equal(nanResult.status, "error");
+      assert.equal(nanResult.error?.kind, "invalid_operation");
+
+      const negativeResult = await adapter.modifyObject(session, "Box", { Length: -5 });
+      assert.equal(negativeResult.status, "error");
+      assert.equal(negativeResult.error?.kind, "invalid_operation");
+
+      const tooLargeResult = await adapter.modifyObject(session, "Box", { Length: 999_999_999 });
+      assert.equal(tooLargeResult.status, "error");
+      assert.equal(tooLargeResult.error?.kind, "invalid_operation");
+
+      // A unit-bearing STRING (the read-side shape for a Quantity
+      // property) is not accepted on write -- Phase 14 Step 1's own
+      // documented scope decision: a caller supplies a bare number in the
+      // property's current unit, never a unit string to parse/convert.
+      const stringWithUnitResult = await adapter.modifyObject(session, "Box", { Length: "25 mm" as unknown as number });
+      assert.equal(stringWithUnitResult.status, "error");
+      assert.equal(stringWithUnitResult.error?.kind, "invalid_operation");
+
+      // None of the rejected attempts above actually touched the document.
+      const stillOriginal = await adapter.inspectObject(session, "Box");
+      const lengthProperty = (stillOriginal.data as EnvironmentObject).properties.find((property) => property.key === "Length");
+      assert.deepEqual(lengthProperty!.value, { value: 10, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 14 AUDIT FIX: modifyObject with an empty changes object is a genuine no-op -- it must never fall through to an unconditional doc.save() with nothing actually requested", async () => {
+    // Regression for a real bug found during the Phase 14 audit:
+    // op_modify_object's idempotency short-circuit was originally guarded
+    // by `if changes and all(...)`, so an EMPTY `changes` dict (falsy in
+    // Python) skipped that safe early-return entirely and fell through to
+    // an unconditional doc.recompute()/doc.save() -- a real, needless disk
+    // write reported as a "successful" mutation despite changing nothing.
+    // `all()` of an empty generator is `True`, so the fix makes an empty
+    // request take the SAME safe, no-mutation path as any other
+    // already-satisfied request (matching in-memory-environment.ts's own
+    // `[].every(...) === true` behavior for zero requested changes).
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const result = await adapter.modifyObject(session, "Box", {});
+      assert.equal(result.status, "success");
+      assert.equal(result.metadata.alreadySatisfied, true);
+      assert.deepEqual(result.metadata.propertyChanges, []);
+
+      const reinspected = await adapter.inspectObject(session, "Box");
+      const lengthProperty = (reinspected.data as EnvironmentObject).properties.find((property) => property.key === "Length");
+      assert.deepEqual(lengthProperty!.value, { value: 10, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 14: an unsupported target type (a real Sketch, not just an unknown id) is rejected as invalid_operation, never unsupported_capability", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "naqsh-freecad-p14-target-"));
+    const path = join(dir, "inspection-fixture.FCStd");
+    try {
+      execFileSync(freecadCmdPath, [inspectionFixtureBuilderPath, path], { timeout: 30_000, windowsHide: true });
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const result = await adapter.modifyObject(session, "Sketch", { Length: 5 });
+      assert.equal(result.status, "error");
+      assert.equal(result.error?.kind, "invalid_operation");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

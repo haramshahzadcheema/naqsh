@@ -1,4 +1,4 @@
-# FreeCAD runtime (Phase 12 + Phase 13)
+# FreeCAD runtime (Phase 12 + Phase 13 + Phase 14)
 
 This directory is the **entire** FreeCAD-side surface NAQSH talks to. Nothing
 under `packages/core` or `packages/schemas` may import anything here or
@@ -86,12 +86,17 @@ Both were confirmed empirically against a real FreeCAD 1.1.3 install.
 
 `runner.py` dispatches to a **fixed set of named functions**
 (`health`/`connect`/`list_objects`/`inspect_object`/`inspect_document`/
-`save`). There is no
+`modify_object`/`save`). There is no
 `eval`/`exec` on request data anywhere in this directory, no operation that
 accepts caller-supplied code, and no generic "run this Python" primitive.
 Adding a new capability means adding a new named function to `OPERATIONS` —
 there is no path for an agent or a model to reach an arbitrary-execution
-surface through this boundary.
+surface through this boundary. `modify_object` (Phase 14) is NOT a generic
+property-write primitive either: the only `setattr()` call site in this
+entire script is inside `op_modify_object`'s own validated loop, gated by
+an explicit `SUPPORTED_MUTATIONS` allowlist — verified structurally by
+`repo-boundaries.test.ts`'s P14 guard block (counts `setattr(obj, ...)`
+call sites in the actual source, not comments).
 
 ## Scope (Phase 12)
 
@@ -213,6 +218,85 @@ one a lighter relationship-only reshaping of `listObjects`'s own result.
 None of them import a concrete adapter package or FreeCAD-specific code —
 enforced structurally, not just by convention.
 
+## Scope (Phase 14): safe real CAD modification
+
+Phase 14 adds exactly one new operation, `modify_object`, and grants the
+adapter one new capability: `capabilities` is now `["save", "modify"]` —
+`create`/`delete`/`checkpoint` remain unimplemented, verified structurally
+by `repo-boundaries.test.ts`'s P14 guard block. This is **not** a general
+CAD-editing capability; it is a single, narrow, explicitly-typed mutation
+path with the same shape as every other Phase 14 read/write operation:
+validate, mutate, re-observe, report — never "run this code."
+
+**The allowlist.** `SUPPORTED_MUTATIONS` in `runner.py` is a module-level
+dict keyed by FreeCAD `TypeId`, and today contains exactly one entry:
+`Part::Box` with its `Length`/`Width`/`Height` properties, each with an
+explicit `{min, max}` range. This is deliberately narrow — "If FreeCAD
+contains 500 writable properties, Phase 14 might intentionally expose only
+1–5. That is a feature, not a limitation." `get_properties()`'s `readOnly`
+flag is computed from this allowlist (not from FreeCAD's own editor mode),
+so an inspection response honestly reflects what Phase 14 can actually
+mutate, not what FreeCAD's UI would merely permit. Structurally enforced:
+`repo-boundaries.test.ts` counts real `setattr(obj, ...)` call sites in
+`runner.py` and asserts there is exactly one, inside `op_modify_object`'s
+own validated loop — there is no other path to a property write anywhere
+in this directory.
+
+**Validation order in `op_modify_object`:** target exists → target's
+`TypeId` is in `SUPPORTED_MUTATIONS` (`unsupported_target_type` otherwise)
+→ each requested property is both allowlisted and writable
+(`unsupported_property` / `read_only_property`) → current values are read
+(`property_read_failed` on a read exception) → **stale-state check**: if
+the caller supplied `expectedBefore` and the current value no longer
+matches, reject as `conflict` and mutate nothing → **idempotency check**:
+if every requested value already equals the current value, skip the
+mutation entirely and return `alreadySatisfied: true` with `propertyChanges`
+showing `before === requested === after` → value-type validation (rejects
+`NaN`/non-finite/wrong-typed values as `invalid_value`) → range validation
+against the allowlist's `{min, max}` (`value_out_of_range`) → the single
+`setattr()` loop → `doc.recompute()` → `shape.isValid()` check (rejects as
+`invalid_resulting_geometry` **without** saving if recompute produced an
+invalid shape) → `doc.save()` → a defensive, three-tier post-save re-read
+(full object rebuild → object rebuild without geometry → a minimal literal
+built from already-known identifiers) that can never turn an
+already-persisted mutation into a reported failure — read failures at this
+stage are appended to a `warnings` list instead.
+
+**Persistence.** Because every call is a fresh `freecadcmd` subprocess (see
+"Why a separate Python runtime" above), a mutation is only durable once
+`doc.save()` has run; `modifyObject` always saves on a successful mutation
+before returning, and Phase 14's integration tests confirm the change
+survives a genuinely new `connect()` call in a separate subprocess.
+
+**Empirically confirmed real-FreeCAD mutation semantics** (probed directly
+against FreeCAD 1.1.3 before writing any production code): a negative
+`Length` is silently clamped to `0.0` by FreeCAD itself, not rejected —
+Phase 14's own range validation rejects it first, before it ever reaches
+`setattr()`. `NaN` is accepted by `setattr()` and only surfaces as an
+invalid shape after recompute — Phase 14's `_is_finite_number()` check
+rejects it before that point too. Writing a nonexistent property raises
+`AttributeError` (never reached, since the allowlist check runs first).
+
+**Before/after/requested semantics.** `EnvironmentAdapter.modifyObject`'s
+result carries `metadata.propertyChanges: EnvironmentPropertyChange[]`
+(`{key, before, requested, after}`) and `metadata.alreadySatisfied`. This
+rides on the existing `EnvironmentOperationResult` metadata bag rather than
+creating a second Change/History architecture — P2's `Change` model stays
+bound to `WorldModelTransition` as it always was, and Phase 14 does not
+force environment-only mutations into it. `requested` and `after` are
+tracked separately and are **not** assumed equal: a real environment may
+clamp or normalize a value, and callers (including P10/P11's proposal/
+approval/execution audit trail) need to see what actually happened.
+
+**Explicitly NOT implemented in Phase 14** (left for later phases, named
+here so the boundary is unambiguous): checkpoint/rollback/undo (P15),
+a deterministic verification engine distinguishing "command succeeded"
+from "engineering objective satisfied" beyond the raw before/after values
+(P16), unit-string parsing/conversion (values are plain numbers in the
+document's existing units), arbitrary property writes or arbitrary object
+creation/deletion, and any form of `eval`/`exec`/arbitrary Python or shell
+execution.
+
 ## Testing
 
 **Level 1** (`packages/adapters/test/freecad-adapter.test.ts`) — fully
@@ -220,7 +304,13 @@ deterministic, no FreeCAD required. `FreeCadAdapter`'s `runOperation` option
 is injected with a fake implementation, so every test exercises the real
 adapter logic (session tracking, capability gating, error mapping, object
 validation) without ever spawning a process. Runs as part of the normal
-`npm test`.
+`npm test`. Its `describe("createFreeCadAdapter: modifyObject (Phase 14)"
+...)` block covers a genuine success (asserting the exact runtime call
+made), a read-only/unsupported property rejection, and a stale-`expectedBefore`
+rejection — against a fake runtime that mirrors FreeCAD's Quantity
+read/write shape asymmetry but deliberately does **not** reimplement
+FreeCAD's own range/NaN validation, since that behavior is only proven for
+real in Level 2.
 
 **Level 2**
 (`packages/adapters/test/freecad-adapter.integration.test.ts`) — runs
@@ -256,10 +346,27 @@ document, proving Phase 13 Step 18: an empty document is a valid,
 non-crashing inspection target). It also runs the exact same reusable
 `EnvironmentAdapter` contract-test suite
 (`packages/core/src/environment-adapter-contract.ts`, already used by every
-mock adapter, including its Phase 13 `inspectDocument()` block) against the
+mock adapter, including its Phase 13 `inspectDocument()` block and Phase
+14's stale-state/idempotency/`propertyChanges` mutation tests) against the
 real adapter — the same call, unmodified, that already runs against
 `createMockCadEnvironment`/`createMockSimulationEnvironment`/
 `createMockEnvironment`.
+
+Phase 14 adds three dedicated real-FreeCAD tests to this file: a genuine
+`Length` mutation that is verified to persist across a fresh `connect()`
+call in a new subprocess (and confirms a non-allowlisted `Placement` write
+is rejected as `invalid_operation`, not `unsupported_capability`); a
+value-validation test proving `NaN`, a negative length, an out-of-range
+length, and a string-with-unit are all rejected as `invalid_operation`
+**before** the document is touched (confirmed by re-inspecting and finding
+`Length` unchanged); and an unsupported-target-type test against a real
+`Sketcher::SketchObject`. `packages/core/test/modify-environment-object-tool.test.ts`
+separately proves the P4 permission boundary end-to-end using the real,
+unmodified `createApprovalStore`/`createAutonomyGrantStore`/
+`createExecuteToolAuthorizer` machinery against the real
+`modify_environment_object` tool: no approval, a wrong-scope approval, and
+an explicitly rejected approval are each `policy_rejected` with no
+mutation, while a genuine approval succeeds.
 
 ## Mock vs. real
 

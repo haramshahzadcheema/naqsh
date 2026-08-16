@@ -18,6 +18,7 @@ import {
   type EnvironmentOperationError,
   type EnvironmentOperationResult,
   type EnvironmentProperty,
+  type EnvironmentPropertyChange,
   type EnvironmentRelationship,
   type EnvironmentSession,
   type EnvironmentVector3
@@ -785,6 +786,14 @@ export function assertEnvironmentRelationship(value: unknown): asserts value is 
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "environmentRelationship.metadata must be a JSON-serializable object"
   );
+}
+
+export function assertEnvironmentPropertyChange(value: unknown): asserts value is EnvironmentPropertyChange {
+  invariant(isPlainObject(value), "environment property change must be an object");
+  invariant(typeof value.key === "string" && value.key.length > 0, "environmentPropertyChange.key is required");
+  invariant(isJsonSafeValue(value.before), "environmentPropertyChange.before must be JSON-serializable");
+  invariant(isJsonSafeValue(value.requested), "environmentPropertyChange.requested must be JSON-serializable");
+  invariant(isJsonSafeValue(value.after), "environmentPropertyChange.after must be JSON-serializable");
 }
 
 export function assertEnvironmentObject(value: unknown): asserts value is EnvironmentObject {

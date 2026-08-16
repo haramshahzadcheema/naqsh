@@ -7,6 +7,7 @@ import {
   createEnvironmentInspectionError,
   createEnvironmentObject,
   createEnvironmentOperationResult,
+  createEnvironmentPropertyChange,
   createEnvironmentSession,
   createId,
   toIsoTimestamp,
@@ -20,6 +21,7 @@ import {
   type EnvironmentObjectId,
   type EnvironmentOperationKind,
   type EnvironmentOperationResult,
+  type EnvironmentPropertyChange,
   type EnvironmentPropertyInput,
   type EnvironmentRelationshipInput,
   type EnvironmentSession
@@ -128,6 +130,32 @@ interface RawFreecadInspectionError {
   message?: unknown;
 }
 
+interface RawFreecadPropertyChange {
+  key?: unknown;
+  before?: unknown;
+  requested?: unknown;
+  after?: unknown;
+}
+
+/** Every distinct way runner.py's `op_modify_object` rejects a request
+ * BEFORE mutating anything (Phase 14 Step 9/13) -- each maps onto the
+ * existing, small `EnvironmentErrorKind` vocabulary rather than growing a
+ * FreeCAD-specific one: "stale_state" is exactly what "conflict" already
+ * means ("the requested change can't apply given current state" --
+ * `in-memory-environment.ts`'s own precedent for `create_object` id
+ * collision); every other reason is "the requested change doesn't apply
+ * as specified", which is exactly "invalid_operation" already means. */
+const REJECTION_REASON_TO_ERROR_KIND: Record<string, EnvironmentErrorKind> = {
+  unsupported_target_type: "invalid_operation",
+  unsupported_property: "invalid_operation",
+  read_only_property: "invalid_operation",
+  invalid_value: "invalid_operation",
+  value_out_of_range: "invalid_operation",
+  invalid_resulting_geometry: "invalid_operation",
+  property_read_failed: "environment_failure",
+  stale_state: "conflict"
+};
+
 export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): EnvironmentAdapter {
   const generateId = options.generateId ?? ((prefix: string) => createId(prefix));
   const now = options.now ?? (() => toIsoTimestamp());
@@ -145,11 +173,18 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
   // version (when reachable) is reported by health() instead, which can
   // fail/probe. Never hardcode a fake FreeCAD version here (Phase 12 Step
   // 5's explicit requirement).
+  //
+  // "modify" (Phase 14): real, but deliberately NARROW -- see runner.py's
+  // SUPPORTED_MUTATIONS. This is not "FreeCAD can now be edited" in
+  // general; it is "exactly the properties in that allowlist can be set,
+  // through the same validated, permission-gated path every other mutate
+  // tool in this repository already goes through." create/delete/
+  // checkpoint remain unsupported in this phase.
   const descriptor = createEnvironmentDescriptor({
     kind: "freecad",
     name: "FreeCAD",
     version: "1.0.0",
-    capabilities: ["save"]
+    capabilities: ["save", "modify"]
   });
   const capabilities = new Set<EnvironmentCapability>(descriptor.capabilities);
 
@@ -300,6 +335,26 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
     return errors;
   }
 
+  /** Best-effort, same discipline as tryBuildInspectionErrors: a malformed
+   * propertyChanges entry from runner.py is diagnostic metadata about a
+   * successful mutation, not the mutation's own core result -- skipped
+   * rather than turning an otherwise-successful modifyObject into a
+   * failure. */
+  function tryBuildPropertyChanges(raw: unknown): EnvironmentPropertyChange[] {
+    if (!Array.isArray(raw)) return [];
+    const changes: EnvironmentPropertyChange[] = [];
+    for (const entry of raw) {
+      const record = entry as RawFreecadPropertyChange;
+      if (typeof record.key !== "string" || record.key.length === 0) continue;
+      try {
+        changes.push(createEnvironmentPropertyChange({ key: record.key, before: record.before, requested: record.requested, after: record.after }));
+      } catch {
+        continue;
+      }
+    }
+    return changes;
+  }
+
   return {
     describe: () => descriptor,
 
@@ -430,13 +485,68 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       return failure("create_object", session.id, null, "unsupported_capability", "create is not supported by the FreeCAD adapter in this phase");
     },
 
-    async modifyObject(session, objectId) {
+    async modifyObject(session, objectId, changes, options) {
       const guard = requireConnected(session, "modify_object", objectId);
       if (guard.result) return guard.result;
       const capabilityGuard = requireCapability("modify", "modify_object", session.id, objectId);
       if (capabilityGuard) return capabilityGuard;
-      // Never reached this phase -- see createObject's identical comment.
-      return failure("modify_object", session.id, objectId, "unsupported_capability", "modify is not supported by the FreeCAD adapter in this phase");
+
+      const result = await runOperation("modify_object", {
+        filePath: guard.filePath,
+        objectId,
+        changes,
+        expectedBefore: options?.expectedBefore ?? null
+      });
+      if (result.status === "error") return failure("modify_object", session.id, objectId, result.kind, result.message);
+
+      const data = result.data as {
+        found?: unknown;
+        rejected?: unknown;
+        reason?: unknown;
+        message?: unknown;
+        alreadySatisfied?: unknown;
+        propertyChanges?: unknown;
+        object?: unknown;
+        inspectionErrors?: unknown;
+        warnings?: unknown;
+      };
+      if (!data.found) {
+        return failure("modify_object", session.id, objectId, "object_not_found", `No object with id "${objectId}"`);
+      }
+      if (data.rejected) {
+        // Phase 14 Step 9/13: runner.py already validated target/property/
+        // value/state BEFORE touching FreeCAD and rejected this request
+        // without mutating anything -- map its specific reason onto this
+        // adapter's own error vocabulary rather than collapsing every
+        // rejection into one generic "modification failed".
+        const reason = typeof data.reason === "string" ? data.reason : "invalid_operation";
+        const kind = REJECTION_REASON_TO_ERROR_KIND[reason] ?? "invalid_operation";
+        const message = typeof data.message === "string" ? data.message : `Modification of "${objectId}" was rejected`;
+        return failure("modify_object", session.id, objectId, kind, message);
+      }
+
+      // Phase 14 Step 13/16 audit finding: the mutation already happened
+      // and was persisted by this point (runner.py only reaches here after
+      // its own doc.save()) -- runner.py's own op_modify_object already
+      // degrades through two fallback tiers (full re-inspect -> lighter
+      // no-geometry re-inspect -> a minimal literal built from data it
+      // already has, no further FreeCAD calls) specifically so `data.object`
+      // essentially always builds successfully even if the post-mutation
+      // re-read itself had trouble -- see that function's own comment. Any
+      // warnings from that degradation are still surfaced here.
+      const object = tryBuildObject(data.object);
+      if ("message" in object) {
+        return failure("modify_object", session.id, objectId, "environment_failure", `Malformed object from FreeCAD: ${object.message}`);
+      }
+      const propertyChanges = tryBuildPropertyChanges(data.propertyChanges);
+      const inspectionErrors = tryBuildInspectionErrors(data.inspectionErrors);
+      const warnings = Array.isArray(data.warnings) ? (data.warnings as unknown[]).filter((entry): entry is string => typeof entry === "string") : [];
+      return success("modify_object", session.id, objectId, object, {
+        propertyChanges,
+        alreadySatisfied: data.alreadySatisfied === true,
+        ...(inspectionErrors.length > 0 ? { inspectionErrors } : {}),
+        ...(warnings.length > 0 ? { warnings } : {})
+      });
     },
 
     async deleteObject(session, objectId) {
