@@ -32,8 +32,9 @@ packages/core              (behavior over that data: the World Model
 packages/adapters          packages/model-providers
 (concrete EnvironmentAdapter (concrete ModelProvider implementations —
  implementations — mocks     a deterministic mock and the real Gemini
- today, FreeCADAdapter in    adapter, the ONLY place @google/genai is
- P12+)                       imported)
+ plus the real FreeCadAdapter adapter, the ONLY place @google/genai is
+ (P12), a Python-runtime-    imported)
+ backed subprocess boundary)
       ↑                           ↑
 apps/web, apps/api          (future UI / API surface)
 ```
@@ -716,6 +717,73 @@ phase's service file exactly: two thin pass-throughs
 (`startAgentLoopRun`/`continueAgentLoopRun`), composing nothing beyond
 `beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval` themselves.
 
+## FreeCAD Adapter (P12)
+
+**The first real (non-mock) `EnvironmentAdapter` implementation** —
+`packages/adapters/src/freecad-adapter.ts` — proving `WorldModelState`,
+the Change Model, Tools, Authorization, Observation, Planning, Proposals,
+and the P11 agent loop all work unmodified against a genuine external CAD
+environment, not just an in-memory stand-in. FreeCAD is the FIRST
+environment, never the architecture: nothing about `createFreeCadAdapter`
+is visible anywhere above the `EnvironmentAdapter` interface (P5) — the
+same generic contract `createMockCadEnvironment`/`createMockSimulationEnvironment`/
+`createMockEnvironment` already satisfy.
+
+**Runtime boundary.** FreeCAD's automation API is Python-only with no
+Node.js binding, so `packages/adapters/freecad/` is a small, isolated
+Python runtime: `runner.py` dispatches to a fixed, named table of
+operations (`health`/`connect`/`list_objects`/`inspect_object`/`save`) and
+is invoked as a ONE-SHOT `freecadcmd` subprocess per call —
+`packages/adapters/src/freecad-runtime.ts` is the ONLY file in the entire
+repository allowed to import `node:child_process` (enforced structurally
+in `repo-boundaries.test.ts`'s P12 guard block). There is no persistent
+FreeCAD process and no cross-call FreeCAD-side session state; each
+operation opens the target `.FCStd` document fresh, does exactly one
+thing, and closes it again. See `packages/adapters/freecad/README.md` for
+the full protocol, the two FreeCAD invocation quirks that shape it
+(argv indexing, `__name__` under `freecadcmd`), and the tradeoff this
+design deliberately makes (per-call FreeCAD startup latency, in exchange
+for a crash-safe design with no state to desync).
+
+**Scope.** `capabilities` is exactly `["save"]` — inspection (document
+discovery, object enumeration, property/relationship reading) and a real
+document save, nothing else. `create`/`modify`/`delete`/`checkpoint` are
+real, present `EnvironmentAdapter` methods (the interface requires them
+unconditionally) but every one returns `unsupported_capability` in this
+phase — no CAD manipulation, no fabricated rollback capability. FreeCAD
+properties are normalized into a controlled, bounded, JSON-safe
+representation (`runner.py`'s `normalize_value`) — a `Quantity` becomes
+`{value, unit}`, a `Placement` becomes `{position, angle}`, and anything
+unconvertible (a `TopoShape`/`Solid`, a `Material`, ...) becomes an
+explicit `{unsupported: true, pythonType: ...}` marker rather than a
+crash or a silently-dropped field. Relationships are exposed only from
+FreeCAD's own `OutList` (real dependency links it already tracks) — never
+fabricated.
+
+**Security.** `runner.py` has no `eval`/`exec` on request data anywhere,
+no operation that accepts caller-supplied code, and no generic "run this
+Python" primitive — adding a capability means adding a named function to
+its fixed `OPERATIONS` table. Gemini never gets anywhere near FreeCAD:
+nothing in the P7 model-provider boundary or the P11 agent loop holds a
+`freecad-runtime.ts` reference: the only path to FreeCAD is
+`EnvironmentAdapter` → a registered `Tool` → `executeTool`'s
+permission-checked boundary, identical to every other environment-target
+tool.
+
+**Testing.** Two levels, both under `packages/adapters/test/`:
+`freecad-adapter.test.ts` (LEVEL 1) is fully deterministic and requires no
+FreeCAD install — `FreeCadAdapter`'s injectable `runOperation` option
+replaces the subprocess call with a fake, so every branch of the adapter
+logic is exercised without spawning a process; it also runs the exact
+same reusable `runEnvironmentAdapterContractTests` suite (P5) the mock
+adapters use. `freecad-adapter.integration.test.ts` (LEVEL 2) runs
+against a REAL FreeCAD install (resolved via `NAQSH_FREECAD_CMD`, or
+`freecadcmd` on `PATH`) — when unavailable, every test in the file is
+registered `{ skip: <reason> }` and reported as **skipped**, never
+failed; `npm test` exits `0` either way. Both are wired into
+`packages/adapters/package.json`'s `test` script and run as part of the
+normal test suite.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`
@@ -767,30 +835,32 @@ every expected failure — `invalid_input` / `model_unavailable` /
 
 ## What's intentionally not implemented yet
 
-No FreeCAD, no real CAD operations, no full autonomous engineering, no
-approval UI, no production authentication, no cloud services, no
-persistence/database of any kind, no background jobs, no simulation
-engine. `ApprovalStore` and `AutonomyGrantStore` are in-memory only —
-nothing survives a process restart, and the same is true of every
-`EnvironmentAdapter`'s, `ModelProvider`'s, and now `AgentLoopRun`'s state
-(no `AgentLoopRunStore` exists either — a caller holds the value
-`beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval` returns, matching
-`ApprovalStore`/`AutonomyGrantStore`/the absent `PlanStore`/`ProposalStore`'s
-own in-memory-only precedent). The mock adapters in `packages/adapters`
-are deliberately simplistic — proving the `EnvironmentAdapter` contract
-works, not simulating a real CAD/simulation application; no geometry
-kernel, no FEA/CFD, no real persistence to disk. `FreeCADAdapter` does
-not exist yet (P12–P14) — nothing in `packages/adapters` or
-`packages/core` imports FreeCAD, a Python runtime, or any vendor SDK.
-P11's `modify_environment_object` tool proves the EXECUTE step can reach
-a real `EnvironmentAdapter`, but deliberately does NOT reconcile an
-environment's reported result back into `WorldModelState` — mapping an
+No real CAD MODIFICATION (create/modify/delete/checkpoint against FreeCAD
+are all structurally present but capability-gated to
+`unsupported_capability` — see the P12 section above), no full autonomous
+engineering, no approval UI, no production authentication, no cloud
+services, no persistence/database of any kind, no background jobs, no
+simulation engine, no FEA/CFD, no geometry generation. `ApprovalStore` and
+`AutonomyGrantStore` are in-memory only — nothing survives a process
+restart, and the same is true of every `EnvironmentAdapter`'s (including
+`FreeCadAdapter`'s own session tracking), `ModelProvider`'s, and
+`AgentLoopRun`'s state (no `AgentLoopRunStore` exists either — a caller
+holds the value `beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval`
+returns, matching `ApprovalStore`/`AutonomyGrantStore`/the absent
+`PlanStore`/`ProposalStore`'s own in-memory-only precedent). The mock
+adapters in `packages/adapters` remain the primary environment for unit
+tests/CI/deterministic evaluation — P12 does not replace or weaken them;
+they stay deliberately simplistic (no geometry kernel, no FEA/CFD, no real
+persistence to disk). `FreeCadAdapter` proves the EXECUTE step can reach a
+real environment, but deliberately does NOT reconcile an environment's
+reported result back into `WorldModelState` — mapping an
 `EnvironmentObjectId` to an `EngineeringObject.id` and interpreting raw
 `EnvironmentProperty` data as World Model facts is real,
 adapter-specific interpretation work (the environment↔World-Model
 reconciliation `environment-types.ts`'s own P5 header names as "a later
-phase's job"); P11 only proves the boundary is real and permission-gated,
-it does not solve interpretation. P11's agent loop is also deliberately
+phase's job"); P12 only proves the boundary is real, permission-gated, and
+genuinely observes a real environment — it does not solve interpretation.
+P11's agent loop is also deliberately
 narrow in scope: it never chooses among multiple plan steps beyond a
 simple, overridable "first pending step" default
 (`selectFirstPendingPlanStep`) — prioritizing among candidate steps is a
@@ -837,6 +907,16 @@ No API key is committed anywhere in this repository, and `.env`/`.env.*`
 are gitignored. Nothing currently calls `loadGeminiConfigFromEnv()` except
 its own tests — wiring a real provider into any running process is later
 work.
+
+`NAQSH_FREECAD_CMD` (optional) — read directly by
+`createFreeCadAdapter` (`packages/adapters/src/freecad-adapter.ts`), not
+through `config.ts` (that file is Gemini-specific): the path to FreeCAD's
+headless CLI (`freecadcmd`/`freecadcmd.exe`). Falls back to the bare
+`freecadcmd` command resolved via `PATH` when unset. Also read by
+`packages/adapters/test/freecad-adapter.integration.test.ts` to decide
+whether to run the real-FreeCAD test suite or skip it. Never required —
+every other test and every mock adapter works with no FreeCAD install at
+all.
 
 ## Tooling
 

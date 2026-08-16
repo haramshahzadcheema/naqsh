@@ -866,3 +866,104 @@ describe("P11 agent loop: approval-gated execution, no bypass", () => {
     }
   });
 });
+
+describe("P12 FreeCAD adapter: isolation, single subprocess boundary, no arbitrary execution", () => {
+  // FreeCAD is the first REAL (non-mock) EnvironmentAdapter implementation
+  // -- the risk this phase specifically introduces is a Python/subprocess
+  // dependency leaking somewhere it shouldn't, or a "run this code" surface
+  // appearing anywhere an agent (or a model) could reach it. Every check
+  // below proves a specific way that could happen, structurally.
+
+  it("no source file under packages/core/src or packages/schemas/src imports anything FreeCAD-specific -- the core stays environment-independent", () => {
+    // Matches an actual import/require specifier naming a freecad module,
+    // not a doc comment that merely MENTIONS FreeCAD/FreeCADAdapter while
+    // explaining the architecture -- several P5/P11 files already do this
+    // deliberately (e.g. environment-adapter.ts's own header names
+    // "FreeCADAdapter in P12+" as the reason the interface is generic).
+    // Same precision-regex lesson the P8/P9/P10 audits already applied to
+    // `@naqsh/adapters`/`@naqsh/model-providers` mentions elsewhere in this
+    // file -- a bare substring match would flag legitimate prose.
+    const forbiddenPattern = /from\s+["'`][^"'`]*freecad[^"'`]*["'`]|require\s*\(\s*["'`][^"'`]*freecad[^"'`]*["'`]\s*\)/i;
+    for (const relativePath of [...listTsFiles("packages/core/src"), ...listTsFiles("packages/schemas/src")]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import anything FreeCAD-specific -- the core/schemas layer must stay environment-independent`);
+    }
+  });
+
+  it("declares @naqsh/core and @naqsh/schemas as dependencies of @naqsh/adapters, and does not let @naqsh/core depend on @naqsh/adapters (mirrors the P5 mock-adapter guard, re-verified for the real FreeCAD adapter)", () => {
+    const adaptersPackageJson = readJson("packages/adapters/package.json");
+    const adapterDependencies = adaptersPackageJson.dependencies as Record<string, string> | undefined;
+    assert.ok(adapterDependencies?.["@naqsh/core"], "@naqsh/adapters must depend on @naqsh/core");
+    assert.ok(adapterDependencies?.["@naqsh/schemas"], "@naqsh/adapters must depend on @naqsh/schemas");
+
+    const corePackageJson = readJson("packages/core/package.json");
+    const coreDependencies = (corePackageJson.dependencies ?? {}) as Record<string, string>;
+    assert.equal("@naqsh/adapters" in coreDependencies, false, "@naqsh/core must stay dependency-free of @naqsh/adapters");
+  });
+
+  it("freecad-runtime.ts is the ONLY source file in the repo that imports node:child_process -- the subprocess boundary is not duplicated anywhere", () => {
+    const forbiddenPattern = /from\s+["'`](?:node:)?child_process["'`]|require\s*\(\s*["'`](?:node:)?child_process["'`]\s*\)/;
+    const allSourceFiles = [
+      ...listTsFiles("packages/core/src"),
+      ...listTsFiles("packages/schemas/src"),
+      ...listTsFiles("packages/adapters/src"),
+      ...listTsFiles("packages/model-providers/src"),
+      ...listTsFiles("apps/api/src")
+    ];
+    const filesImportingChildProcess = allSourceFiles.filter((relativePath) =>
+      forbiddenPattern.test(readFileSync(join(repoRoot, relativePath), "utf8"))
+    );
+    assert.deepEqual(
+      filesImportingChildProcess,
+      ["packages/adapters/src/freecad-runtime.ts"],
+      "node:child_process must be imported by exactly freecad-runtime.ts and nowhere else -- that is the one sanctioned subprocess boundary"
+    );
+  });
+
+  it("freecad-adapter.ts never imports node:child_process directly -- it must go through freecad-runtime.ts", () => {
+    const relativePath = "packages/adapters/src/freecad-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(contents, /from\s+["'`](?:node:)?child_process["'`]/, `${relativePath} must not import child_process directly`);
+    assert.match(contents, /from\s+["'`]\.\/freecad-runtime\.js["'`]/, `${relativePath} must delegate subprocess execution to freecad-runtime.ts`);
+  });
+
+  it("no source file anywhere in the repo contains eval(), new Function(), execSync(), or a bare spawn() outside the one sanctioned boundary", () => {
+    // Re-asserts the repo-wide P3 "no arbitrary code execution" guard
+    // specifically including the new freecad/ TypeScript sources, so this
+    // phase's own new files are held to the identical standard rather than
+    // assumed compliant.
+    const forbiddenPatterns: RegExp[] = [/\beval\s*\(/, /new\s+Function\s*\(/, /\bexecSync\s*\(/, /\bspawn\s*\(/];
+    for (const relativePath of ["packages/adapters/src/freecad-adapter.ts", "packages/adapters/src/freecad-runtime.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("runner.py dispatches through a fixed, named operation table -- no eval/exec, no generic 'run this Python' primitive", () => {
+    const relativePath = "packages/adapters/freecad/runner.py";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /^OPERATIONS\s*=\s*\{/m, `${relativePath} must define a fixed OPERATIONS dispatch table`);
+    const forbiddenPatterns: RegExp[] = [/\beval\s*\(/, /\bexec\s*\(/, /\b__import__\s*\(/, /\bcompile\s*\(/, /\bos\.system\s*\(/, /\bsubprocess\./];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern} -- no arbitrary-execution surface, even inside the adapter implementation`);
+    }
+  });
+
+  it("FreeCAD's own EnvironmentAdapter never claims create/modify/delete/checkpoint capabilities in Phase 12 -- no CAD manipulation, no fabricated rollback", () => {
+    const relativePath = "packages/adapters/src/freecad-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /capabilities:\s*\[\s*["'`]save["'`]\s*\]/, `${relativePath} must declare exactly the "save" capability in Phase 12`);
+  });
+
+  it("apps/api never imports anything FreeCAD-specific or spawns a subprocess -- the application layer stays behind the adapter boundary too", () => {
+    const forbiddenPattern = /from\s+["'`][^"'`]*freecad[^"'`]*["'`]|require\s*\(\s*["'`][^"'`]*freecad[^"'`]*["'`]\s*\)/i;
+    const childProcessPattern = /from\s+["'`](?:node:)?child_process["'`]/;
+    for (const relativePath of listTsFiles("apps/api/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import anything FreeCAD-specific`);
+      assert.doesNotMatch(contents, childProcessPattern, `${relativePath} must not import child_process directly`);
+    }
+  });
+});
