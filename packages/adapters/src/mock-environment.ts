@@ -1,6 +1,6 @@
 import type { EnvironmentAdapter } from "@naqsh/core";
 import { createDeterministicClock, createDeterministicIdGenerator } from "./deterministic.js";
-import { createInMemoryEnvironmentAdapter } from "./in-memory-environment.js";
+import { createInMemoryEnvironmentAdapter, type CheckpointFaultController } from "./in-memory-environment.js";
 
 export interface MockEnvironmentOptions {
   /** Defaults to a fresh createDeterministicIdGenerator() -- override only
@@ -9,6 +9,10 @@ export interface MockEnvironmentOptions {
   /** Defaults to a fresh createDeterministicClock() -- override only for a
    * scenario that needs specific timestamps. */
   now?: () => string;
+  /** Phase 15 test-only fault injection for checkpoint()/restore() --
+   * see `CheckpointFaultController`'s own doc comment. Omitted by every
+   * caller before P15 and by every production caller after it. */
+  checkpointFaults?: CheckpointFaultController;
 }
 
 /**
@@ -54,6 +58,7 @@ export function createMockEnvironment(options: MockEnvironmentOptions = {}): Env
     },
     generateId,
     now,
+    checkpointFaults: options.checkpointFaults,
     seedObjects: () => [
       {
         id: "widget_a",

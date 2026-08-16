@@ -56,6 +56,40 @@ export interface InMemoryEnvironmentAdapterOptions {
    * `createDeterministicClock()` (./deterministic.js) for a mock whose
    * timestamps must be reproducible run-to-run. */
   now?: () => string;
+  /** Test-only fault injection for Phase 15 checkpoint/restore coverage
+   * (`checkpoint capability` describes the real, non-fault-injected
+   * behavior on its own -- see `checkpoint()`/`restore()` below).
+   * Production callers never set this; pass `createCheckpointFaultController()`
+   * from a test and flip its flags to deterministically exercise restore
+   * failure / mismatched-restore paths without depending on a real
+   * environment ever actually failing. */
+  checkpointFaults?: CheckpointFaultController;
+}
+
+/**
+ * A small, explicit, mutable fault-injection handle -- NOT a generic
+ * "chaos" framework. Each flag consumes itself (resets to `false`) the
+ * first time it fires, so a test's fault injection is precise about which
+ * SPECIFIC call it targets rather than leaking into later, unrelated
+ * calls in the same test.
+ */
+export interface CheckpointFaultController {
+  /** The next `checkpoint()` call fails with `environment_failure` instead
+   * of succeeding. */
+  failNextCheckpoint: boolean;
+  /** The next `restore()` call fails with `environment_failure` instead of
+   * succeeding. */
+  failNextRestore: boolean;
+  /** The next `restore()` call reports SUCCESS without actually applying
+   * the snapshot's content -- simulates an environment that CLAIMS a
+   * successful restore without genuinely matching the checkpointed state,
+   * which is exactly the class of bug Phase 15's post-restore mismatch
+   * detection (re-observe + compare object ids) exists to catch. */
+  corruptNextRestore: boolean;
+}
+
+export function createCheckpointFaultController(): CheckpointFaultController {
+  return { failNextCheckpoint: false, failNextRestore: false, corruptNextRestore: false };
 }
 
 /** `createEnvironmentObject` only shallow-`Object.freeze`s its return value
@@ -409,6 +443,10 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (guard) return guard;
       const capabilityGuard = requireCapability("checkpoint", "checkpoint", session.id, null);
       if (capabilityGuard) return capabilityGuard;
+      if (options.checkpointFaults?.failNextCheckpoint) {
+        options.checkpointFaults.failNextCheckpoint = false;
+        return failure("checkpoint", session.id, null, "environment_failure", "Simulated checkpoint failure (test fault injection)");
+      }
       const checkpointId = generateId("chkpt");
       checkpoints.set(checkpointId, new Map(objects));
       return success("checkpoint", session.id, null, { checkpointId });
@@ -419,9 +457,21 @@ export function createInMemoryEnvironmentAdapter(options: InMemoryEnvironmentAda
       if (guard) return guard;
       const capabilityGuard = requireCapability("checkpoint", "restore", session.id, null);
       if (capabilityGuard) return capabilityGuard;
+      if (options.checkpointFaults?.failNextRestore) {
+        options.checkpointFaults.failNextRestore = false;
+        return failure("restore", session.id, null, "environment_failure", "Simulated restore failure (test fault injection)");
+      }
       const snapshot = checkpoints.get(checkpointId);
       if (!snapshot) {
         return failure("restore", session.id, null, "object_not_found", `No checkpoint with id "${checkpointId}"`);
+      }
+      if (options.checkpointFaults?.corruptNextRestore) {
+        // Deliberately does NOT apply `snapshot` -- reports success while
+        // leaving `objects` exactly as it was, simulating an environment
+        // that claims a successful restore without genuinely matching the
+        // checkpointed state.
+        options.checkpointFaults.corruptNextRestore = false;
+        return success("restore", session.id, null, null);
       }
       objects = new Map(snapshot);
       return success("restore", session.id, null, null);

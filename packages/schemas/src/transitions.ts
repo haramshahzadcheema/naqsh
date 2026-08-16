@@ -6,6 +6,7 @@ import type {
   ExperimentInput,
   ObjectiveInput,
   PreferenceInput,
+  ProjectInput,
   RequirementInput,
   SessionStateInput
 } from "./types.js";
@@ -107,6 +108,25 @@ export interface UpdateObjectTransition extends BaseTransition<"update_object"> 
   value: unknown;
 }
 
+/**
+ * P15: replaces the ENTIRE project content with `project` -- the same
+ * "full-entity replacement" shape `ReplaceSessionTransition` already
+ * established one level down, applied at the project level for checkpoint
+ * rollback. `id`/`createdAt` are always pinned back to the CURRENT
+ * project's own values by `restore_checkpoint`'s caller (a rollback can
+ * never change WHICH project this is, or fabricate a new genesis time) --
+ * `updateWorldModel`'s own wrapper still forces `version: state.project.
+ * version + 1` and a fresh `updatedAt` exactly like every other project
+ * transition, so restoring never rewinds the version counter backward
+ * (that would let a future, unrelated transition collide with an old
+ * `resultingProjectVersion` already recorded in ChangeHistory). This is
+ * "git revert" semantics, not "git reset" semantics: the CONTENT reverts,
+ * the audit trail keeps moving forward.
+ */
+export interface RestoreProjectTransition extends BaseTransition<"restore_project"> {
+  project: ProjectInput;
+}
+
 export type ProjectTransition =
   | SetProjectMetadataTransition
   | SetObjectiveTransition
@@ -120,7 +140,8 @@ export type ProjectTransition =
   | AddPreferenceTransition
   | AddRelationshipTransition
   | RemoveRelationshipTransition
-  | UpdateObjectTransition;
+  | UpdateObjectTransition
+  | RestoreProjectTransition;
 
 export interface ReplaceSessionTransition extends BaseTransition<"replace_session"> {
   session: SessionStateInput;

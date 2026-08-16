@@ -9,12 +9,14 @@ import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model
 import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
+import type { Checkpoint } from "./checkpoint-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
   assertAuthorizationDecision,
   assertAutonomyGrant,
   assertChange,
+  assertCheckpoint,
   assertEnvironmentDocumentInspection,
   assertEnvironmentObject,
   assertEnvironmentOperationResult,
@@ -238,6 +240,18 @@ export function deserializeModelInvocationResult(serialized: string): ModelInvoc
   requireNonEmptyString(serialized, "serialized model invocation result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertModelInvocationResult(parsed);
+  return parsed;
+}
+
+export function serializeCheckpoint(checkpoint: Checkpoint): string {
+  assertCheckpoint(checkpoint);
+  return JSON.stringify(checkpoint);
+}
+
+export function deserializeCheckpoint(serialized: string): Checkpoint {
+  requireNonEmptyString(serialized, "serialized checkpoint is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertCheckpoint(parsed);
   return parsed;
 }
 

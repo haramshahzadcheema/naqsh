@@ -42,18 +42,18 @@ import { runFreecadOperation, type FreeCadRuntimeConfig, type FreeCadRuntimeResu
  * separate, later concern (see README's P5/P12 notes) -- this file's job
  * ends at producing a trustworthy `EnvironmentOperationResult`.
  *
- * Scope (Phase 12, extended by Phase 13's much deeper read boundary --
- * see `inspectDocument()` and the richer `EnvironmentObject` fields):
- * read/inspect/save only. `capabilities` is exactly `["save"]` --
- * `create`/`modify`/`delete`/`checkpoint` are all real, present methods
- * (the `EnvironmentAdapter` interface requires them unconditionally, see
- * environment-adapter.ts) but every one of them is capability-gated to
- * `unsupported_capability` through Phase 13, deliberately: Phase 12/13's
- * own briefs list inspection/discovery/save as the priority, never
- * modification, and repeatedly warn against turning this into full CAD
- * manipulation. A minimal `modifyObject` is a natural, well-scoped Phase
- * 14 starting point once this read boundary is trusted -- not implemented
- * here.
+ * Scope, current through Phase 15: `capabilities` is `["save", "modify",
+ * "checkpoint"]`. `create`/`delete` remain real, present methods (the
+ * `EnvironmentAdapter` interface requires them unconditionally, see
+ * environment-adapter.ts) but are still capability-gated to
+ * `unsupported_capability` -- no phase through P15 needs to create or
+ * delete FreeCAD objects, and adding either would be exactly the
+ * "turn this into full CAD manipulation" scope creep P12/P13's own briefs
+ * warned against. `modify` (Phase 14) is a deliberately narrow allowlisted
+ * property-write path (see runner.py's `SUPPORTED_MUTATIONS`).
+ * `checkpoint` (Phase 15) is a real file-copy snapshot/restore of the
+ * live `.FCStd` document (see runner.py's `op_checkpoint`/`op_restore`) --
+ * never a fabricated pointer.
  *
  * Stateless-per-call design: each operation spawns a fresh
  * `freecadcmd` process (via freecad-runtime.ts) that opens the target
@@ -184,7 +184,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
     kind: "freecad",
     name: "FreeCAD",
     version: "1.0.0",
-    capabilities: ["save", "modify"]
+    capabilities: ["save", "modify", "checkpoint"]
   });
   const capabilities = new Set<EnvironmentCapability>(descriptor.capabilities);
 
@@ -573,20 +573,33 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       if (guard.result) return guard.result;
       const capabilityGuard = requireCapability("checkpoint", "checkpoint", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      // Never reached this phase -- no real rollback/snapshot mechanism is
-      // implemented (see this file's module doc comment): "checkpoint" is
-      // never in `capabilities` above, so requireCapability always
-      // short-circuits first.
-      return failure("checkpoint", session.id, null, "unsupported_capability", "checkpoint is not supported by the FreeCAD adapter in this phase");
+      // Phase 15: a REAL snapshot -- runner.py's op_checkpoint copies the
+      // live .FCStd file to a sibling ".naqsh_checkpoints" directory and
+      // returns its own opaque id. This adapter never inspects or
+      // interprets that id -- it is only ever stored and later handed
+      // back to `restore()` verbatim (see environment-adapter.ts's own
+      // "core must never know FreeCAD file formats" boundary).
+      const result = await runOperation("checkpoint", { filePath: guard.filePath });
+      if (result.status === "error") return failure("checkpoint", session.id, null, result.kind, result.message);
+      const data = result.data as { checkpointId?: unknown };
+      if (typeof data.checkpointId !== "string" || data.checkpointId.length === 0) {
+        return failure("checkpoint", session.id, null, "environment_failure", "FreeCAD runner reported success but returned no checkpointId");
+      }
+      return success("checkpoint", session.id, null, { checkpointId: data.checkpointId });
     },
 
-    async restore(session) {
+    async restore(session, checkpointId) {
       const guard = requireConnected(session, "restore");
       if (guard.result) return guard.result;
       const capabilityGuard = requireCapability("checkpoint", "restore", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      // Never reached this phase -- see checkpoint's identical comment.
-      return failure("restore", session.id, null, "unsupported_capability", "restore is not supported by the FreeCAD adapter in this phase");
+      const result = await runOperation("restore", { filePath: guard.filePath, checkpointId });
+      if (result.status === "error") return failure("restore", session.id, null, result.kind, result.message);
+      const data = result.data as { found?: unknown };
+      if (!data.found) {
+        return failure("restore", session.id, null, "object_not_found", `No checkpoint with id "${checkpointId}"`);
+      }
+      return success("restore", session.id, null, null);
     }
   };
 

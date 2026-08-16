@@ -3,3 +3,4 @@ export { createMockSimulationEnvironment } from "./mock-simulation-environment.j
 export { createMockEnvironment, type MockEnvironmentOptions } from "./mock-environment.js";
 export { createDeterministicClock, createDeterministicIdGenerator } from "./deterministic.js";
 export { createFreeCadAdapter, type FreeCadAdapterOptions } from "./freecad-adapter.js";
+export { createCheckpointFaultController, type CheckpointFaultController } from "./in-memory-environment.js";

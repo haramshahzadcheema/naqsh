@@ -78,6 +78,15 @@ import {
 } from "./validators.js";
 import type { Proposal, ProposalInput } from "./proposal-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
+import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
+import type {
+  Checkpoint,
+  CheckpointArtifactRef,
+  CheckpointArtifactRefInput,
+  CheckpointEnvironmentSnapshot,
+  CheckpointEnvironmentSnapshotInput,
+  CheckpointInput
+} from "./checkpoint-types.js";
 import type {
   Plan,
   PlanAssumption,
@@ -1018,4 +1027,55 @@ export function createAgentLoopRun(input: AgentLoopRunInput): AgentLoopRun {
   };
   assertAgentLoopRun(run);
   return Object.freeze(run);
+}
+
+export function createCheckpointArtifactRef(input: CheckpointArtifactRefInput): CheckpointArtifactRef {
+  const ref: CheckpointArtifactRef = {
+    artifactId: input.artifactId,
+    contentHash: input.contentHash,
+    byteSize: input.byteSize,
+    schemaVersion: input.schemaVersion ?? "1"
+  };
+  assertCheckpointArtifactRef(ref);
+  return deepFreeze(ref);
+}
+
+export function createCheckpointEnvironmentSnapshot(input: CheckpointEnvironmentSnapshotInput): CheckpointEnvironmentSnapshot {
+  const snapshot: CheckpointEnvironmentSnapshot = {
+    environmentKind: input.environmentKind,
+    environmentCheckpointId: input.environmentCheckpointId,
+    documentName: input.documentName ?? null,
+    objectIds: safeStructuredClone(input.objectIds ?? [], "checkpointEnvironmentSnapshot.objectIds"),
+    contentHash: input.contentHash
+  };
+  assertCheckpointEnvironmentSnapshot(snapshot);
+  return deepFreeze(snapshot);
+}
+
+/**
+ * `worldModelSnapshot`/`environmentSnapshot` are ALREADY validated, frozen
+ * values by the time they reach this factory (built by
+ * `createCheckpointArtifactRef`/`createCheckpointEnvironmentSnapshot`
+ * above) -- matching `createAgentLoopRun`'s identical "don't re-clone
+ * already-immutable nested values" precedent. Only the plain
+ * caller-supplied `metadata` bag needs `safeStructuredClone`'s defensive
+ * copy.
+ */
+export function createCheckpoint(input: CheckpointInput): Checkpoint {
+  const checkpoint: Checkpoint = {
+    id: input.id ?? createId("chkpt"),
+    projectId: input.projectId,
+    sessionId: input.sessionId ?? null,
+    status: input.status ?? "complete",
+    reason: input.reason ?? "",
+    source: input.source ?? "agent",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    lastChangeId: input.lastChangeId ?? null,
+    projectVersion: input.projectVersion,
+    worldModelSnapshot: createCheckpointArtifactRef(input.worldModelSnapshot),
+    environmentSnapshot: input.environmentSnapshot ? createCheckpointEnvironmentSnapshot(input.environmentSnapshot) : null,
+    metadata: safeStructuredClone(input.metadata ?? {}, "checkpoint.metadata")
+  };
+  assertCheckpoint(checkpoint);
+  return Object.freeze(checkpoint);
 }

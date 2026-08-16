@@ -33,7 +33,10 @@ import sys
 import json
 import base64
 import math
+import os
+import shutil
 import traceback
+import uuid
 
 RESULT_PREFIX = "@@NAQSH_RESULT@@"
 
@@ -522,6 +525,81 @@ def op_save(params):
         _close(doc)
 
 
+_HEX_DIGITS = set("0123456789abcdef")
+
+
+def _is_valid_checkpoint_id(checkpoint_id):
+    """`checkpoint_id` is only ever legitimately a `uuid.uuid4().hex`
+    string this script itself generated (op_checkpoint below) -- exactly
+    32 lowercase hex characters, never a path separator or `..` segment.
+    Validated HERE, at the point a caller-supplied string is about to be
+    joined into a filesystem path, rather than trusting the TypeScript
+    layer above to have already done so (Phase 15 audit finding: without
+    this check, a `checkpointId` containing `../` would let `op_restore`
+    copy an ARBITRARY file on disk over the live document -- a path
+    traversal vulnerability, even though today's only real caller
+    (`restore_checkpoint`) always supplies a server-generated id)."""
+    return isinstance(checkpoint_id, str) and len(checkpoint_id) == 32 and set(checkpoint_id) <= _HEX_DIGITS
+
+
+def _checkpoint_dir(file_path):
+    """A hidden sibling directory next to the document itself -- not a
+    separate configured location, so a checkpointed document stays
+    self-contained with the file it belongs to (copy the whole project
+    folder, get the checkpoints too)."""
+    directory = os.path.join(os.path.dirname(os.path.abspath(file_path)), ".naqsh_checkpoints")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def op_checkpoint(params):
+    """Phase 15: a REAL, recoverable snapshot of the current FreeCAD
+    document -- a plain file copy, never a fabricated/fake pointer.
+    FreeCAD documents ARE files on disk; the file itself already is the
+    environment's own recoverable representation, so copying it IS a
+    genuine snapshot ("if the current FreeCAD architecture uses document
+    files ... use that mechanism. Do NOT invent a fake snapshot.").
+
+    Opens and immediately closes the document once first -- never copies
+    raw, unverified bytes -- so a genuinely corrupt/unopenable file is
+    rejected here (as a normal exception, surfaced as `environment_
+    failure` by `main()`) rather than silently "checkpointed" and only
+    discovered broken much later at restore time.
+    """
+    file_path = params["filePath"]
+    doc = _open(file_path)
+    _close(doc)
+
+    checkpoint_id = uuid.uuid4().hex
+    snapshot_path = os.path.join(_checkpoint_dir(file_path), checkpoint_id + ".FCStd")
+    shutil.copy2(file_path, snapshot_path)
+    return {"checkpointId": checkpoint_id}
+
+
+def op_restore(params):
+    """Phase 15: restores the live document to a previously checkpointed
+    state by copying the snapshot file back over it. `shutil.copy2` either
+    completes wholesale or raises -- there is no code path that leaves
+    `file_path` partially overwritten. A missing/unknown `checkpointId`
+    is reported as `{"found": False}`, the same "no such record" shape
+    `op_modify_object`/`op_inspect_object` already use, rather than a
+    generic exception.
+    """
+    file_path = params["filePath"]
+    checkpoint_id = params["checkpointId"]
+    if not _is_valid_checkpoint_id(checkpoint_id):
+        # Malformed input is reported identically to "not found" -- never
+        # a different error that would let a caller distinguish "wrong
+        # shape" from "genuinely unknown id" (no oracle for probing valid
+        # id formats), and never a path join with untrusted characters.
+        return {"found": False}
+    snapshot_path = os.path.join(_checkpoint_dir(file_path), checkpoint_id + ".FCStd")
+    if not os.path.isfile(snapshot_path):
+        return {"found": False}
+    shutil.copy2(snapshot_path, file_path)
+    return {"found": True, "restored": True}
+
+
 # Phase 14 Step 8: the FIRST real mutation capability against a real
 # FreeCAD document -- deliberately an explicit ALLOWLIST, not a generic
 # "write any property" path. Adding a new writable mutation means adding an
@@ -755,6 +833,8 @@ OPERATIONS = {
     "inspect_document": op_inspect_document,
     "modify_object": op_modify_object,
     "save": op_save,
+    "checkpoint": op_checkpoint,
+    "restore": op_restore,
 }
 
 

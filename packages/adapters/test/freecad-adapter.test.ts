@@ -54,6 +54,7 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
   ];
 
   const calls: Array<{ operation: string; params: Record<string, unknown> }> = [];
+  const checkpoints = new Map<string, FakeObjectFixture[]>();
 
   const runOperation = async (operation: string, params: Record<string, unknown>): Promise<FreeCadRuntimeResult> => {
     calls.push({ operation, params });
@@ -150,6 +151,24 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
       }
       case "save":
         return { status: "success", data: { saved: true } };
+      case "checkpoint": {
+        // Mirrors runner.py's op_checkpoint just enough to exercise the
+        // adapter's own logic: an opaque id mapping to a snapshot of the
+        // fixture's current objects, deep-cloned so a later mutation of
+        // `objects` never retroactively corrupts an already-taken
+        // checkpoint.
+        const checkpointId = `chkpt_fake_${checkpoints.size + 1}`;
+        checkpoints.set(checkpointId, JSON.parse(JSON.stringify(objects)) as FakeObjectFixture[]);
+        return { status: "success", data: { checkpointId } };
+      }
+      case "restore": {
+        const checkpointId = params.checkpointId as string;
+        const snapshot = checkpoints.get(checkpointId);
+        if (!snapshot) return { status: "success", data: { found: false } };
+        objects.length = 0;
+        objects.push(...(JSON.parse(JSON.stringify(snapshot)) as FakeObjectFixture[]));
+        return { status: "success", data: { found: true, restored: true } };
+      }
       default:
         return { status: "error", kind: "invalid_operation", message: `Unknown operation: ${operation}` };
     }
@@ -184,16 +203,17 @@ async function connect(adapter: ReturnType<typeof createFreeCadAdapter>): Promis
 runEnvironmentAdapterContractTests("freecad (fake runtime)", () => buildAdapter().adapter);
 
 describe("createFreeCadAdapter: identity and capabilities", () => {
-  it("declares kind 'freecad' and exactly 'save'+'modify' -- create/delete/checkpoint remain unsupported through Phase 14", () => {
+  it("declares kind 'freecad' and exactly 'save'+'modify'+'checkpoint' -- create/delete remain unsupported through Phase 15", () => {
     const { adapter } = buildAdapter();
     const descriptor = adapter.describe();
     assert.equal(descriptor.kind, "freecad");
-    assert.deepEqual(descriptor.capabilities, ["save", "modify"]);
-    for (const capability of ["create", "delete", "checkpoint"] as const) {
+    assert.deepEqual(descriptor.capabilities, ["save", "modify", "checkpoint"]);
+    for (const capability of ["create", "delete"] as const) {
       assert.equal(supportsCapability(descriptor, capability), false);
     }
     assert.equal(supportsCapability(descriptor, "save"), true);
     assert.equal(supportsCapability(descriptor, "modify"), true);
+    assert.equal(supportsCapability(descriptor, "checkpoint"), true);
   });
 
   it("does not hardcode a fake FreeCAD version in the static descriptor", () => {
@@ -461,17 +481,15 @@ describe("createFreeCadAdapter: not_connected guard", () => {
 });
 
 describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD runtime", () => {
-  it("create/delete/checkpoint/restore all fail with unsupported_capability and never invoke runOperation -- Phase 14 grants ONLY modify, nothing else", async () => {
+  it("create/delete fail with unsupported_capability and never invoke runOperation -- Phase 15 grants save/modify/checkpoint, nothing else", async () => {
     const { adapter, fake } = buildAdapter();
     const session = await connect(adapter);
     const callsBefore = fake.calls.length;
 
     const createResult = await adapter.createObject(session, { type: "Part::Box", name: "x" });
     const deleteResult = await adapter.deleteObject(session, "Box");
-    const checkpointResult = await adapter.checkpoint(session);
-    const restoreResult = await adapter.restore(session, "chk_1");
 
-    for (const result of [createResult, deleteResult, checkpointResult, restoreResult]) {
+    for (const result of [createResult, deleteResult]) {
       assert.equal(result.status, "error");
       assert.equal(result.error?.kind, "unsupported_capability");
     }
@@ -479,6 +497,53 @@ describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD
     // spawning FreeCAD -- proves there is no hidden path where a
     // rejected-by-capability call still touches the real environment.
     assert.equal(fake.calls.length, callsBefore);
+  });
+});
+
+describe("createFreeCadAdapter: checkpoint/restore (Phase 15)", () => {
+  it("genuinely invokes the runtime for checkpoint() and returns a real checkpointId", async () => {
+    const { adapter, fake } = buildAdapter();
+    const session = await connect(adapter);
+    const callsBefore = fake.calls.length;
+    const result = await adapter.checkpoint(session);
+    assert.equal(result.status, "success");
+    assert.ok(fake.calls.length > callsBefore, "checkpoint must genuinely invoke the runtime when the capability is supported");
+    assert.ok(fake.calls.some((call) => call.operation === "checkpoint"));
+    const data = result.data as { checkpointId: string };
+    assert.equal(typeof data.checkpointId, "string");
+    assert.ok(data.checkpointId.length > 0);
+  });
+
+  it("restore() round-trips: a checkpoint taken before a mutation, restored after, reverts the mutation", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+
+    const checkpointResult = await adapter.checkpoint(session);
+    const { checkpointId } = checkpointResult.data as { checkpointId: string };
+
+    await adapter.modifyObject(session, "Box", { Length: 999 });
+    const afterMutate = await adapter.inspectObject(session, "Box");
+    const lengthAfterMutate = (afterMutate.data as { properties: Array<{ key: string; value: unknown }> }).properties.find(
+      (property) => property.key === "Length"
+    );
+    assert.deepEqual(lengthAfterMutate?.value, { value: 999, unit: "mm" });
+
+    const restoreResult = await adapter.restore(session, checkpointId);
+    assert.equal(restoreResult.status, "success");
+
+    const afterRestore = await adapter.inspectObject(session, "Box");
+    const lengthAfterRestore = (afterRestore.data as { properties: Array<{ key: string; value: unknown }> }).properties.find(
+      (property) => property.key === "Length"
+    );
+    assert.deepEqual(lengthAfterRestore?.value, { value: 10, unit: "mm" });
+  });
+
+  it("restoring an unknown checkpoint id fails with object_not_found", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    const result = await adapter.restore(session, "chk_does_not_exist");
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "object_not_found");
   });
 });
 

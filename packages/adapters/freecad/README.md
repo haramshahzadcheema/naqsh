@@ -297,6 +297,50 @@ document's existing units), arbitrary property writes or arbitrary object
 creation/deletion, and any form of `eval`/`exec`/arbitrary Python or shell
 execution.
 
+## Scope (Phase 15): checkpoint/restore via real file copy
+
+`capabilities` gains `"checkpoint"` (now `["save", "modify",
+"checkpoint"]`). FreeCAD documents are already files on disk, so a
+"snapshot" is a real, honest concept here — no fabricated pointer, no
+in-memory diff engine.
+
+**`op_checkpoint`** opens the live document once and immediately closes
+it (rejecting a genuinely corrupt/unopenable file as a normal exception
+here, rather than "snapshotting" garbage), generates an opaque id
+(`uuid.uuid4().hex`), and `shutil.copy2`s the live `.FCStd` file into a
+hidden sibling directory, `.naqsh_checkpoints/`, next to the document
+itself (not a separately configured location — copy the project folder,
+get its checkpoints too). Returns `{checkpointId}`.
+
+**`op_restore`** looks up the snapshot file by id under
+`.naqsh_checkpoints/`; a missing id returns `{"found": false}` (the same
+shape `op_modify_object`/`op_inspect_object` already use for "no such
+record"), never a generic exception. `shutil.copy2` either completes
+wholesale or raises — there is no code path that leaves the live document
+partially overwritten.
+
+**Core never sees any of this.** `FreeCadAdapter.checkpoint()`/`.restore()`
+call `runOperation("checkpoint"/"restore", ...)` and pass the returned
+`checkpointId` straight through as an opaque string — the adapter (and
+everything above it) never opens `.naqsh_checkpoints/`, never knows it's a
+directory of `.FCStd` copies, never knows the word "FreeCAD" is involved
+at all beyond `descriptor.kind`. `create`/`delete` remain unsupported —
+Phase 15 adds recoverability, not object lifecycle management.
+
+**Empirically confirmed against real FreeCAD 1.1.3:** a checkpoint/restore
+round-trip genuinely reverts a real property mutation (`Length` set, then
+checkpointed, mutated again, restored — the ORIGINAL value survives a
+fresh `connect()` in a brand-new subprocess, proving persistence is real,
+not an in-process artifact); restoring an unknown checkpoint id fails
+deterministically with `object_not_found`.
+
+**Deliberately NOT implemented in Phase 15:** any UI; automatic/background
+checkpointing; a distributed content-addressed store (a plain SHA-256 hash
+computed at the core layer is the whole integrity mechanism — this
+directory has no hashing of its own); pruning/garbage-collecting old
+checkpoint files (left for a future phase if it becomes a real problem);
+`create`/`delete` capabilities.
+
 ## Testing
 
 **Level 1** (`packages/adapters/test/freecad-adapter.test.ts`) — fully
@@ -310,7 +354,9 @@ made), a read-only/unsupported property rejection, and a stale-`expectedBefore`
 rejection — against a fake runtime that mirrors FreeCAD's Quantity
 read/write shape asymmetry but deliberately does **not** reimplement
 FreeCAD's own range/NaN validation, since that behavior is only proven for
-real in Level 2.
+real in Level 2. Its `describe("createFreeCadAdapter: checkpoint/restore
+(Phase 15)" ...)` block covers a genuine `checkpoint()` invocation and a
+full checkpoint → mutate → restore round-trip against the fake runtime.
 
 **Level 2**
 (`packages/adapters/test/freecad-adapter.integration.test.ts`) — runs

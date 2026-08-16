@@ -522,7 +522,8 @@ export type ToolTarget =
   | "research"
   | "simulation"
   | "robotics"
-  | "eda";
+  | "eda"
+  | "checkpoint";
 
 export const TOOL_TARGETS: readonly ToolTarget[] = [
   "world_model",
@@ -531,7 +532,8 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
   "research",
   "simulation",
   "robotics",
-  "eda"
+  "eda",
+  "checkpoint"
 ];
 
 /**

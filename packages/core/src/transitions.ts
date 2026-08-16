@@ -8,6 +8,7 @@ import {
   createExperiment,
   createObjective,
   createPreference,
+  createProject,
   createRequirement,
   createSessionState,
   toIsoTimestamp,
@@ -305,6 +306,32 @@ const registry: TransitionRegistry = {
     // never generates a new id when one is already supplied -- always
     // deterministic as-is, same reasoning as update_requirement.
     resolveForReplay: (transition) => transition
+  },
+  restore_project: {
+    target: "project",
+    mutates: true,
+    // The caller (`restore_checkpoint`'s tool handler) always pins
+    // `transition.project.id`/`createdAt` back to the CURRENT project's
+    // own values before this ever runs -- `createProject` re-validates
+    // and rebuilds every nested entity from the checkpoint's captured
+    // content exactly like every other transition's `apply()` does, so a
+    // malformed/tampered snapshot fails HERE (inside `assertProject`,
+    // surfaced as `WorldModelValidationError`), not silently. `version`/
+    // `updatedAt` are irrelevant on the object this returns: the
+    // `updateWorldModel` wrapper always overwrites both with
+    // `state.project.version + 1`/`toIsoTimestamp()` immediately after,
+    // exactly like every other project transition -- restoring a
+    // checkpoint moves the version counter FORWARD, it never rewinds it
+    // (see this transition's own schemas-layer doc comment for why that
+    // matters for ChangeHistory's monotonic invariants).
+    apply: (_project, transition) => createProject(transition.project),
+    describeChange: (before, after) => ({
+      entityType: "project",
+      entityId: after.id,
+      before,
+      after
+    }),
+    resolveForReplay: (transition, after) => ({ ...transition, project: after as never })
   },
   replace_session: {
     target: "session",

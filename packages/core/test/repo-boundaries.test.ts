@@ -951,15 +951,16 @@ describe("P12 FreeCAD adapter: isolation, single subprocess boundary, no arbitra
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter never claims create/delete/checkpoint capabilities in Phase 12 -- no fabricated rollback, no unbounded object lifecycle", () => {
+  it("FreeCAD's own EnvironmentAdapter never claims create/delete capabilities -- no fabricated unbounded object lifecycle", () => {
     // Superseded from its original Phase 12 form ("exactly the save
-    // capability") once Phase 14 deliberately added "modify" -- this guard
-    // still proves the important thing Phase 12 established and Phase 14
-    // does NOT touch: create/delete/checkpoint remain unsupported. See the
-    // dedicated P14 guard block below for the modify-specific assertions.
+    // capability") once Phase 14 deliberately added "modify" and Phase 15
+    // deliberately added "checkpoint" -- this guard still proves the
+    // important thing Phase 12 established and neither phase touches:
+    // create/delete remain unsupported. See the dedicated P14/P15 guard
+    // blocks below for the modify/checkpoint-specific assertions.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    for (const capability of ["create", "delete", "checkpoint"]) {
+    for (const capability of ["create", "delete"]) {
       assert.doesNotMatch(
         contents,
         new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
@@ -1063,13 +1064,14 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter still declares no create/delete/checkpoint capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
+  it("FreeCAD's own EnvironmentAdapter still declares no create/delete capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
     // Superseded from its original Phase 13 form the same way the P12
-    // guard above was -- Phase 14 deliberately adds "modify"; this guard
-    // still proves Phase 13 itself granted nothing beyond inspection/save.
+    // guard above was -- Phase 14 deliberately adds "modify" and Phase 15
+    // deliberately adds "checkpoint"; this guard still proves Phase 13
+    // itself granted nothing beyond inspection/save.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    for (const capability of ["create", "delete", "checkpoint"]) {
+    for (const capability of ["create", "delete"]) {
       assert.doesNotMatch(
         contents,
         new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
@@ -1087,14 +1089,18 @@ describe("P14 safe real CAD modification: narrow allowlist, validated before mut
   // property" escape hatch. Every check below proves one specific way
   // this narrowness/safety could have been silently lost, structurally.
 
-  it("FreeCAD's own EnvironmentAdapter now declares exactly 'save' and 'modify' -- create/delete/checkpoint remain unsupported", () => {
+  it("FreeCAD's own EnvironmentAdapter declares 'save' and 'modify' -- create/delete remain unsupported (checkpoint is Phase 15's own concern, see the P15 guard block below)", () => {
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    assert.match(
-      contents,
-      /capabilities:\s*\[\s*["'`]save["'`]\s*,\s*["'`]modify["'`]\s*\]/,
-      `${relativePath} must declare exactly ["save", "modify"] in Phase 14`
-    );
+    assert.match(contents, /capabilities:\s*\[[^\]]*["'`]save["'`][^\]]*\]/, `${relativePath} must declare "save"`);
+    assert.match(contents, /capabilities:\s*\[[^\]]*["'`]modify["'`][^\]]*\]/, `${relativePath} must declare "modify"`);
+    for (const capability of ["create", "delete"]) {
+      assert.doesNotMatch(
+        contents,
+        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
+        `${relativePath} must not declare the "${capability}" capability`
+      );
+    }
   });
 
   it("runner.py's mutation allowlist (SUPPORTED_MUTATIONS) is the ONLY path to setattr() on a FreeCAD object -- no generic property-write primitive exists", () => {
@@ -1152,5 +1158,81 @@ describe("P14 safe real CAD modification: narrow allowlist, validated before mut
     for (const forbidden of forbiddenImports) {
       assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
     }
+  });
+});
+
+describe("P15 checkpoints/snapshots/rollback/history: real capability, real audit trail, no bypass", () => {
+  // Phase 15 grants the FreeCAD adapter its FIRST real recoverable-state
+  // capability (checkpoint/restore) and gives core a genuine rollback
+  // mutation (restore_checkpoint). Every check below proves one specific
+  // way this could have silently become a bypass -- an unapproved
+  // rollback, a fabricated snapshot, or a second competing history system
+  // -- not by re-reading the code and trusting it.
+
+  it("FreeCAD's own EnvironmentAdapter now declares 'checkpoint' -- a real capability, not still stubbed to unsupported_capability", () => {
+    const relativePath = "packages/adapters/src/freecad-adapter.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /capabilities:\s*\[[^\]]*["'`]checkpoint["'`][^\]]*\]/, `${relativePath} must declare "checkpoint"`);
+  });
+
+  it("create_checkpoint is classified mutation:'suggest' (no approval required to capture a snapshot) -- restore_checkpoint is classified mutation:'mutate' (approval required to roll back)", () => {
+    const createContents = readFileSync(join(repoRoot, "packages/core/src/create-checkpoint-tool.ts"), "utf8");
+    assert.match(createContents, /mutation:\s*["'`]suggest["'`]/, "create-checkpoint-tool.ts must declare mutation: \"suggest\"");
+    assert.doesNotMatch(createContents, /mutation:\s*["'`]mutate["'`]/, "create-checkpoint-tool.ts must never declare mutation: \"mutate\"");
+
+    const restoreContents = readFileSync(join(repoRoot, "packages/core/src/restore-checkpoint-tool.ts"), "utf8");
+    assert.match(restoreContents, /mutation:\s*["'`]mutate["'`]/, "restore-checkpoint-tool.ts must declare mutation: \"mutate\"");
+  });
+
+  it("restore_checkpoint reuses recordTransition/ChangeHistory -- rollback is recorded through the existing Change Model, not a second competing history system", () => {
+    const relativePath = "packages/core/src/restore-checkpoint-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.ok(contents.includes("./record-transition.js"), `${relativePath} must reuse recordTransition, not reimplement audited writes`);
+    assert.doesNotMatch(contents, /new\s+Map\s*<[^>]*Change[^>]*>|class\s+\w*History/, `${relativePath} must not define a parallel history/ledger data structure`);
+  });
+
+  it("Checkpoint is genuinely append-only: CheckpointStore/ArtifactStore expose no update/delete/overwrite method", () => {
+    // Negative lookbehind for a preceding "." excludes a legitimate METHOD
+    // CALL on some unrelated object (e.g. artifact-store.ts's own
+    // `createHash(...).update(content, ...)`, Node's crypto API, nothing
+    // to do with mutating a stored artifact) -- only an INTERFACE/object-
+    // literal method DEFINITION named update/delete/remove/overwrite would
+    // match this.
+    for (const relativePath of ["packages/core/src/checkpoint-store.ts", "packages/core/src/artifact-store.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(
+        contents,
+        /(?<!\.)\bupdate\s*\(|(?<!\.)\bdelete\s*\(|(?<!\.)\bremove\s*\(|(?<!\.)\boverwrite\s*\(/,
+        `${relativePath} must not expose an update/delete/remove/overwrite method`
+      );
+    }
+  });
+
+  it("runner.py's checkpoint/restore operations are plain file copies -- no eval/exec/shell/subprocess execution surface was added", () => {
+    const relativePath = "packages/adapters/freecad/runner.py";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /def op_checkpoint/, `${relativePath} must define op_checkpoint`);
+    assert.match(contents, /def op_restore/, `${relativePath} must define op_restore`);
+    assert.match(contents, /shutil\.copy2/, `${relativePath} must implement checkpoint/restore via a real file copy`);
+    const forbiddenPatterns: RegExp[] = [/\beval\s*\(/, /\bexec\s*\(/, /\b__import__\s*\(/, /\bcompile\s*\(/, /\bos\.system\s*\(/, /\bsubprocess\./, /\bos\.popen\s*\(/];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern} -- Phase 15's checkpoint/restore must not introduce an execution surface`);
+    }
+  });
+
+  it("no source file under packages/core/src or packages/schemas/src references a FreeCAD-specific file extension or path (.FCStd, .naqsh_checkpoints) -- the checkpoint contract stays environment-independent", () => {
+    const forbiddenPatterns = [/\.FCStd/i, /naqsh_checkpoints/i];
+    for (const relativePath of [...listTsFiles("packages/core/src"), ...listTsFiles("packages/schemas/src")]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not reference FreeCAD-specific file naming -- that belongs only inside the adapter`);
+      }
+    }
+  });
+
+  it("restore-checkpoint-tool.ts validates checkpoint.projectId against current state BEFORE touching the environment or World Model -- cross-project restore is a structural rejection, not left to opaque-id luck", () => {
+    const relativePath = "packages/core/src/restore-checkpoint-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /cross_project_forbidden/, `${relativePath} must reject a cross-project restore with a named, specific reason`);
   });
 });

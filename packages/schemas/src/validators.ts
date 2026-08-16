@@ -39,6 +39,12 @@ import {
 import { OBSERVATION_SCOPES, type ObservationResult } from "./observation-types.js";
 import { AGENT_LOOP_RUN_STATUSES, EXECUTION_OUTCOMES, type AgentLoopRun, type ExecutionResult } from "./agent-loop-types.js";
 import {
+  CHECKPOINT_STATUSES,
+  type Checkpoint,
+  type CheckpointArtifactRef,
+  type CheckpointEnvironmentSnapshot
+} from "./checkpoint-types.js";
+import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
   PLAN_STEP_STATUSES,
@@ -1429,6 +1435,64 @@ export function assertAgentLoopRun(value: unknown): asserts value is AgentLoopRu
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "agentLoopRun.metadata must be a JSON-serializable object"
+  );
+}
+
+function isCheckpointStatus(value: unknown): value is (typeof CHECKPOINT_STATUSES)[number] {
+  return typeof value === "string" && (CHECKPOINT_STATUSES as readonly string[]).includes(value);
+}
+
+export function assertCheckpointArtifactRef(value: unknown): asserts value is CheckpointArtifactRef {
+  invariant(isPlainObject(value), "checkpoint artifact ref must be an object");
+  invariant(typeof value.artifactId === "string" && value.artifactId.length > 0, "checkpointArtifactRef.artifactId is required");
+  invariant(
+    typeof value.contentHash === "string" && /^[0-9a-f]{64}$/.test(value.contentHash),
+    "checkpointArtifactRef.contentHash must be a 64-character lowercase hex SHA-256 digest"
+  );
+  invariant(
+    typeof value.byteSize === "number" && Number.isInteger(value.byteSize) && value.byteSize >= 0,
+    "checkpointArtifactRef.byteSize must be a non-negative integer"
+  );
+  invariant(typeof value.schemaVersion === "string" && value.schemaVersion.length > 0, "checkpointArtifactRef.schemaVersion is required");
+}
+
+export function assertCheckpointEnvironmentSnapshot(value: unknown): asserts value is CheckpointEnvironmentSnapshot {
+  invariant(isPlainObject(value), "checkpoint environment snapshot must be an object");
+  invariant(
+    typeof value.environmentKind === "string" && value.environmentKind.length > 0,
+    "checkpointEnvironmentSnapshot.environmentKind is required"
+  );
+  invariant(
+    typeof value.environmentCheckpointId === "string" && value.environmentCheckpointId.length > 0,
+    "checkpointEnvironmentSnapshot.environmentCheckpointId is required"
+  );
+  assertNullableString(value.documentName, "checkpointEnvironmentSnapshot.documentName must be a string or null");
+  invariant(Array.isArray(value.objectIds) && value.objectIds.every((id) => typeof id === "string"), "checkpointEnvironmentSnapshot.objectIds must be an array of strings");
+  invariant(
+    typeof value.contentHash === "string" && /^[0-9a-f]{64}$/.test(value.contentHash),
+    "checkpointEnvironmentSnapshot.contentHash must be a 64-character lowercase hex SHA-256 digest"
+  );
+}
+
+export function assertCheckpoint(value: unknown): asserts value is Checkpoint {
+  invariant(isPlainObject(value), "checkpoint must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "checkpoint.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "checkpoint.projectId is required");
+  assertNullableString(value.sessionId, "checkpoint.sessionId must be a string or null");
+  invariant(isCheckpointStatus(value.status), "invalid checkpoint.status");
+  invariant(typeof value.reason === "string", "checkpoint.reason must be a string");
+  invariant(isEntitySource(value.source), "invalid checkpoint.source");
+  invariant(isIsoTimestamp(value.createdAt), "checkpoint.createdAt must be an ISO timestamp");
+  assertNullableString(value.lastChangeId, "checkpoint.lastChangeId must be a string or null");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "checkpoint.projectVersion must be a positive integer"
+  );
+  assertCheckpointArtifactRef(value.worldModelSnapshot);
+  if (value.environmentSnapshot !== null) assertCheckpointEnvironmentSnapshot(value.environmentSnapshot);
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "checkpoint.metadata must be a JSON-serializable object"
   );
 }
 

@@ -972,6 +972,104 @@ or any `create`/`delete`/`checkpoint` capability. See
 `packages/adapters/freecad/README.md`'s "Scope (Phase 14)" section for the
 full validation-order and empirical-FreeCAD-behavior writeup.
 
+## Checkpoints, Snapshots, Rollback, Action History (P15)
+
+**Two new tools, reusing everything already built.** `create_checkpoint`
+(`mutation: "suggest"`, no approval required — capturing a snapshot never
+mutates anything) and `restore_checkpoint` (`mutation: "mutate"`, gated by
+the exact same P3/P4 `executeTool` → approval boundary every other
+mutation already goes through). Rollback is a real mutation, not a
+side-channel — proven end to end with the real, unmodified
+`ApprovalStore`/`AutonomyGrantStore`/`createExecuteToolAuthorizer`
+machinery: unapproved, wrong-scope, and rejected-approval rollbacks are
+all `policy_rejected` with the project genuinely untouched.
+
+**A `Checkpoint` is metadata only.** It never inlines the state it
+captured — `worldModelSnapshot: {artifactId, contentHash, byteSize,
+schemaVersion}` is a pointer into a separate `ArtifactStore` (a
+content-addressed-ish, in-memory blob store holding the actual
+`serializeWorldModelState()` string — P1/P2's own existing serializer,
+never a second one), and `environmentSnapshot` (when a session was
+connected) is `null` or `{environmentKind, environmentCheckpointId,
+documentName, objectIds, contentHash}` — the `environmentCheckpointId` is
+an opaque handle `EnvironmentAdapter.checkpoint()` returned; core never
+interprets it, only stores and replays it back to `adapter.restore()`.
+`CheckpointStore`/`ArtifactStore` are both the same "seam, not
+infrastructure" in-memory `Map`-behind-a-typed-interface shape
+`ApprovalStore`/`ChangeHistory` already established (P2/P4) — and both are
+genuinely append-only: neither exposes an update/delete method, matching
+Phase 15's "checkpoints are immutable once created" requirement
+structurally, not by convention.
+
+**Atomic creation.** `create_checkpoint` captures the environment snapshot
+(when a session is connected) BEFORE writing anything to either store; if
+the adapter can't produce one — missing capability or a genuine failure —
+the whole call fails and nothing is persisted. There is no code path that
+saves `Checkpoint` metadata pointing at an artifact/snapshot that was
+never actually written.
+
+**Restore, in order:** locate → validate scope (`cross_project_forbidden`
+if the checkpoint belongs to a different project) → validate environment
+compatibility (`incompatible_environment` if no session is connected, or
+the connected session's `environmentKind`/`documentName` don't match what
+was captured) → verify World Model artifact integrity (recompute the
+SHA-256 hash and byte size, reject as `corrupted_snapshot`/
+`missing_artifact` on any mismatch, BEFORE mutating anything) → restore
+the environment (`adapter.restore()`; a failure here aborts the whole call
+— the World Model is never touched if the environment restore failed) →
+apply a new `restore_project` `WorldModelTransition` through the EXACT
+SAME `recordTransition`/`ChangeHistory` audited write path every other
+mutation uses (P2) → re-observe the environment and compare a content
+fingerprint (SHA-256 of sorted `{id, type, properties}`, not just object
+ids — an environment that reports the same objects with STALE property
+values would be invisible to an ids-only check) against what was captured
+at checkpoint time, reporting `mismatchDetected`/`warnings` on an
+otherwise still-successful result (informational, matching P11's own
+`LoopDiscrepancy` precedent — this is Phase 15's narrow, deterministic
+integrity check, explicitly NOT the full P16 verification framework).
+
+**"git revert," not "git reset."** `restore_project` (a new
+`WorldModelTransition`/`TransitionKind`, the project-level analog of the
+existing `replace_session`) replaces project CONTENT with the checkpoint's
+captured content, but `updateWorldModel`'s own wrapper still forces
+`version: state.project.version + 1` on top — so restoring always moves
+the version counter FORWARD, never rewinds it. Rewinding would let a
+future, unrelated transition collide with an old `resultingProjectVersion`
+some earlier `Change` already recorded — restoring is applying a NEW
+Change whose content happens to match the past, not literally traveling
+back in time. `project.id`/`createdAt` are always pinned to the CURRENT
+project by `restore_checkpoint` itself — a rollback can never change which
+project this is or fabricate a new genesis time.
+
+**History is never erased.** Reuses P2's `Change`/`ChangeHistory`
+unchanged — a rollback IS a `Change` (`transitionKind: "restore_project"`,
+`metadata: {checkpointId, rollback: true}`), appended after whatever came
+before it, never replacing or deleting it. A UI (or a test) can always
+walk `ChangeHistory.list()` and see the full sequence — the action that
+was rolled back, the checkpoint, and the rollback itself — exactly as it
+happened.
+
+**FreeCAD's snapshot is a real file copy**, not a fabricated pointer:
+`runner.py`'s `op_checkpoint` opens+closes the document once (to reject a
+genuinely corrupt file before "snapshotting" it), then `shutil.copy2`s the
+live `.FCStd` into a sibling `.naqsh_checkpoints/` directory under an
+opaque generated id; `op_restore` copies it back over the live file.
+`capabilities` gains `"checkpoint"` (now `["save", "modify",
+"checkpoint"]`) — `create`/`delete` remain unsupported. The mock
+environment's `checkpoint()`/`restore()` (already real since P5/P6, just
+previously untested at this depth) gained a small, explicit,
+self-consuming fault-injection controller
+(`createCheckpointFaultController()`) for deterministic failure/mismatch
+testing — omitted, it changes nothing about pre-P15 behavior.
+
+**Deliberately NOT implemented (P16+ territory).** A full checkpoint/
+rollback UI; automatic/background checkpointing; a distributed
+content-addressed storage system (a plain SHA-256 hash is the whole
+integrity mechanism); the full P16 deterministic verification framework
+(mismatch detection here is a narrow content-hash comparison, not
+objective-satisfaction scoring); cross-session checkpoint sharing beyond
+the environment-identity check already described.
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`

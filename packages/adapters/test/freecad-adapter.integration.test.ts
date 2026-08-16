@@ -3,7 +3,7 @@ import { after, describe, it } from "node:test";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { EnvironmentObject, EnvironmentSession } from "@naqsh/schemas";
 import { runEnvironmentAdapterContractTests } from "@naqsh/core";
@@ -175,7 +175,7 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     assert.equal(result.error?.kind, "environment_failure");
   });
 
-  it("create/delete/checkpoint/restore remain genuinely unsupported against the real adapter -- Phase 14 grants ONLY the narrow modify capability, nothing else", async () => {
+  it("create/delete remain genuinely unsupported against the real adapter -- Phase 15 grants ONLY modify+checkpoint, nothing else", async () => {
     const fixture = buildFixture();
     try {
       const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
@@ -184,9 +184,7 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
 
       const results = await Promise.all([
         adapter.createObject(session, { type: "Part::Box", name: "x" }),
-        adapter.deleteObject(session, "Box"),
-        adapter.checkpoint(session),
-        adapter.restore(session, "chk_1")
+        adapter.deleteObject(session, "Box")
       ]);
       for (const result of results) {
         assert.equal(result.status, "error");
@@ -329,6 +327,89 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
       assert.equal(result.error?.kind, "invalid_operation");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 15: checkpoint()/restore() are a REAL file-copy snapshot -- the on-disk document genuinely reverts, surviving a fresh reconnect", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const checkpointResult = await adapter.checkpoint(session);
+      assert.equal(checkpointResult.status, "success");
+      const { checkpointId } = checkpointResult.data as { checkpointId: string };
+      assert.ok(checkpointId.length > 0);
+
+      const mutateResult = await adapter.modifyObject(session, "Box", { Length: 77 });
+      assert.equal(mutateResult.status, "success");
+      const afterMutate = await adapter.inspectObject(session, "Box");
+      assert.deepEqual((afterMutate.data as EnvironmentObject).properties.find((p) => p.key === "Length")!.value, {
+        value: 77,
+        unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]"
+      });
+
+      const restoreResult = await adapter.restore(session, checkpointId);
+      assert.equal(restoreResult.status, "success");
+
+      // A genuinely NEW connect() (fresh subprocess) still sees the
+      // reverted value -- proves the restore is a real, persisted file
+      // operation, not an in-memory artifact of this one call.
+      const reconnected = await adapter.connect({ filePath: fixture.path });
+      const reconnectedSession = reconnected.data as EnvironmentSession;
+      const afterRestore = await adapter.inspectObject(reconnectedSession, "Box");
+      assert.deepEqual((afterRestore.data as EnvironmentObject).properties.find((p) => p.key === "Length")!.value, {
+        value: 10,
+        unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]"
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 15: restoring an unknown checkpoint id fails deterministically with object_not_found, never a false success", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+      const result = await adapter.restore(session, "not_a_real_checkpoint_id");
+      assert.equal(result.status, "error");
+      assert.equal(result.error?.kind, "object_not_found");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PHASE 15 AUDIT FIX: a path-traversal checkpointId is rejected as object_not_found, never used to construct a filesystem path -- the live document is untouched", async () => {
+    // Regression for a real vulnerability found during the Phase 15 audit:
+    // runner.py's op_restore originally joined `checkpointId` directly
+    // into a filesystem path with no validation. A real
+    // `EnvironmentAdapter.restore()` caller is trusted to only ever pass
+    // a server-generated id, but the runner script itself must not rely
+    // on that -- this proves a `../`-laden id is safely rejected, not
+    // used to read/overwrite an arbitrary file on disk.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const beforeContent = readFileSync(fixture.path);
+
+      for (const maliciousId of ["../../../../etc/passwd", "..\\..\\..\\Windows\\System32\\config\\SAM", "a/b", "not-hex-but-32-characters-long!!", ""]) {
+        const result = await adapter.restore(session, maliciousId);
+        assert.equal(result.status, "error");
+        assert.equal(result.error?.kind, "object_not_found");
+      }
+
+      // The live document must be byte-for-byte untouched by every
+      // rejected attempt above.
+      const afterContent = readFileSync(fixture.path);
+      assert.ok(beforeContent.equals(afterContent), "the live document must not be modified by a rejected restore() call");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
