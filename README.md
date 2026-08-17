@@ -111,7 +111,15 @@ scanned across every `.ts` file in `core/src`, `schemas/src`,
   explicit steps) and never consults an LLM. `createExecuteToolAuthorizer`
   adapts it into the exact shape `executeTool`'s `authorize` hook expects —
   the only integration point between P3 and P4; `executeTool` itself is
-  unmodified in behavior and still has no idea autonomy levels exist.
+  unmodified in behavior and still has no idea autonomy levels exist. Its
+  optional `onDecision` hook (called with every decision, allowed or
+  denied) has a small, reusable reference implementation —
+  `createAuthorizationLogger()` (`authorization-logger.ts`, external audit
+  fix) — that turns each decision into one structured JSON log line to an
+  injectable sink (defaulting to `console.log`); a caller wires it in with
+  `createExecuteToolAuthorizer({ ..., onDecision: createAuthorizationLogger() })`.
+  `core` still does not log anything on its own — this is opt-in, not a new
+  default behavior.
   `Approval` authorizes exactly one `(toolName, target)` pair and is
   single-use (`consumedAt`); `AutonomyGrant` authorizes a bounded set of
   future calls (explicit `toolNames` allowlist, optional target scope,
@@ -1153,6 +1161,19 @@ grouped it with `"suggest"`, both since P3/P4, before this phase existed).
 `deleteObject`), builds `Evidence`, calls the pure `evaluateCheck`, and
 persists the result — the only place any I/O happens; evaluation itself
 stays pure throughout.
+
+**Goalpost integrity (external audit fix).** `create_check` accepts
+OPTIONAL `requirementId`/`constraintId` tool-input fields (stored in the
+existing `Check.metadata` extension point, not new fields on the
+already-audited P16 schema — the same pattern P18 used for
+`Requirement.metadata.operator`). When supplied, a `numeric_comparison`/
+`bounds_check`'s own threshold is cross-validated against the linked
+`Requirement`/`Constraint`'s own declared `value`/`unit`/operator before
+the check is created — an agent can no longer define a Check with an
+arbitrary, trivially-satisfiable threshold (e.g. "Height gte -999999")
+while claiming it tests a specific requirement; a mismatched check is
+rejected outright (`check_requirement_mismatch`). A Check with no linkage
+is unaffected — not every check needs to trace back to a requirement.
 
 **`CheckStore`/`VerificationResultStore`** are the same "seam, not
 infrastructure" in-memory `Map`-behind-a-typed-interface shape

@@ -93,7 +93,7 @@ function buildHarness(options: { connectSession?: boolean } = {}) {
   let connectedSession: EnvironmentSession | null = options.connectSession === false ? null : session;
 
   const registry = createToolRegistry();
-  const createCheck = createCreateCheckTool(checkStore);
+  const createCheck = createCreateCheckTool(checkStore, () => state);
   const runVerification = createRunVerificationTool(() => state, () => connectedSession, adapter, checkStore, verificationResultStore);
   const evaluateObjective = createEvaluateObjectiveSatisfactionTool(() => state, verificationResultStore, objectiveSatisfactionStore);
   registry.register(createCheck.tool, createCheck.handler);
