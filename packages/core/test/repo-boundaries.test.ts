@@ -1632,3 +1632,126 @@ describe("P18 natural language -> structured requirement: bounded interpretation
     assert.doesNotMatch(contents, /status:\s*["'`](satisfied|violated)["'`]/, `${relativePath} must not itself assign a satisfied/violated status to the Requirement it creates`);
   });
 });
+
+describe("P19 requirement clarification: deterministic completeness analysis, bounded re-interpretation, no LLM authority over completeness", () => {
+  // Phase 19's central architectural rule mirrors P18's exactly one level
+  // up: "NAQSH must ASK when information is genuinely missing. It must
+  // NOT invent engineering assumptions to make the requirement look
+  // complete." requirement-completeness.ts is the PURE, Gemini-free half
+  // (decides WHETHER to ask); answer-clarification-tool.ts is the bounded
+  // Gemini-facing half (re-interprets an answer, via the EXISTING P18
+  // pipeline, never a new prompt); clarification-store.ts never touches
+  // the World Model. Every check below proves one specific way this
+  // boundary could have silently eroded.
+  const analyzerFiles = ["packages/core/src/requirement-completeness.ts"];
+  const analyzeToolFiles = ["packages/core/src/analyze-requirement-completeness-tool.ts"];
+  const answerToolFiles = ["packages/core/src/answer-clarification-tool.ts"];
+  const dismissToolFiles = ["packages/core/src/dismiss-clarification-tool.ts"];
+  const storeFiles = ["packages/core/src/clarification-store.ts"];
+  const allP19Files = [...analyzerFiles, ...analyzeToolFiles, ...answerToolFiles, ...dismissToolFiles, ...storeFiles];
+
+  it("requirement-completeness.ts (the pure analyzer) never imports a model-provider package, @google/genai, or the World Model write path -- completeness analysis is fully deterministic, no Gemini call", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/,
+      /from\s+["'`]\.\/transitions\.js["'`]/,
+      /from\s+["'`]\.\/change-history\.js["'`]/,
+      /from\s+["'`]\.\/record-transition\.js["'`]/,
+      /from\s+["'`]\.\/execute-tool\.js["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/
+    ];
+    const contents = readFileSync(join(repoRoot, analyzerFiles[0]!), "utf8");
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${analyzerFiles[0]} must not reference ${pattern} -- completeness analysis must stay pure and Gemini-free`);
+    }
+  });
+
+  it("none of the P19 files import the World Model WRITE path -- clarification (asking, answering, or dismissing) can never itself mutate WorldModelState", () => {
+    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
+    for (const relativePath of allP19Files) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- P19 never mutates the World Model directly`);
+      }
+    }
+  });
+
+  it("answer-clarification-tool.ts reuses interpretRequirementFromText (P18) unchanged -- P19 never defines its own Gemini prompt/system instruction", () => {
+    const contents = readFileSync(join(repoRoot, answerToolFiles[0]!), "utf8");
+    assert.match(contents, /from\s+["'`]\.\/requirement-interpreter\.js["'`]/, "answer-clarification-tool.ts must import interpretRequirementFromText from requirement-interpreter.js (P18)");
+    assert.doesNotMatch(contents, /systemInstruction\s*[:=]/, "answer-clarification-tool.ts must not define its own systemInstruction -- it reuses P18's");
+    assert.doesNotMatch(contents, /from\s+["'`]@google\/genai["'`]/, "answer-clarification-tool.ts must not import @google/genai directly");
+  });
+
+  it("all three P19 tools are classified mutation:'suggest' -- never 'mutate'; none touches the environment adapter", () => {
+    for (const relativePath of [...analyzeToolFiles, ...answerToolFiles, ...dismissToolFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]suggest["'`]/, `${relativePath} must declare mutation: "suggest"`);
+      assert.doesNotMatch(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must never declare mutation: "mutate"`);
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+      assert.doesNotMatch(contents, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import an EnvironmentAdapter -- clarification can never touch CAD`);
+    }
+  });
+
+  it("dismiss_clarification and clarification-store.ts never call interpretRequirementFromText or import a model-provider package -- only answer_clarification is Gemini-facing", () => {
+    for (const relativePath of [...dismissToolFiles, ...storeFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /interpretRequirementFromText/, `${relativePath} must not call interpretRequirementFromText`);
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/model-providers["'`]/, `${relativePath} must not import @naqsh/model-providers`);
+    }
+  });
+
+  it("no arbitrary code execution anywhere in the P19 files -- a clarification answer can never become executable input", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of allP19Files) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("Clarification carries no expression/formula/script field -- a clarification is typed data, never an executable payload", () => {
+    const relativePath = "packages/schemas/src/clarification-types.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    for (const forbiddenField of ["expression", "formula", "script", "code"]) {
+      assert.doesNotMatch(contents, new RegExp(`${forbiddenField}\\s*:`), `${relativePath} must not carry a "${forbiddenField}" field on Clarification`);
+    }
+  });
+
+  it("answer_clarification rejects a candidate that is still 'ambiguous' after re-interpretation -- an unresolved answer can never become authoritative", () => {
+    const contents = readFileSync(join(repoRoot, answerToolFiles[0]!), "utf8");
+    assert.match(contents, /answer_insufficient/, "answer-clarification-tool.ts must explicitly reject an answer that leaves the candidate ambiguous");
+  });
+
+  it("analyze_requirement_completeness never itself creates a Requirement -- only add_requirement (P18, unmodified) does", () => {
+    const contents = readFileSync(join(repoRoot, analyzeToolFiles[0]!), "utf8");
+    assert.doesNotMatch(contents, /createRequirement\s*\(/, "analyze-requirement-completeness-tool.ts must not call createRequirement");
+  });
+
+  it("no P19 file duplicates P16/P17's verification/objective-satisfaction machinery", () => {
+    const forbiddenImports = [
+      "./verify.js",
+      "./evidence.js",
+      "./verification-result-store.js",
+      "./run-verification-tool.js",
+      "./objective-satisfaction.js",
+      "./objective-satisfaction-store.js",
+      "./evaluate-objective-satisfaction-tool.js"
+    ];
+    for (const relativePath of allP19Files) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- P19 never performs verification or objective satisfaction`);
+      }
+    }
+  });
+});

@@ -33,7 +33,12 @@ import type { ToolHandler } from "./tool-registry.js";
  * `statementText` are preserved in the accepted Requirement's `metadata`
  * -- the existing, already-JSON-validated extension mechanism every entity
  * already has -- rather than adding a new field to the already-audited P1
- * `Requirement` schema for a single phase's need.
+ * `Requirement` schema for a single phase's need. The candidate's OWN
+ * `metadata` is spread in first (P19's `answer_clarification` stamps
+ * `resolvedClarificationId`/`originalRequirementCandidateId`/
+ * `originalStatementText` there) so a later phase's provenance is never
+ * silently dropped on the floor just because THIS tool didn't know about
+ * it -- P18's own three fields still take precedence on any key collision.
  *
  * DUPLICATE SUBMISSION is intentionally NOT deduplicated: accepting the
  * same candidate twice (or two candidates from the same statement) creates
@@ -128,6 +133,7 @@ export function createAddRequirementTool(getState: () => WorldModelState, setSta
           priority: candidate.priority,
           source: candidate.source,
           metadata: {
+            ...candidate.metadata,
             requirementCandidateId: candidate.id,
             statementText: candidate.statementText,
             operator: candidate.operator

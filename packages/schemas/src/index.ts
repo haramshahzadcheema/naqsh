@@ -9,6 +9,7 @@ export * from "./checkpoint-types.js";
 export * from "./verification-types.js";
 export * from "./objective-satisfaction-types.js";
 export * from "./requirement-candidate-types.js";
+export * from "./clarification-types.js";
 export * from "./transitions.js";
 export * from "./ids.js";
 export * from "./tool-schema.js";

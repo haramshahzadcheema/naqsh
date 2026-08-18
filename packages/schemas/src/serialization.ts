@@ -13,6 +13,7 @@ import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
 import type { ObjectiveSatisfactionResult } from "./objective-satisfaction-types.js";
 import type { RequirementCandidate } from "./requirement-candidate-types.js";
+import type { Clarification } from "./clarification-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
@@ -21,6 +22,7 @@ import {
   assertChange,
   assertCheck,
   assertCheckpoint,
+  assertClarification,
   assertEnvironmentDocumentInspection,
   assertEnvironmentObject,
   assertEnvironmentOperationResult,
@@ -319,5 +321,17 @@ export function deserializeRequirementCandidate(serialized: string): Requirement
   requireNonEmptyString(serialized, "serialized requirement candidate is required");
   const parsed: unknown = JSON.parse(serialized);
   assertRequirementCandidate(parsed);
+  return parsed;
+}
+
+export function serializeClarification(clarification: Clarification): string {
+  assertClarification(clarification);
+  return JSON.stringify(clarification);
+}
+
+export function deserializeClarification(serialized: string): Clarification {
+  requireNonEmptyString(serialized, "serialized clarification is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertClarification(parsed);
   return parsed;
 }

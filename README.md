@@ -1383,12 +1383,135 @@ is a thin pass-through to `interpretRequirementFromText`, mirroring
 `acceptRequirement` API — `add_requirement` already has a generic,
 approval-gated execution surface via the agent loop (P11).
 
-**Deliberately NOT implemented (P19+ territory).** Clarifying questions or
-any interactive resolution of an ambiguous candidate; from-scratch design
+**Deliberately NOT implemented (P20+ territory).** From-scratch design
 generation; requirement-to-check wiring beyond what P16/P17 already support;
 a dimensional-analysis or unit-conversion engine (normalization here is
 narrow — it does not invent unit math P1 never had); multi-requirement
-batch interpretation from a single statement.
+batch interpretation from a single statement. Clarifying questions and
+interactive resolution of an ambiguous candidate now exist — see P19,
+below.
+
+## Requirement Clarification (P19)
+
+**What this phase answers.** P18 can already tell you a candidate is
+`"ambiguous"` (P18's own `RequirementCandidate.ambiguityReason`); P19
+decides WHETHER that's worth asking the user about, asks a specific,
+minimal question, and — once answered — re-derives a fresh, specific
+candidate. The rule: **NAQSH must ask when information is genuinely
+missing. It must NOT invent an engineering assumption to make the
+requirement look complete.**
+
+**Pipeline:** `RequirementCandidate` (P18) → `analyzeRequirementCandidateCompleteness`
+(`requirement-completeness.ts`, a PURE, SYNCHRONOUS, deterministic function
+— no Gemini call) → zero or more `Clarification` drafts → `analyze_requirement_completeness`
+tool persists them (deduplicated) to `ClarificationStore` → user answers via
+`answer_clarification` → the clarification's own QUESTION + the answer are
+re-interpreted through `interpretRequirementFromText` (P18, completely
+UNCHANGED — no new prompt) → a fresh, specific `RequirementCandidate` →
+the EXISTING, unmodified `add_requirement` tool → World Model.
+
+**Why the analyzer is Gemini-free.** P18 already spent a model call
+extracting `ambiguityReason` — asking Gemini a SECOND time "is this
+actually missing something" would just re-solicit the same trust question
+P18 already resolved, for no new signal. `analyzeRequirementCandidateCompleteness`
+works from three deterministic checks instead:
+- **Already-ambiguous candidates** — a small, bounded set of topic keyword
+  rules (mass/weight, load/strength, cost, "no unit was stated") turns
+  `ambiguityReason`/`statementText` into ONE FOCUSED question per matched
+  topic — "make it lightweight and strong" matches BOTH the mass and load
+  rules and produces TWO independent clarifications, never one merged or
+  randomly-chosen question. No match falls back to exactly one generic
+  clarification built from `ambiguityReason` verbatim — never invented.
+- **Referential ambiguity** — a statement whose subject is a bare pronoun
+  ("It must support 500 N.") is flagged `missing_target` only when the
+  project has zero or 2+ engineering objects to resolve it against; with
+  exactly one object, the reference is resolved (not invented — genuinely
+  unambiguous), no clarification raised.
+- **Numeric conflicts** — a candidate's `(category, operator, value, unit)`
+  is compared, as closed/open numeric intervals, against every EXISTING
+  `Requirement` of the same category; a PROVABLE disjoint pair (e.g.
+  `mass < 1 kg` vs. `mass > 5 kg`) raises a `conflicting_constraints`
+  clarification naming both — P19 never decides which one wins, deletes
+  either, or invents a priority.
+
+**Over-clarification is explicitly guarded against.** "The plate must be
+200 mm wide." and "The bracket must support 500 N vertically." both
+produce zero clarifications — a `"specific"` candidate with no referential/
+conflict issue is left alone, never interrogated about material, finish,
+tolerance, or anything else a downstream phase might someday want.
+
+**`Clarification` (new entity, schemas).** Mirrors `Proposal`/
+`RequirementCandidate`'s "describes a question about state, is not state
+itself" pattern. Embeds the FULL `candidateSnapshot` it was raised against
+(P18 never persists a candidate on its own, so a bare id would dangle) —
+every `Clarification` is independently self-contained and traceable.
+Lifecycle: `pending` → `answered` (re-interpretation produced a specific
+result) / `dismissed` (explicitly closed, never answered) / `superseded`
+(replaced because the candidate changed and the question no longer
+applies) — `assertClarification` enforces `answerText`/`answeredAt`/
+`supersededBy` can only be set together with the matching status, the same
+"validator is authoritative, never trust the caller" discipline every
+P16–P18 entity already has.
+
+**Duplicate-prevention, not a conversation manager.** `analyze_requirement_completeness`
+checks `ClarificationStore` before creating anything: an identical pending
+question is reused; a pending question for the same category but
+different text (the candidate changed) supersedes the stale one; an
+already-ANSWERED category is never re-asked. Supersession-by-category is
+only attempted when the CURRENT analysis batch has exactly one draft in
+that category — "make it lightweight and strong" produces two independent
+drafts that both happen to fall under the coarse `"missing_threshold"`
+category (mass, load), and treating category equality alone as "same
+issue, refined" would have the second draft's own creation immediately
+supersede the first (audit-caught regression, now guarded by a dedicated
+test). That is the entire mechanism — no elaborate multi-turn state
+machine.
+
+**Answering re-interprets a FOCUSED statement, not the whole original
+one.** `answer_clarification` builds `"${question} Answer: ${answerText}"`
+and feeds THAT through `interpretRequirementFromText` (P18, unchanged) —
+never the full, possibly-compound original statement. This is what lets
+"make it lightweight and strong"'s two clarifications be answered
+independently: each answer only needs to resolve its own question, not
+also address the other's gap. If the result is STILL `"ambiguous"` (e.g.
+answering "banana" to a numeric question), the answer did not resolve
+anything: the tool throws `answer_insufficient` and the `Clarification`
+is left untouched — still `"pending"`, no `answerText` persisted, exactly
+like an ambiguous candidate never gets silently promoted to `"specific"`
+one layer down.
+
+**Gemini boundary.** Gemini has exactly the same role it already had in
+P18: interpreting text into a schema-validated candidate. P19 gives it no
+new authority — it cannot decide whether a candidate needs clarification
+(the pure analyzer decides that), cannot resolve a clarification itself,
+cannot invent the user's answer, cannot mark a requirement complete, and
+has no path to `WorldModelState` (structurally enforced: none of the P19
+files import `transitions.js`/`change-history.js`/`record-transition.js`).
+All three P19 tools are classified `mutation: "suggest"`, identical to
+`interpret_requirement` — the only tool that can ever write to the World
+Model remains `add_requirement`, completely unmodified by this phase.
+
+**Provenance.** The final candidate's `metadata` carries
+`resolvedClarificationId`/`originalRequirementCandidateId`/
+`originalStatementText`, so a `Requirement` accepted after clarification
+traces all the way back to the ORIGINAL compound statement without
+re-parsing it — `add_requirement` now spreads `candidate.metadata` into
+the accepted `Requirement`'s own metadata (a small, targeted fix so this
+provenance isn't silently dropped; P18's own `requirementCandidateId`/
+`statementText`/`operator` fields still take precedence on any collision).
+
+**Conflicting requirements are represented, never resolved.** A detected
+conflict becomes a `conflicting_constraints` `Clarification` naming both
+sides; nothing in P19 deletes, reinterprets, or silently prioritizes
+either requirement — resolution is a human decision.
+
+**Deliberately NOT implemented (P20+ territory).** Multi-turn conversation
+management beyond the single-question/single-answer cycle; automatic
+conflict resolution; a general-purpose chatbot; a second World Model or
+memory system (`Clarification`/`ClarificationStore` mirror the existing
+`Approval`/`ApprovalStore` pattern exactly — one canonical `WorldModelState`
+throughout); verification of whether a clarified requirement is physically
+achievable (that's P16, untouched).
 
 ## Error model
 

@@ -52,6 +52,7 @@ import {
   type ObjectiveSatisfactionResult
 } from "./objective-satisfaction-types.js";
 import { REQUIREMENT_INTERPRETATION_STATUSES, type RequirementCandidate } from "./requirement-candidate-types.js";
+import { CLARIFICATION_CATEGORIES, CLARIFICATION_STATUSES, type Clarification } from "./clarification-types.js";
 import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
@@ -1767,6 +1768,77 @@ export function assertRequirementCandidate(value: unknown): asserts value is Req
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "requirementCandidate.metadata must be a JSON-serializable object"
   );
+}
+
+function isClarificationCategory(value: unknown): value is (typeof CLARIFICATION_CATEGORIES)[number] {
+  return typeof value === "string" && (CLARIFICATION_CATEGORIES as readonly string[]).includes(value);
+}
+
+function isClarificationStatus(value: unknown): value is (typeof CLARIFICATION_STATUSES)[number] {
+  return typeof value === "string" && (CLARIFICATION_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a `Clarification` (P19) -- including the self-contained
+ * lifecycle invariants that keep "asked" / "answered" / "dismissed" /
+ * "superseded" from ever being ambiguous with each other:
+ *   - `answerText`/`answeredAt` are BOTH set or BOTH `null`, and can only
+ *     be set when `status === "answered"` -- an answer can never be
+ *     recorded without the status reflecting it (or vice versa).
+ *   - `supersededBy` is set if and only if `status === "superseded"`.
+ *   - `affectedFields` must be a non-empty array of non-empty strings --
+ *     a clarification with no named affected field is a clarification
+ *     about nothing.
+ *   - `requirementCandidateId` must equal `candidateSnapshot.id`, and
+ *     `projectId` must equal `candidateSnapshot.projectId` -- a
+ *     `Clarification` can never claim to be about a candidate it doesn't
+ *     actually embed, and can never cross a project boundary. This is the
+ *     same class of gap the P17 audit found and fixed (a caller-supplied
+ *     id resolving to a DIFFERENT project's record) closed here
+ *     proactively, at construction time, rather than after the fact.
+ * Matches `assertRequirementCandidate`'s identical "the validator is
+ * authoritative, not the caller's good behavior" discipline.
+ */
+export function assertClarification(value: unknown): asserts value is Clarification {
+  invariant(isPlainObject(value), "clarification must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "clarification.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "clarification.projectId is required");
+  invariant(
+    typeof value.requirementCandidateId === "string" && value.requirementCandidateId.length > 0,
+    "clarification.requirementCandidateId is required"
+  );
+  assertRequirementCandidate(value.candidateSnapshot);
+  invariant(
+    value.requirementCandidateId === value.candidateSnapshot.id,
+    "clarification.requirementCandidateId must match candidateSnapshot.id"
+  );
+  invariant(value.projectId === value.candidateSnapshot.projectId, "clarification.projectId must match candidateSnapshot.projectId");
+  invariant(typeof value.question === "string" && value.question.trim().length > 0, "clarification.question is required");
+  invariant(typeof value.reason === "string" && value.reason.trim().length > 0, "clarification.reason is required");
+  invariant(isClarificationCategory(value.category), "invalid clarification.category");
+  invariant(
+    Array.isArray(value.affectedFields) &&
+      value.affectedFields.length > 0 &&
+      value.affectedFields.every((field) => typeof field === "string" && field.length > 0),
+    "clarification.affectedFields must be a non-empty array of non-empty strings"
+  );
+  invariant(isClarificationStatus(value.status), "invalid clarification.status");
+  assertNullableString(value.answerText, "clarification.answerText must be a string or null");
+  if (value.status === "answered") {
+    invariant(typeof value.answerText === "string" && value.answerText.trim().length > 0, "an answered clarification must carry a non-empty answerText");
+    invariant(typeof value.answeredAt === "string" && isIsoTimestamp(value.answeredAt), "an answered clarification must carry a valid answeredAt timestamp");
+  } else {
+    invariant(value.answerText === null, "a non-answered clarification must not carry an answerText");
+    invariant(value.answeredAt === null, "a non-answered clarification must not carry an answeredAt");
+  }
+  if (value.status === "superseded") {
+    invariant(typeof value.supersededBy === "string" && value.supersededBy.length > 0, "a superseded clarification must carry supersededBy");
+  } else {
+    invariant(value.supersededBy === null, "a non-superseded clarification must not carry supersededBy");
+  }
+  invariant(isEntitySource(value.source), "invalid clarification.source");
+  invariant(isIsoTimestamp(value.createdAt), "clarification.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "clarification.metadata must be a JSON-serializable object");
 }
 
 /**

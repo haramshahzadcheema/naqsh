@@ -90,6 +90,8 @@ import type {
 } from "./objective-satisfaction-types.js";
 import { assertRequirementCandidate } from "./validators.js";
 import type { RequirementCandidate, RequirementCandidateInput } from "./requirement-candidate-types.js";
+import { assertClarification } from "./validators.js";
+import type { Clarification, ClarificationInput } from "./clarification-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -1291,4 +1293,42 @@ export function createRequirementCandidate(input: RequirementCandidateInput): Re
   };
   assertRequirementCandidate(candidate);
   return Object.freeze(candidate);
+}
+
+/**
+ * Builds a `Clarification` (P19). Note the defaulting behavior for
+ * `status`: when NOT `"answered"`/`"superseded"`, `answerText`/`answeredAt`/
+ * `supersededBy` are always forced to their empty state (`null`) here
+ * regardless of what the caller passed -- the factory does not trust a
+ * `"pending"` clarification that also claims an answer, it NORMALIZES the
+ * inconsistency away at construction time, mirroring
+ * `createRequirementCandidate`'s identical "ambiguous candidates never
+ * carry a numeric criterion" discipline. `candidateSnapshot` is deep-
+ * validated (via `assertRequirementCandidate`, inside `assertClarification`)
+ * but NOT re-frozen/re-cloned here if it is already a real
+ * `RequirementCandidate` produced by `createRequirementCandidate` --
+ * mirrors `createCheckpoint`'s identical "don't re-clone an already-
+ * immutable nested value" precedent.
+ */
+export function createClarification(input: ClarificationInput): Clarification {
+  const status = input.status ?? "pending";
+  const clarification: Clarification = {
+    id: input.id ?? createId("clarify"),
+    projectId: input.projectId,
+    requirementCandidateId: input.requirementCandidateId,
+    candidateSnapshot: input.candidateSnapshot,
+    question: input.question,
+    reason: input.reason,
+    category: input.category,
+    affectedFields: safeStructuredClone(input.affectedFields ?? [], "clarification.affectedFields"),
+    status,
+    answerText: status === "answered" ? (input.answerText ?? null) : null,
+    answeredAt: status === "answered" ? (input.answeredAt ?? toIsoTimestamp()) : null,
+    supersededBy: status === "superseded" ? (input.supersededBy ?? null) : null,
+    source: input.source ?? "agent",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "clarification.metadata")
+  };
+  assertClarification(clarification);
+  return Object.freeze(clarification);
 }
