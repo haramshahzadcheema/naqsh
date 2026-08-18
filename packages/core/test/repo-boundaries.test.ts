@@ -1755,3 +1755,152 @@ describe("P19 requirement clarification: deterministic completeness analysis, bo
     }
   });
 });
+
+describe("P20 intent -> requirements -> plan -> design -> build -> verify: environment-independent design, bounded build, no verification duplication", () => {
+  // Phase 20's central architectural rule: "P20 is NOT 'generate random CAD
+  // from a prompt'. P20 IS 'transform a validated engineering intent into
+  // a structured, inspectable, bounded design/build workflow.'"
+  // design-generator.ts/design-semantics.ts are the PURE, Gemini-bounded
+  // half (never touch WorldModelState or an environment); create-environment-object-tool.ts/
+  // build-executor.ts are the bounded EXECUTION half (real mutations, only
+  // through the EXISTING P3/P4 boundary); build_success is NEVER conflated
+  // with verification/objective satisfaction (P16/P17, untouched). Every
+  // check below proves one specific way these boundaries could have
+  // silently eroded.
+  const designGeneratorFiles = ["packages/core/src/design-generator.ts"];
+  const designSemanticsFiles = ["packages/core/src/design-semantics.ts"];
+  const designStoreFiles = ["packages/core/src/design-specification-store.ts"];
+  const createEnvObjectToolFiles = ["packages/core/src/create-environment-object-tool.ts"];
+  const buildOperationsFiles = ["packages/core/src/build-operations.ts"];
+  const buildExecutorFiles = ["packages/core/src/build-executor.ts"];
+  const buildResultStoreFiles = ["packages/core/src/build-result-store.ts"];
+  const allP20Files = [
+    ...designGeneratorFiles,
+    ...designSemanticsFiles,
+    ...designStoreFiles,
+    ...createEnvObjectToolFiles,
+    ...buildOperationsFiles,
+    ...buildExecutorFiles,
+    ...buildResultStoreFiles
+  ];
+
+  it("design-generator.ts/design-semantics.ts never import the World Model write path, executeTool, or an EnvironmentAdapter -- generating/validating a design cannot mutate or execute anything", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]\.\/transitions\.js["'`]/,
+      /from\s+["'`]\.\/change-history\.js["'`]/,
+      /from\s+["'`]\.\/record-transition\.js["'`]/,
+      /from\s+["'`]\.\/execute-tool\.js["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const relativePath of [...designGeneratorFiles, ...designSemanticsFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern} -- design generation/validation must stay pure`);
+      }
+    }
+  });
+
+  it("design-specification-types.ts is environment-independent -- no FreeCAD-specific concept in the CODE itself (doc comments are allowed to name FreeCAD when explaining the boundary, e.g. 'never carries a FreeCAD document-object reference')", () => {
+    const relativePath = "packages/schemas/src/design-specification-types.ts";
+    const raw = readFileSync(join(repoRoot, relativePath), "utf8");
+    // Strip block comments (/** ... */) and line comments (// ...) so the
+    // check inspects only actual field names/types/logic, not the doc
+    // prose that legitimately explains what FreeCAD-specific data this
+    // file deliberately excludes.
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "").toLowerCase();
+    for (const forbidden of ["freecad", "part::feature", "part::box", "activedocument", "@google/genai"]) {
+      assert.equal(code.includes(forbidden), false, `${relativePath}'s actual code (outside doc comments) must not reference "${forbidden}" -- the design representation must remain environment-independent (P26 depends on this)`);
+    }
+  });
+
+  it("create_environment_object is classified mutation:'mutate', target:'environment' -- a real, permission-gated environment mutation, never a World Model write", () => {
+    const relativePath = "packages/core/src/create-environment-object-tool.ts";
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must declare mutation: "mutate"`);
+    assert.match(contents, /target:\s*["'`]environment["'`]/, `${relativePath} must declare target: "environment"`);
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/transitions\.js["'`]/, `${relativePath} must not import the World Model write path`);
+  });
+
+  it("build-operations.ts (the deterministic DesignSpecification -> BuildOperation translator) never imports a model-provider package, @google/genai, executeTool, or an EnvironmentAdapter -- planning build operations is mechanical, not a new Gemini call or an execution path", () => {
+    const relativePath = buildOperationsFiles[0]!;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/model-providers["'`]/,
+      /from\s+["'`]@google\/genai["'`]/,
+      /from\s+["'`]\.\/execute-tool\.js["'`]/,
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/
+    ];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern}`);
+    }
+  });
+
+  it("build-executor.ts mutates the environment ONLY through executeTool (the existing P3/P4 boundary) -- no direct EnvironmentAdapter import, no second execution mechanism, no direct World Model write", () => {
+    const relativePath = buildExecutorFiles[0]!;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    assert.match(contents, /from\s+["'`]\.\/execute-tool\.js["'`]/, `${relativePath} must call the existing executeTool boundary`);
+    assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import a concrete adapter package`);
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import EnvironmentAdapter directly -- it only knows the generic Tool boundary`);
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/transitions\.js["'`]/, `${relativePath} must not import the World Model write path`);
+    assert.doesNotMatch(contents, /from\s+["'`]\.\/record-transition\.js["'`]/, `${relativePath} must not import recordTransition`);
+  });
+
+  it("Step 14: BuildResult (build-types.ts) is never conflated with verification/objective satisfaction -- no P16/P17 type or store imported by the build layer", () => {
+    const forbiddenImports = [
+      "./verify.js",
+      "./evidence.js",
+      "./verification-result-store.js",
+      "./run-verification-tool.js",
+      "./objective-satisfaction.js",
+      "./objective-satisfaction-store.js",
+      "./evaluate-objective-satisfaction-tool.js"
+    ];
+    for (const relativePath of [...buildOperationsFiles, ...buildExecutorFiles, ...buildResultStoreFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- build_success is never verification or objective satisfaction`);
+      }
+    }
+    const buildTypesContents = readFileSync(join(repoRoot, "packages/schemas/src/build-types.ts"), "utf8");
+    for (const forbidden of ["verificationResult", "objectiveSatisfaction", "verificationPassed", "objectiveSatisfied"]) {
+      assert.equal(buildTypesContents.includes(forbidden), false, `build-types.ts must not carry a "${forbidden}" field -- BuildResult only ever claims build_success`);
+    }
+  });
+
+  it("no arbitrary code execution anywhere in the P20 files -- a design/build cannot become executable input", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of allP20Files) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("design-generator.ts never imports a concrete model-provider package or @google/genai -- only the provider-agnostic ModelProvider interface, same discipline as every prior Gemini-facing file", () => {
+    const relativePath = designGeneratorFiles[0]!;
+    const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+    const forbiddenPatterns = [/from\s+["'`]@naqsh\/model-providers["'`]/, /from\s+["'`]@google\/genai["'`]/];
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(contents, pattern, `${relativePath} must not import ${pattern}`);
+    }
+  });
+
+  it("DesignSpecificationStore/BuildResultStore are immutable-once-saved -- no update/delete method exists on either interface", () => {
+    for (const relativePath of [...designStoreFiles, ...buildResultStoreFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /^\s*update\s*\(/m, `${relativePath} must not expose an update() method`);
+      assert.doesNotMatch(contents, /^\s*delete\s*\(/m, `${relativePath} must not expose a delete() method`);
+    }
+  });
+});

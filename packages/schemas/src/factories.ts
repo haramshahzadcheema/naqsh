@@ -92,6 +92,19 @@ import { assertRequirementCandidate } from "./validators.js";
 import type { RequirementCandidate, RequirementCandidateInput } from "./requirement-candidate-types.js";
 import { assertClarification } from "./validators.js";
 import type { Clarification, ClarificationInput } from "./clarification-types.js";
+import { assertDesignComponent, assertDesignRelationship, assertExpectedBuildOutput, assertDesignSpecification } from "./validators.js";
+import type {
+  DesignComponent,
+  DesignComponentInput,
+  DesignRelationship,
+  DesignRelationshipInput,
+  DesignSpecification,
+  DesignSpecificationInput,
+  ExpectedBuildOutput,
+  ExpectedBuildOutputInput
+} from "./design-specification-types.js";
+import { assertBuildOperation, assertBuildResult } from "./validators.js";
+import type { BuildOperation, BuildOperationInput, BuildResult, BuildResultInput } from "./build-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -1331,4 +1344,135 @@ export function createClarification(input: ClarificationInput): Clarification {
   };
   assertClarification(clarification);
   return Object.freeze(clarification);
+}
+
+export function createDesignComponent(input: DesignComponentInput): DesignComponent {
+  const component: DesignComponent = {
+    id: input.id ?? createId("designcomp"),
+    name: input.name,
+    type: input.type,
+    geometryIntent: input.geometryIntent,
+    dimensions: safeStructuredClone(input.dimensions ?? {}, "designComponent.dimensions"),
+    parentComponentId: input.parentComponentId ?? null,
+    metadata: safeStructuredClone(input.metadata ?? {}, "designComponent.metadata")
+  };
+  assertDesignComponent(component);
+  return Object.freeze(component);
+}
+
+export function createDesignRelationship(input: DesignRelationshipInput): DesignRelationship {
+  const relationship: DesignRelationship = {
+    id: input.id ?? createId("designrel"),
+    type: input.type,
+    sourceComponentId: input.sourceComponentId,
+    targetComponentId: input.targetComponentId,
+    metadata: safeStructuredClone(input.metadata ?? {}, "designRelationship.metadata")
+  };
+  assertDesignRelationship(relationship);
+  return Object.freeze(relationship);
+}
+
+export function createExpectedBuildOutput(input: ExpectedBuildOutputInput): ExpectedBuildOutput {
+  const output: ExpectedBuildOutput = {
+    id: input.id ?? createId("buildout"),
+    componentId: input.componentId,
+    environmentObjectType: input.environmentObjectType,
+    environmentGenericType: input.environmentGenericType ?? null,
+    properties: safeStructuredClone(input.properties ?? {}, "expectedBuildOutput.properties")
+  };
+  assertExpectedBuildOutput(output);
+  return Object.freeze(output);
+}
+
+/**
+ * Builds a `DesignSpecification` (P20) -- mirrors `createPlan`'s exact
+ * shape: nested arrays are built via their own per-item factories (never
+ * hand-assembled), `deepFreeze` (not a shallow `Object.freeze`) because
+ * `components`/`relationships`/`expectedOutputs` are themselves nested
+ * objects a caller must not be able to mutate after construction.
+ */
+export function createDesignSpecification(input: DesignSpecificationInput): DesignSpecification {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const design: DesignSpecification = {
+    id: input.id ?? createId("design"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    planId: input.planId,
+    planStepId: input.planStepId,
+    objectiveSummary: input.objectiveSummary,
+    description: input.description,
+    components: (input.components ?? []).map((component) => createDesignComponent(component)),
+    relationships: (input.relationships ?? []).map((relationship) => createDesignRelationship(relationship)),
+    parameters: safeStructuredClone(input.parameters ?? {}, "designSpecification.parameters"),
+    material: input.material ?? null,
+    manufacturingIntent: input.manufacturingIntent ?? null,
+    relevantConstraintIds: safeStructuredClone(input.relevantConstraintIds ?? [], "designSpecification.relevantConstraintIds"),
+    relevantRequirementIds: safeStructuredClone(input.relevantRequirementIds ?? [], "designSpecification.relevantRequirementIds"),
+    expectedOutputs: (input.expectedOutputs ?? []).map((output) => createExpectedBuildOutput(output)),
+    status: input.status ?? "proposed",
+    supersedesDesignSpecificationId: input.supersedesDesignSpecificationId ?? null,
+    version: input.version ?? 1,
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "designSpecification.metadata")
+  };
+  assertDesignSpecification(design);
+  return deepFreeze(design);
+}
+
+/**
+ * Builds a `BuildOperation` (P20). Note the defaulting behavior for
+ * `status`: for anything other than `"succeeded"`/`"failed"`,
+ * `output`/`error`/`startedAt`/`completedAt` are always forced to their
+ * empty state here regardless of what the caller passed -- the factory
+ * does not trust a `"pending"` operation that also claims a result, it
+ * NORMALIZES the inconsistency away at construction time, matching
+ * `createClarification`'s identical discipline for its own lifecycle
+ * fields.
+ */
+export function createBuildOperation(input: BuildOperationInput): BuildOperation {
+  const status = input.status ?? "pending";
+  const isSucceeded = status === "succeeded";
+  const isFailed = status === "failed";
+  const operation: BuildOperation = {
+    id: input.id ?? createId("buildop"),
+    expectedOutputId: input.expectedOutputId,
+    toolName: input.toolName,
+    input: safeStructuredClone(input.input ?? {}, "buildOperation.input"),
+    status,
+    output: isSucceeded ? safeStructuredClone(input.output ?? null, "buildOperation.output") : null,
+    error: isFailed ? safeStructuredClone(input.error ?? { kind: "execution_failure", message: "unknown build failure" }, "buildOperation.error") : null,
+    startedAt: isSucceeded || isFailed ? (input.startedAt ?? toIsoTimestamp()) : null,
+    completedAt: isSucceeded || isFailed ? (input.completedAt ?? toIsoTimestamp()) : null
+  };
+  assertBuildOperation(operation);
+  return deepFreeze(operation);
+}
+
+/**
+ * Builds a `BuildResult` (P20). `buildSuccess` is ALWAYS derived from
+ * `status` here (`status === "completed"`), never independently trusted
+ * from the caller -- the same "the validator/factory is authoritative"
+ * discipline that keeps these two fields from ever silently disagreeing
+ * (Step 14's own explicit "do not collapse build_success with anything
+ * else, and never let it lie" requirement).
+ */
+export function createBuildResult(input: BuildResultInput): BuildResult {
+  const status = input.status ?? "pending";
+  const result: BuildResult = {
+    id: input.id ?? createId("build"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    designSpecificationId: input.designSpecificationId,
+    status,
+    buildSuccess: status === "completed",
+    operations: (input.operations ?? []).map((operation) => createBuildOperation(operation)),
+    startedAt: input.startedAt ?? toIsoTimestamp(),
+    completedAt: input.completedAt ?? null,
+    source: input.source ?? "agent",
+    metadata: safeStructuredClone(input.metadata ?? {}, "buildResult.metadata")
+  };
+  assertBuildResult(result);
+  return deepFreeze(result);
 }

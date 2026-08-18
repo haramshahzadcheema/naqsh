@@ -14,6 +14,8 @@ import type { Check, VerificationResult } from "./verification-types.js";
 import type { ObjectiveSatisfactionResult } from "./objective-satisfaction-types.js";
 import type { RequirementCandidate } from "./requirement-candidate-types.js";
 import type { Clarification } from "./clarification-types.js";
+import type { DesignSpecification } from "./design-specification-types.js";
+import type { BuildResult } from "./build-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
@@ -23,6 +25,8 @@ import {
   assertCheck,
   assertCheckpoint,
   assertClarification,
+  assertDesignSpecification,
+  assertBuildResult,
   assertEnvironmentDocumentInspection,
   assertEnvironmentObject,
   assertEnvironmentOperationResult,
@@ -333,5 +337,29 @@ export function deserializeClarification(serialized: string): Clarification {
   requireNonEmptyString(serialized, "serialized clarification is required");
   const parsed: unknown = JSON.parse(serialized);
   assertClarification(parsed);
+  return parsed;
+}
+
+export function serializeDesignSpecification(design: DesignSpecification): string {
+  assertDesignSpecification(design);
+  return JSON.stringify(design);
+}
+
+export function deserializeDesignSpecification(serialized: string): DesignSpecification {
+  requireNonEmptyString(serialized, "serialized design specification is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertDesignSpecification(parsed);
+  return parsed;
+}
+
+export function serializeBuildResult(result: BuildResult): string {
+  assertBuildResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeBuildResult(serialized: string): BuildResult {
+  requireNonEmptyString(serialized, "serialized build result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertBuildResult(parsed);
   return parsed;
 }

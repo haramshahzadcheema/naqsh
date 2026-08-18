@@ -972,11 +972,14 @@ adapter's writable property is a bare mock value or FreeCAD's
 orchestration and persistent snapshot storage now exist (P15, see below), and
 deterministic verification now exists (P16, see below) — `propertyChanges`
 here still only reports facts, not a judgment of success; the judgment is
-P16's job, layered on top. Still not implemented: broad "idea → complete CAD
-model" generation (P20); unit-string parsing/conversion (P16's checks
+P16's job, layered on top. Still not implemented: broad, unbounded "idea →
+complete CAD model" generation (a bounded, typed, human-approved
+intent→design→build pipeline now exists — see P20 below — but it is
+deliberately not this); unit-string parsing/conversion (P16's checks
 require matching unit strings, never convert between them); arbitrary
-property writes, arbitrary object creation/deletion, or any
-`create`/`delete` capability. See `packages/adapters/freecad/README.md`'s
+property writes, arbitrary object creation/deletion beyond P20's own
+schema-validated `create_environment_object` tool. See
+`packages/adapters/freecad/README.md`'s
 "Scope (Phase 14)" section for the full validation-order and
 empirical-FreeCAD-behavior writeup.
 
@@ -1512,6 +1515,167 @@ memory system (`Clarification`/`ClarificationStore` mirror the existing
 `Approval`/`ApprovalStore` pattern exactly — one canonical `WorldModelState`
 throughout); verification of whether a clarified requirement is physically
 achievable (that's P16, untouched).
+
+## Intent → Requirements → Plan → Design → Build → Verify (P20)
+
+**What this phase answers.** Every prior phase gave NAQSH a piece of an
+engineering workflow — requirements (P18), clarification (P19), plans (P9),
+verification (P16), objective satisfaction (P17) — but nothing yet chained
+them into a single, structured path from "the project is empty" to "a
+concrete object exists in the environment and was checked against a real
+requirement." P20 is that path. It is explicitly **not** "generate CAD from
+a prompt": Gemini never emits geometry, never emits code, and never touches
+the environment. P20 is a bounded pipeline of typed, validated,
+permission-checked steps, each independently inspectable and each capable
+of failing honestly.
+
+**Pipeline:** intent (free text) → `interpretRequirementFromText` (P18,
+unchanged) → `analyzeRequirementCandidateCompleteness` (P19, unchanged, only
+if genuinely ambiguous) → `add_requirement` (P1/P4, unchanged) → structured
+`Requirement`/`Constraint` state → `generatePlanProposal` (P9, unchanged) →
+`Plan`/`PlanStep` → `generateDesignSpecification` (P20, new) →
+`DesignSpecification` (proposed) → human approval (P4, unchanged) →
+`planBuildOperations` (P20, new, deterministic) → `executeBuildForDesignSpecification`
+(P20, new) → `create_environment_object` (P20, new tool) × N, each through
+the existing `executeTool`/P4 authorization boundary → `BuildResult` →
+`create_check` + `run_verification` (P16, unchanged) → `evaluate_objective_satisfaction`
+(P17, unchanged). Every arrow above is either an EXISTING phase's
+unmodified entry point or one of the four new pieces P20 adds.
+
+**Plan vs. Design — kept strictly separate.** `Plan`/`PlanStep` (P9) already
+answers "what needs to happen" (`"create the mounting plate"`) and is reused
+COMPLETELY UNCHANGED — P20 adds no field to it. `DesignSpecification` is a
+NEW, separate entity answering a different question: "what, structurally,
+should exist" (which components, what relationships, what dimensions, what
+should eventually get built in the environment). A `DesignSpecification`
+always references the `Plan`/`PlanStep` it was generated for
+(`planId`/`planStepId`) but is never merged into it — mirrors the existing
+`Proposal`-references-`Plan` pattern from P10/P11.
+
+**`DesignSpecification` (new entity, schemas) — environment-independent by
+construction.** `components[]` (`geometryIntent`: free descriptive text,
+`dimensions`: a flat named numeric bag, `parentComponentId` for hierarchy),
+`relationships[]` (typed links between components), and `expectedOutputs[]`
+(what should eventually become a real environment object) are its entire
+shape. The ONLY environment-facing fields anywhere in it are
+`expectedOutputs[].environmentObjectType` (a free string) and
+`environmentGenericType` (reusing P5's already-adapter-agnostic
+`EnvironmentObjectGenericType` enum: solid/sketch/container/datum/link/unknown).
+Nothing in the type, the generator, or the semantic validator imports
+`@naqsh/adapters`, mentions a FreeCAD type name, a Python API, or a
+topology id — enforced both by a dedicated schema test that string-scans a
+serialized instance and by a `repo-boundaries.test.ts` guard that string-scans
+the SOURCE file's non-comment code. This boundary is deliberate groundwork
+for P26 (multi-environment support): a `DesignSpecification` generated today
+must remain meaningful under an environment adapter that doesn't exist yet.
+
+**Design generation (`generateDesignSpecification`, core) — same
+discipline as `generateProposal`/`generatePlanProposal`.** Gemini receives
+the `Plan`/`PlanStep`, the relevant `Requirement`s/`Constraint`s (already
+structured — P20 never re-parses natural language), and a strict output
+schema; the system instruction forbids CAD code, requires every id
+reference to be copied verbatim (never invented), and forbids inventing
+dimensions not derivable from the given requirements. The result is
+reassembled through `createDesignSpecification` (schema-level validation)
+and then `validateDesignSpecificationSemantics` (a PURE, deterministic,
+Gemini-free function checking: every `parentComponentId`/`sourceComponentId`/
+`targetComponentId`/`expectedOutputs[].componentId` resolves to a real
+component in THIS design, no component-parent cycle, `planId`/`projectId`
+match the `Plan` validated against, `planStepId` names a real step in that
+plan, and no `relevantRequirementId`/`relevantConstraintId` referencing
+something outside the ones actually given to the generator). A component
+with zero corresponding `expectedOutputs` is deliberately still valid at
+this stage — it is a legitimate design-only/conceptual grouping (see the
+system instruction's own rule 5); a design whose `expectedOutputs` list is
+empty in total is instead caught later, honestly, as an empty build (see
+"Build" below), never rejected at generation time as if it were malformed.
+A failure at either stage is a typed `DesignGenerationErrorKind` — never a
+partially-formed design
+silently accepted.
+
+**Design versioning.** `DesignSpecification.supersedesDesignSpecificationId`
++ `.version` mirror `Plan.supersedesPlanId`/`Proposal.supersedesProposalId`
+exactly — a revision is always a NEW record, never an in-place mutation of
+the old one. `DesignSpecificationStore.listRevisionChain(id)` walks the
+chain from either end to return the full ordered v1→v2→… history. This is
+basic traceability only — ranking or comparing candidate designs is P22's
+job, not built here.
+
+**Build — a bounded, typed, fail-safe pipeline, not a scheduler.**
+`planBuildOperations` (core, pure, synchronous, no Gemini call) translates
+an already-validated `DesignSpecification.expectedOutputs` into one
+`create_environment_object` tool call per output, in array order — this
+translation is mechanical (the design already says what should exist; no
+new engineering judgment is made here), the same reasoning already
+established for P19's completeness analyzer being Gemini-free.
+`executeBuildForDesignSpecification` (core) then runs those operations
+through the EXISTING `executeTool`/P4 authorization boundary — no second
+permission system, no direct `EnvironmentAdapter` call. Operations run in
+order; the FIRST failure stops the build, and every operation that had not
+yet been attempted is recorded `"skipped"` (never silently treated as
+succeeded); every operation that DID genuinely succeed before the failure
+keeps its real result — a partial build is never rolled back or hidden. A
+`DesignSpecification` with zero `expectedOutputs` can never report a
+successful build (`EMPTY_BUILD_REASON`), the same "no vacuous success"
+discipline as P17's `EMPTY_CONDITIONS_REASON`.
+
+**`create_environment_object` (new tool) — filling a real P5 gap.**
+`EnvironmentAdapter.createObject` has existed since P5 and both the mock
+environment (P6) and the FreeCAD adapter (P12, deliberately
+`unsupported_capability` there — unchanged by this phase) already implement
+the interface method, but no tool had ever wrapped it before P20 — every
+prior mutation went through `modify_environment_object` (P11/P14) only.
+Classified `mutation: "mutate"`, `target: "environment"`, going through the
+same permission/session/error-mapping discipline as every other environment
+tool.
+
+**`BuildResult` (new entity, schemas) — structurally cannot claim
+verification or objective satisfaction.** It has no field for either — only
+`status` (`pending`/`in_progress`/`completed`/`failed`), a derived
+`buildSuccess` boolean, and its list of `BuildOperation`s. `buildSuccess` is
+ALWAYS recomputed by the `createBuildResult` factory as
+`status === "completed"`, ignoring whatever the caller passed, and
+independently re-checked by `assertBuildResult` — the same
+"validator/factory is authoritative, never trust the caller" rule used
+everywhere else in this codebase.
+
+**`build_success` ≠ `verification_passed` ≠ `objective_satisfied` — proven,
+not just asserted.** The end-to-end test (`p20-end-to-end.test.ts`) runs a
+build that succeeds and then deliberately links a wrong `Check` to it: the
+result is `buildResult.buildSuccess === true`,
+`verificationResult.status === "fail"`, and
+`objectiveResult === "not_satisfied"` — three independently computed,
+independently typed values that this phase never collapses into one
+"success" flag. Verification still runs through P16's `run_verification`
+completely unmodified; P20 adds no new verification logic and no new way to
+mark a requirement satisfied.
+
+**Approval boundary — unchanged.** P20 invents no new approval mechanism.
+`DesignSpecification`s are generated as `"proposed"` and require the same
+human-approval path (P4) as a `Proposal` before anything is built from
+them; each individual `create_environment_object` call inside a build still
+goes through the same `AutonomyGrant`/`Approval` check as any other mutating
+tool call.
+
+**World Model — still one canonical state.** `DesignSpecification` and
+`BuildResult` live in their own dedicated stores
+(`DesignSpecificationStore`, `BuildResultStore`), following the exact
+"process/candidate record, not `WorldModelTransition`" precedent already
+set by `Plan`, `Proposal`, `Check`/`VerificationResult`,
+`ObjectiveSatisfactionResult`, and `Clarification` — a from-scratch project
+still has exactly one `WorldModelState`, never a second parallel project
+state.
+
+**Deliberately NOT implemented (P21+ territory).** Multi-candidate design
+generation or ranking (P22); optimization or iterative design refinement;
+a dependency-graph build scheduler (operations run strictly in
+`expectedOutputs` array order); long-term memory or cross-project learning;
+background/overnight experimentation; multi-environment orchestration
+(the environment-independence boundary is built now so P26 can add this
+later without touching `DesignSpecification`'s shape); a UI of any kind.
+Nothing in this phase claims an autonomous design capability beyond what
+the tests actually exercise: a single, human-approved, mock-environment
+build of a schema-validated design.
 
 ## Error model
 

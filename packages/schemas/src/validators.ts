@@ -54,6 +54,14 @@ import {
 import { REQUIREMENT_INTERPRETATION_STATUSES, type RequirementCandidate } from "./requirement-candidate-types.js";
 import { CLARIFICATION_CATEGORIES, CLARIFICATION_STATUSES, type Clarification } from "./clarification-types.js";
 import {
+  DESIGN_SPECIFICATION_STATUSES,
+  type DesignComponent,
+  type DesignRelationship,
+  type DesignSpecification,
+  type ExpectedBuildOutput
+} from "./design-specification-types.js";
+import { BUILD_OPERATION_STATUSES, BUILD_STATUSES, type BuildOperation, type BuildResult } from "./build-types.js";
+import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
   PLAN_STEP_STATUSES,
@@ -1839,6 +1847,193 @@ export function assertClarification(value: unknown): asserts value is Clarificat
   invariant(isEntitySource(value.source), "invalid clarification.source");
   invariant(isIsoTimestamp(value.createdAt), "clarification.createdAt must be an ISO timestamp");
   invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "clarification.metadata must be a JSON-serializable object");
+}
+
+function isDesignSpecificationStatus(value: unknown): value is (typeof DESIGN_SPECIFICATION_STATUSES)[number] {
+  return typeof value === "string" && (DESIGN_SPECIFICATION_STATUSES as readonly string[]).includes(value);
+}
+
+/** Validates one `DesignComponent` -- structural only (numeric dimensions,
+ * required fields); cross-component references (`parentComponentId`
+ * resolving, no cycles) are a SEMANTIC concern checked by
+ * `design-semantics.ts`, not here, matching `assertPlanStep`'s identical
+ * "shape here, cross-reference elsewhere" split. */
+export function assertDesignComponent(value: unknown): asserts value is DesignComponent {
+  invariant(isPlainObject(value), "design component must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "designComponent.id is required");
+  invariant(typeof value.name === "string" && value.name.trim().length > 0, "designComponent.name is required");
+  invariant(typeof value.type === "string" && value.type.trim().length > 0, "designComponent.type is required");
+  invariant(typeof value.geometryIntent === "string" && value.geometryIntent.trim().length > 0, "designComponent.geometryIntent is required");
+  invariant(isPlainObject(value.dimensions), "designComponent.dimensions must be an object");
+  for (const [key, dimension] of Object.entries(value.dimensions)) {
+    invariant(typeof dimension === "number" && Number.isFinite(dimension), `designComponent.dimensions.${key} must be a finite number`);
+  }
+  invariant(
+    value.parentComponentId === null || (typeof value.parentComponentId === "string" && value.parentComponentId.length > 0),
+    "designComponent.parentComponentId must be a non-empty string or null"
+  );
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "designComponent.metadata must be a JSON-serializable object");
+}
+
+export function assertDesignRelationship(value: unknown): asserts value is DesignRelationship {
+  invariant(isPlainObject(value), "design relationship must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "designRelationship.id is required");
+  invariant(typeof value.type === "string" && value.type.trim().length > 0, "designRelationship.type is required");
+  invariant(typeof value.sourceComponentId === "string" && value.sourceComponentId.length > 0, "designRelationship.sourceComponentId is required");
+  invariant(typeof value.targetComponentId === "string" && value.targetComponentId.length > 0, "designRelationship.targetComponentId is required");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "designRelationship.metadata must be a JSON-serializable object");
+}
+
+export function assertExpectedBuildOutput(value: unknown): asserts value is ExpectedBuildOutput {
+  invariant(isPlainObject(value), "expected build output must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "expectedBuildOutput.id is required");
+  invariant(typeof value.componentId === "string" && value.componentId.length > 0, "expectedBuildOutput.componentId is required");
+  invariant(
+    typeof value.environmentObjectType === "string" && value.environmentObjectType.trim().length > 0,
+    "expectedBuildOutput.environmentObjectType is required"
+  );
+  invariant(
+    value.environmentGenericType === null || isEnvironmentObjectGenericType(value.environmentGenericType),
+    "invalid expectedBuildOutput.environmentGenericType"
+  );
+  invariant(isPlainObject(value.properties) && isJsonSafeValue(value.properties), "expectedBuildOutput.properties must be a JSON-serializable object");
+}
+
+/**
+ * Validates a `DesignSpecification` (P20) -- environment-independent by
+ * construction: nothing here checks for (or knows about) a FreeCAD
+ * concept. Cross-references among `components`/`expectedOutputs` (does
+ * `componentId` resolve? is `parentComponentId` cycle-free?) are
+ * `design-semantics.ts`'s job, matching `assertProposal`'s identical
+ * "shape here, semantics in a separate pure function" split -- see that
+ * file's own doc comment for why the split matters (a caller who only
+ * needs shape validation shouldn't have to construct a `Plan`/`ToolRegistry`
+ * just to call `assertDesignSpecification`).
+ */
+export function assertDesignSpecification(value: unknown): asserts value is DesignSpecification {
+  invariant(isPlainObject(value), "design specification must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "designSpecification.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "designSpecification.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "designSpecification.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.planId === "string" && value.planId.length > 0, "designSpecification.planId is required");
+  invariant(typeof value.planStepId === "string" && value.planStepId.length > 0, "designSpecification.planStepId is required");
+  invariant(typeof value.objectiveSummary === "string", "designSpecification.objectiveSummary must be a string");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "designSpecification.description is required");
+
+  invariant(Array.isArray(value.components), "designSpecification.components must be an array");
+  for (const component of value.components) assertDesignComponent(component);
+  invariant(Array.isArray(value.relationships), "designSpecification.relationships must be an array");
+  for (const relationship of value.relationships) assertDesignRelationship(relationship);
+
+  invariant(isPlainObject(value.parameters) && isJsonSafeValue(value.parameters), "designSpecification.parameters must be a JSON-serializable object");
+  invariant(value.material === null || typeof value.material === "string", "designSpecification.material must be a string or null");
+  invariant(
+    value.manufacturingIntent === null || typeof value.manufacturingIntent === "string",
+    "designSpecification.manufacturingIntent must be a string or null"
+  );
+  invariant(isStringArray(value.relevantConstraintIds), "designSpecification.relevantConstraintIds must be an array of strings");
+  invariant(isStringArray(value.relevantRequirementIds), "designSpecification.relevantRequirementIds must be an array of strings");
+
+  invariant(Array.isArray(value.expectedOutputs), "designSpecification.expectedOutputs must be an array");
+  for (const output of value.expectedOutputs) assertExpectedBuildOutput(output);
+
+  invariant(isDesignSpecificationStatus(value.status), "invalid designSpecification.status");
+  invariant(
+    value.supersedesDesignSpecificationId === null ||
+      (typeof value.supersedesDesignSpecificationId === "string" && value.supersedesDesignSpecificationId.length > 0),
+    "designSpecification.supersedesDesignSpecificationId must be a non-empty string or null"
+  );
+  invariant(
+    typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 1,
+    "designSpecification.version must be a positive integer"
+  );
+  invariant(isEntitySource(value.source), "invalid designSpecification.source");
+  invariant(isIsoTimestamp(value.createdAt), "designSpecification.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "designSpecification.updatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "designSpecification.metadata must be a JSON-serializable object"
+  );
+}
+
+function isBuildOperationStatus(value: unknown): value is (typeof BUILD_OPERATION_STATUSES)[number] {
+  return typeof value === "string" && (BUILD_OPERATION_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a `BuildOperation` (P20) -- including the self-contained
+ * lifecycle invariant that keeps `output`/`error`/timestamps from ever
+ * contradicting `status`, the same "the validator is authoritative"
+ * discipline `assertClarification` already applies to its own lifecycle:
+ *   - `"pending"`  -> output/error/startedAt/completedAt all null.
+ *   - `"succeeded"` -> startedAt/completedAt set, error null (output may
+ *      legitimately be any JSON-safe value, including null).
+ *   - `"failed"`   -> startedAt/completedAt set, error set, output null.
+ *   - `"skipped"`  -> never attempted -- output/error/startedAt/completedAt
+ *      all null, exactly like `"pending"` (the only difference is WHY it
+ *      never ran, which `build-executor.ts` records elsewhere).
+ */
+export function assertBuildOperation(value: unknown): asserts value is BuildOperation {
+  invariant(isPlainObject(value), "build operation must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "buildOperation.id is required");
+  invariant(typeof value.expectedOutputId === "string" && value.expectedOutputId.length > 0, "buildOperation.expectedOutputId is required");
+  invariant(typeof value.toolName === "string" && value.toolName.trim().length > 0, "buildOperation.toolName is required");
+  invariant(isJsonSafeValue(value.input), "buildOperation.input must be JSON-serializable");
+  invariant(isBuildOperationStatus(value.status), "invalid buildOperation.status");
+  invariant(isJsonSafeValue(value.output), "buildOperation.output must be JSON-serializable");
+
+  if (value.status === "succeeded") {
+    invariant(value.error === null, "a succeeded buildOperation must not carry an error");
+    invariant(typeof value.startedAt === "string" && isIsoTimestamp(value.startedAt), "a succeeded buildOperation must carry a valid startedAt");
+    invariant(typeof value.completedAt === "string" && isIsoTimestamp(value.completedAt), "a succeeded buildOperation must carry a valid completedAt");
+  } else if (value.status === "failed") {
+    invariant(value.output === null, "a failed buildOperation must not carry an output");
+    invariant(isPlainObject(value.error), "a failed buildOperation must carry an error");
+    invariant(typeof value.error.kind === "string" && value.error.kind.length > 0, "buildOperation.error.kind is required");
+    invariant(typeof value.error.message === "string" && value.error.message.length > 0, "buildOperation.error.message is required");
+    invariant(typeof value.startedAt === "string" && isIsoTimestamp(value.startedAt), "a failed buildOperation must carry a valid startedAt");
+    invariant(typeof value.completedAt === "string" && isIsoTimestamp(value.completedAt), "a failed buildOperation must carry a valid completedAt");
+  } else {
+    invariant(value.output === null, "a pending/skipped buildOperation must not carry an output");
+    invariant(value.error === null, "a pending/skipped buildOperation must not carry an error");
+    invariant(value.startedAt === null, "a pending/skipped buildOperation must not carry a startedAt");
+    invariant(value.completedAt === null, "a pending/skipped buildOperation must not carry a completedAt");
+  }
+}
+
+function isBuildStatus(value: unknown): value is (typeof BUILD_STATUSES)[number] {
+  return typeof value === "string" && (BUILD_STATUSES as readonly string[]).includes(value);
+}
+
+/** Validates a `BuildResult` (P20) -- including the invariant Step 14 of
+ * the brief exists to enforce: `buildSuccess` can never disagree with
+ * `status` (never a build that says `status: "failed"` but `buildSuccess:
+ * true`, or vice versa) -- checked here, not merely hoped for from the
+ * caller's good behavior. */
+export function assertBuildResult(value: unknown): asserts value is BuildResult {
+  invariant(isPlainObject(value), "build result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "buildResult.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "buildResult.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "buildResult.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.designSpecificationId === "string" && value.designSpecificationId.length > 0, "buildResult.designSpecificationId is required");
+  invariant(isBuildStatus(value.status), "invalid buildResult.status");
+  invariant(typeof value.buildSuccess === "boolean", "buildResult.buildSuccess must be a boolean");
+  invariant(value.buildSuccess === (value.status === "completed"), "buildResult.buildSuccess must be true if and only if status is \"completed\"");
+  invariant(Array.isArray(value.operations), "buildResult.operations must be an array");
+  for (const operation of value.operations) assertBuildOperation(operation);
+  invariant(isIsoTimestamp(value.startedAt), "buildResult.startedAt must be an ISO timestamp");
+  invariant(
+    value.completedAt === null || (typeof value.completedAt === "string" && isIsoTimestamp(value.completedAt)),
+    "buildResult.completedAt must be an ISO timestamp or null"
+  );
+  invariant(isEntitySource(value.source), "invalid buildResult.source");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "buildResult.metadata must be a JSON-serializable object");
 }
 
 /**
