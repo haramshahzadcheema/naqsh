@@ -16,6 +16,7 @@ import type { RequirementCandidate } from "./requirement-candidate-types.js";
 import type { Clarification } from "./clarification-types.js";
 import type { DesignSpecification } from "./design-specification-types.js";
 import type { BuildResult } from "./build-types.js";
+import type { ResearchEvidence, ResearchRequest, Source } from "./research-types.js";
 import {
   assertAgentLoopRun,
   assertApproval,
@@ -39,6 +40,9 @@ import {
   assertProposal,
   assertObjectiveSatisfactionResult,
   assertRequirementCandidate,
+  assertResearchEvidence,
+  assertResearchRequest,
+  assertSource,
   assertTool,
   assertToolResult,
   assertVerificationResult,
@@ -361,5 +365,41 @@ export function deserializeBuildResult(serialized: string): BuildResult {
   requireNonEmptyString(serialized, "serialized build result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertBuildResult(parsed);
+  return parsed;
+}
+
+export function serializeSource(source: Source): string {
+  assertSource(source);
+  return JSON.stringify(source);
+}
+
+export function deserializeSource(serialized: string): Source {
+  requireNonEmptyString(serialized, "serialized source is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertSource(parsed);
+  return parsed;
+}
+
+export function serializeResearchEvidence(evidence: ResearchEvidence): string {
+  assertResearchEvidence(evidence);
+  return JSON.stringify(evidence);
+}
+
+export function deserializeResearchEvidence(serialized: string): ResearchEvidence {
+  requireNonEmptyString(serialized, "serialized research evidence is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertResearchEvidence(parsed);
+  return parsed;
+}
+
+export function serializeResearchRequest(request: ResearchRequest): string {
+  assertResearchRequest(request);
+  return JSON.stringify(request);
+}
+
+export function deserializeResearchRequest(serialized: string): ResearchRequest {
+  requireNonEmptyString(serialized, "serialized research request is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertResearchRequest(parsed);
   return parsed;
 }

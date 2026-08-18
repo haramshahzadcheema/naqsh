@@ -105,6 +105,37 @@ import type {
 } from "./design-specification-types.js";
 import { assertBuildOperation, assertBuildResult } from "./validators.js";
 import type { BuildOperation, BuildOperationInput, BuildResult, BuildResultInput } from "./build-types.js";
+import {
+  assertSource,
+  assertResearchEvidence,
+  assertResearchRequest,
+  assertResearchProviderDescriptor,
+  assertResearchSearchRequest,
+  assertResearchSourceCandidate,
+  assertResearchSearchInvocationResult,
+  assertResearchFetchRequest,
+  assertResearchFetchContent,
+  assertResearchFetchInvocationResult
+} from "./validators.js";
+import type {
+  ResearchEvidence,
+  ResearchEvidenceInput,
+  ResearchFetchContent,
+  ResearchFetchInvocationResult,
+  ResearchFetchInvocationResultInput,
+  ResearchFetchRequest,
+  ResearchFetchRequestInput,
+  ResearchProviderDescriptor,
+  ResearchRequest,
+  ResearchRequestInput,
+  ResearchSearchInvocationResult,
+  ResearchSearchInvocationResultInput,
+  ResearchSearchRequest,
+  ResearchSearchRequestInput,
+  ResearchSourceCandidate,
+  Source,
+  SourceInput
+} from "./research-types.js";
 import type {
   Checkpoint,
   CheckpointArtifactRef,
@@ -304,6 +335,187 @@ export function createEntityRelationship(input: EntityRelationshipInput): Entity
   return relationship;
 }
 
+/** P21: mirrors `createDecision`'s exact shape -- `retrievedAt` defaults to
+ * "now" (a source not yet marked retrieved is a contradiction: you cannot
+ * record a source you don't have), `reliability` defaults to `"unknown"`
+ * (never silently upgraded), `status` defaults to `"active"`. */
+export function createSource(input: SourceInput): Source {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const source: Source = {
+    id: input.id ?? createId("src"),
+    locator: input.locator ?? null,
+    title: input.title,
+    publisher: input.publisher ?? null,
+    sourceType: input.sourceType,
+    reliability: input.reliability ?? "unknown",
+    retrievedAt: input.retrievedAt ?? createdAt,
+    publishedAt: input.publishedAt ?? null,
+    contentHash: input.contentHash ?? null,
+    status: input.status ?? "active",
+    source: input.source ?? "research",
+    createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "source.metadata")
+  };
+  assertSource(source);
+  return Object.freeze(source);
+}
+
+/** P21: named `createResearchEvidence`, not `createEvidence` -- that name is
+ * already `verification-types.ts`'s P16 factory (see `research-types.ts`'s
+ * own doc comment for why these are unrelated concepts that happen to
+ * share an English word). */
+export function createResearchEvidence(input: ResearchEvidenceInput): ResearchEvidence {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const evidence: ResearchEvidence = {
+    id: input.id ?? createId("evid"),
+    sourceId: input.sourceId,
+    claim: input.claim,
+    excerpt: input.excerpt ?? null,
+    confidence: input.confidence ?? "medium",
+    relevanceNote: input.relevanceNote ?? null,
+    retrievedAt: input.retrievedAt ?? createdAt,
+    status: input.status ?? "active",
+    source: input.source ?? "research",
+    createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "researchEvidence.metadata")
+  };
+  assertResearchEvidence(evidence);
+  return Object.freeze(evidence);
+}
+
+/** P21: mirrors `createPlan`'s "process/candidate record, own store" shape
+ * -- NOT part of `Project`. `purpose` has no default (matching `query`):
+ * both are required exactly because the P21 brief's Section 12 insists
+ * research must explain WHY it's being performed, not just what to search
+ * for. */
+export function createResearchRequest(input: ResearchRequestInput): ResearchRequest {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const request: ResearchRequest = {
+    id: input.id ?? createId("research"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    query: input.query,
+    purpose: input.purpose,
+    relatedRequirementIds: safeStructuredClone(input.relatedRequirementIds ?? [], "researchRequest.relatedRequirementIds"),
+    relatedConstraintIds: safeStructuredClone(input.relatedConstraintIds ?? [], "researchRequest.relatedConstraintIds"),
+    relatedPlanId: input.relatedPlanId ?? null,
+    relatedPlanStepId: input.relatedPlanStepId ?? null,
+    preferredSourceTypes: safeStructuredClone(input.preferredSourceTypes ?? [], "researchRequest.preferredSourceTypes"),
+    maxResults: input.maxResults ?? 5,
+    freshnessRequirementDays: input.freshnessRequirementDays ?? null,
+    status: input.status ?? "pending",
+    source: input.source ?? "agent",
+    createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "researchRequest.metadata")
+  };
+  assertResearchRequest(request);
+  return Object.freeze(request);
+}
+
+// ---------------------------------------------------------------------------
+// P21: ResearchProvider wire contract factories -- mirror createModelRequest/
+// createModelResponse/createModelInvocationResult's exact shape (P7).
+// ---------------------------------------------------------------------------
+
+export function createResearchProviderDescriptor(input: Omit<ResearchProviderDescriptor, "metadata"> & { metadata?: Record<string, unknown> }): ResearchProviderDescriptor {
+  const descriptor: ResearchProviderDescriptor = {
+    providerId: input.providerId,
+    name: input.name,
+    version: input.version,
+    metadata: input.metadata ?? {}
+  };
+  assertResearchProviderDescriptor(descriptor);
+  return Object.freeze(descriptor);
+}
+
+export function createResearchSearchRequest(input: ResearchSearchRequestInput): ResearchSearchRequest {
+  const request: ResearchSearchRequest = {
+    id: input.id ?? createId("researchsearch"),
+    query: input.query,
+    maxResults: input.maxResults ?? 5,
+    preferredSourceTypes: safeStructuredClone(input.preferredSourceTypes ?? [], "researchSearchRequest.preferredSourceTypes"),
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "researchSearchRequest.metadata")
+  };
+  assertResearchSearchRequest(request);
+  return Object.freeze(request);
+}
+
+/** Untrusted provider output -- validated, never trusted, but not deep-frozen
+ * against a store (candidates are never persisted as-is; see
+ * `research-types.ts`'s own doc comment for why they are not `Source`). */
+export function createResearchSourceCandidate(input: Partial<ResearchSourceCandidate> & Pick<ResearchSourceCandidate, "title" | "sourceType" | "snippet">): ResearchSourceCandidate {
+  const candidate: ResearchSourceCandidate = {
+    locator: input.locator ?? null,
+    title: input.title,
+    publisher: input.publisher ?? null,
+    sourceType: input.sourceType,
+    publishedAt: input.publishedAt ?? null,
+    snippet: input.snippet
+  };
+  assertResearchSourceCandidate(candidate);
+  return Object.freeze(candidate);
+}
+
+export function createResearchSearchInvocationResult(input: ResearchSearchInvocationResultInput): ResearchSearchInvocationResult {
+  const result: ResearchSearchInvocationResult = {
+    id: input.id ?? createId("researchsearchinv"),
+    requestId: input.requestId,
+    providerId: input.providerId,
+    status: input.status,
+    results: input.results ?? null,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertResearchSearchInvocationResult(result);
+  return Object.freeze(result);
+}
+
+export function createResearchFetchRequest(input: ResearchFetchRequestInput): ResearchFetchRequest {
+  const request: ResearchFetchRequest = {
+    id: input.id ?? createId("researchfetch"),
+    locator: input.locator,
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "researchFetchRequest.metadata")
+  };
+  assertResearchFetchRequest(request);
+  return Object.freeze(request);
+}
+
+/** Untrusted provider output, same discipline as `createResearchSourceCandidate`. */
+export function createResearchFetchContent(input: Partial<ResearchFetchContent> & Pick<ResearchFetchContent, "locator" | "title" | "sourceType" | "excerpt">): ResearchFetchContent {
+  const content: ResearchFetchContent = {
+    locator: input.locator,
+    title: input.title,
+    publisher: input.publisher ?? null,
+    sourceType: input.sourceType,
+    publishedAt: input.publishedAt ?? null,
+    retrievedAt: input.retrievedAt ?? toIsoTimestamp(),
+    excerpt: input.excerpt,
+    contentHash: input.contentHash ?? null
+  };
+  assertResearchFetchContent(content);
+  return Object.freeze(content);
+}
+
+export function createResearchFetchInvocationResult(input: ResearchFetchInvocationResultInput): ResearchFetchInvocationResult {
+  const result: ResearchFetchInvocationResult = {
+    id: input.id ?? createId("researchfetchinv"),
+    requestId: input.requestId,
+    providerId: input.providerId,
+    status: input.status,
+    content: input.content ?? null,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? toIsoTimestamp(),
+    metadata: input.metadata ?? {}
+  };
+  assertResearchFetchInvocationResult(result);
+  return Object.freeze(result);
+}
+
 export function createProject(input: ProjectInput = {}): Project {
   const createdAt = input.createdAt ?? toIsoTimestamp();
   const project: Project = {
@@ -318,6 +530,8 @@ export function createProject(input: ProjectInput = {}): Project {
     experiments: (input.experiments ?? []).map((experiment) => createExperiment(experiment)),
     preferences: (input.preferences ?? []).map((preference) => createPreference(preference)),
     relationships: (input.relationships ?? []).map((relationship) => createEntityRelationship(relationship)),
+    sources: (input.sources ?? []).map((source) => createSource(source)),
+    researchEvidence: (input.researchEvidence ?? []).map((evidence) => createResearchEvidence(evidence)),
     metadata: input.metadata ?? {},
     version: input.version ?? 1,
     createdAt,

@@ -8,7 +8,9 @@ import {
   createExperiment,
   createPreference,
   createRequirement,
+  createResearchEvidence,
   createSessionState,
+  createSource,
   createWorldModelState,
   WorldModelValidationError
 } from "@naqsh/schemas";
@@ -137,6 +139,41 @@ describe("updateWorldModel: project transitions increment version and validate",
     const state = buildState();
     const next = updateWorldModel(state, { kind: "remove_relationship", relationshipId: "does_not_exist" });
     assert.equal(next.project.relationships.length, 0);
+  });
+
+  it("adds a source (P21)", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, {
+      kind: "add_source",
+      source: createSource({ title: "6061-T6 Aluminum Datasheet", sourceType: "datasheet" })
+    });
+    assert.equal(next.project.version, state.project.version + 1);
+    assert.equal(next.project.sources.length, 1);
+    assert.equal(next.project.sources[0]?.title, "6061-T6 Aluminum Datasheet");
+  });
+
+  it("adds evidence (P21)", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, {
+      kind: "add_evidence",
+      evidence: createResearchEvidence({ sourceId: "src_1", claim: "Yield strength is approximately 276 MPa." })
+    });
+    assert.equal(next.project.researchEvidence.length, 1);
+    assert.equal(next.project.researchEvidence[0]?.claim, "Yield strength is approximately 276 MPa.");
+  });
+
+  it("rejects add_source with a malformed source", () => {
+    assert.throws(
+      () => updateWorldModel(buildState(), { kind: "add_source", source: { title: "", sourceType: "datasheet" } }),
+      WorldModelValidationError
+    );
+  });
+
+  it("rejects add_evidence with a malformed evidence (empty claim)", () => {
+    assert.throws(
+      () => updateWorldModel(buildState(), { kind: "add_evidence", evidence: { sourceId: "src_1", claim: "" } }),
+      WorldModelValidationError
+    );
   });
 
   it("updates a requirement by id while keeping the id stable", () => {

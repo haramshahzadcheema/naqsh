@@ -10,7 +10,9 @@ import {
   createPreference,
   createProject,
   createRequirement,
+  createResearchEvidence,
   createSessionState,
+  createSource,
   toIsoTimestamp,
   WorldModelValidationError,
   type Project,
@@ -263,6 +265,26 @@ const registry: TransitionRegistry = {
     }),
     describeChange: describeAdd("relationship", (project) => project.relationships),
     resolveForReplay: (transition, after) => ({ ...transition, relationship: after as never })
+  },
+  add_source: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      sources: [...project.sources, createSource(transition.source)]
+    }),
+    describeChange: describeAdd("source", (project) => project.sources),
+    resolveForReplay: (transition, after) => ({ ...transition, source: after as never })
+  },
+  add_evidence: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      researchEvidence: [...project.researchEvidence, createResearchEvidence(transition.evidence)]
+    }),
+    describeChange: describeAdd("research_evidence", (project) => project.researchEvidence),
+    resolveForReplay: (transition, after) => ({ ...transition, evidence: after as never })
   },
   remove_relationship: {
     target: "project",

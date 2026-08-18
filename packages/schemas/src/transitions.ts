@@ -10,6 +10,7 @@ import type {
   RequirementInput,
   SessionStateInput
 } from "./types.js";
+import type { ResearchEvidenceInput, SourceInput } from "./research-types.js";
 
 /**
  * Every way the World Model's CURRENT STATE (WorldModelState) can change.
@@ -87,6 +88,23 @@ export interface RemoveRelationshipTransition extends BaseTransition<"remove_rel
   relationshipId: string;
 }
 
+/** P21: adds a `Source` (external knowledge provenance record) to the
+ * project. Mirrors `AddDecisionTransition`'s exact shape -- a `Source` is
+ * append-only World Model state, never mutated in place (a source that
+ * turns out to be wrong is marked `status: "retracted"` via a future
+ * `update_source` transition if one is ever needed, not silently edited). */
+export interface AddSourceTransition extends BaseTransition<"add_source"> {
+  source: SourceInput;
+}
+
+/** P21: adds a `ResearchEvidence` record -- always references an existing
+ * `Source.id` by convention (checked by `add-evidence-tool.ts`'s handler in
+ * core, not the reducer -- matching `AddRelationshipTransition`'s identical
+ * "cross-entity referential integrity is a read-time concern" precedent). */
+export interface AddEvidenceTransition extends BaseTransition<"add_evidence"> {
+  evidence: ResearchEvidenceInput;
+}
+
 /**
  * P11: patches a single property on an existing `EngineeringObject` --
  * closes the one write-path gap P1-P10 left open despite `EngineeringObject`
@@ -140,6 +158,8 @@ export type ProjectTransition =
   | AddPreferenceTransition
   | AddRelationshipTransition
   | RemoveRelationshipTransition
+  | AddSourceTransition
+  | AddEvidenceTransition
   | UpdateObjectTransition
   | RestoreProjectTransition;
 

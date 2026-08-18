@@ -4,3 +4,11 @@ export { createMockEnvironment, type MockEnvironmentOptions } from "./mock-envir
 export { createDeterministicClock, createDeterministicIdGenerator } from "./deterministic.js";
 export { createFreeCadAdapter, type FreeCadAdapterOptions } from "./freecad-adapter.js";
 export { createCheckpointFaultController, type CheckpointFaultController } from "./in-memory-environment.js";
+export {
+  createMockResearchProvider,
+  type MockResearchFetchOutcome,
+  type MockResearchFetchResponder,
+  type MockResearchProviderOptions,
+  type MockResearchSearchOutcome,
+  type MockResearchSearchResponder
+} from "./mock-research-provider.js";

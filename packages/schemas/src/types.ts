@@ -1,4 +1,5 @@
 import type { TransitionKind, WorldModelTransition } from "./transitions.js";
+import type { ResearchEvidence, ResearchEvidenceInput, Source, SourceInput } from "./research-types.js";
 
 /**
  * Canonical NAQSH World Model contracts (P1) plus the Change Model (P2).
@@ -166,7 +167,14 @@ export type PreferenceInput = Partial<Preference>;
  * different reason — auditing an arbitrary Change, not typing a
  * traversable relationship).
  */
-export type EntityKind = "requirement" | "constraint" | "object" | "decision" | "experiment" | "preference";
+/** P21: extended with `"source"`/`"research_evidence"` -- the exact same
+ * additive convention this type's own doc comment above already commits
+ * to ("extend only when a real new collection is added to `Project`"),
+ * applied literally rather than re-litigated. This is what lets
+ * `EntityRelationship` express "this evidence supports this requirement"
+ * (`sourceType: "research_evidence"`, `targetType: "requirement"`) without
+ * a second traceability mechanism. */
+export type EntityKind = "requirement" | "constraint" | "object" | "decision" | "experiment" | "preference" | "source" | "research_evidence";
 
 export const ENTITY_KINDS: readonly EntityKind[] = [
   "requirement",
@@ -174,7 +182,9 @@ export const ENTITY_KINDS: readonly EntityKind[] = [
   "object",
   "decision",
   "experiment",
-  "preference"
+  "preference",
+  "source",
+  "research_evidence"
 ];
 
 /**
@@ -234,6 +244,12 @@ export interface Project {
   experiments: Experiment[];
   preferences: Preference[];
   relationships: EntityRelationship[];
+  /** P21: accepted external knowledge -- `Source`/`ResearchEvidence` land
+   * here ONLY via `add_source`/`add_evidence` (the same "candidate record
+   * elsewhere, accepted record here" split every prior phase uses), never
+   * directly from a `ResearchProvider` response. */
+  sources: Source[];
+  researchEvidence: ResearchEvidence[];
   metadata: Record<string, unknown>;
   version: number;
   createdAt: string;
@@ -252,6 +268,8 @@ export interface ProjectInput {
   experiments?: ExperimentInput[];
   preferences?: PreferenceInput[];
   relationships?: EntityRelationshipInput[];
+  sources?: SourceInput[];
+  researchEvidence?: ResearchEvidenceInput[];
   metadata?: Record<string, unknown>;
   version?: number;
   createdAt?: string;

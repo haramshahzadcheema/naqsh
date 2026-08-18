@@ -1904,3 +1904,135 @@ describe("P20 intent -> requirements -> plan -> design -> build -> verify: envir
     }
   });
 });
+
+describe("P21 traceable engineering research: bounded provider boundary, no arbitrary network/execution code, external content stays untrusted data, no second provenance system", () => {
+  // Phase 21's central architectural rule: research is an EXPLICIT,
+  // typed, permission-gated capability -- never something Gemini "just
+  // knows." research-provider.ts/research-provider-contract.ts are the
+  // PURE boundary contract (core never depends on a concrete provider,
+  // never touches @naqsh/adapters); create-environment-object-tool.ts's
+  // P20 precedent repeats here for create-source/evidence writes; and
+  // research content is proven, structurally, to remain inert data (no
+  // eval, no dynamic tool invocation, no permission bypass). Every check
+  // below proves one specific way that boundary could have silently eroded.
+  const researchProviderFiles = ["packages/core/src/research-provider.ts", "packages/core/src/research-provider-contract.ts"];
+  const researchToolFiles = [
+    "packages/core/src/research-search-tool.ts",
+    "packages/core/src/research-fetch-tool.ts",
+    "packages/core/src/add-source-tool.ts",
+    "packages/core/src/add-evidence-tool.ts",
+    "packages/core/src/create-research-request-tool.ts"
+  ];
+  const researchStoreFiles = ["packages/core/src/research-request-store.ts"];
+  const researchCacheFiles = ["packages/core/src/research-cache.ts"];
+  const mockResearchProviderFiles = ["packages/adapters/src/mock-research-provider.ts"];
+  const allP21CoreFiles = [...researchProviderFiles, ...researchToolFiles, ...researchStoreFiles, ...researchCacheFiles];
+
+  /** Strips block comments (`/** ... *​/`) and line comments (`// ...`) so a
+   * source-scan checks only actual CODE, not doc prose explaining a
+   * boundary (which legitimately names the very things it excludes --
+   * e.g. "no node:http/https/fetch() call anywhere in this file"). Mirrors
+   * the identical fix applied to the P20 FreeCAD-leakage guard above. */
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("core's research-provider.ts and every research tool never import @naqsh/adapters or a concrete node networking module", () => {
+    const forbiddenPatterns = [
+      /from\s+["'`]@naqsh\/adapters["'`]/,
+      /from\s+["'`]node:http["'`]/,
+      /from\s+["'`]node:https["'`]/,
+      /from\s+["'`]node:net["'`]/,
+      /from\s+["'`]node:dns["'`]/
+    ];
+    for (const relativePath of allP21CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not reference ${pattern} -- P21's core layer stays provider-agnostic and never performs network I/O itself`);
+      }
+    }
+  });
+
+  it("no arbitrary code execution anywhere in the P21 files (core or the mock provider) -- a search/fetch result cannot become executable input", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of [...allP21CoreFiles, ...mockResearchProviderFiles]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("research_search/research_fetch are classified suggest/research; add_source/add_evidence are classified mutate/world_model -- the external-retrieval vs World-Model-write distinction (brief Section 15) is a real, checkable fact, not merely documented", () => {
+    const suggestTargets: Record<string, string> = {
+      "packages/core/src/research-search-tool.ts": "research_search",
+      "packages/core/src/research-fetch-tool.ts": "research_fetch",
+      "packages/core/src/create-research-request-tool.ts": "create_research_request"
+    };
+    for (const relativePath of Object.keys(suggestTargets)) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]suggest["'`]/, `${relativePath} must declare mutation: "suggest"`);
+      assert.match(contents, /target:\s*["'`]research["'`]/, `${relativePath} must declare target: "research"`);
+    }
+    for (const relativePath of ["packages/core/src/add-source-tool.ts", "packages/core/src/add-evidence-tool.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must declare mutation: "mutate"`);
+      assert.match(contents, /target:\s*["'`]world_model["'`]/, `${relativePath} must declare target: "world_model"`);
+    }
+  });
+
+  it("research-provider.ts's CODE (outside doc comments) declares no AutonomyLevel/Approval/AutonomyGrant concept -- permission is enforced one layer up, by the tools, exactly like ModelProvider/EnvironmentAdapter", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/research-provider.ts"), "utf8"));
+    for (const forbidden of ["AutonomyLevel", "ApprovalStore", "AutonomyGrantStore", "evaluateToolAuthorization"]) {
+      assert.equal(code.includes(forbidden), false, `research-provider.ts's actual code must not reference ${forbidden} -- a provider is a dumb request/response mechanism, never a policy decision point`);
+    }
+  });
+
+  it("Source/ResearchEvidence traceability reuses the EXISTING EntityRelationship mechanism (P8) -- no new relationship/traceability type was introduced", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/research-types.ts"), "utf8");
+    assert.doesNotMatch(contents, /interface\s+(Claim|ResearchRelationship|EvidenceLink|Traceability)\b/, "research-types.ts must not define a second traceability/relationship entity -- EntityRelationship (P8) already covers this");
+  });
+
+  it("no P21 file duplicates P16/P17's verification/objective-satisfaction machinery, or P9's Plan/PlanStep machinery", () => {
+    const forbiddenImports = [
+      "./verify.js",
+      "./evidence.js", // P16's Evidence -- never re-implemented or aliased by P21's ResearchEvidence
+      "./verification-result-store.js",
+      "./objective-satisfaction.js",
+      "./plan-semantics.js",
+      "./planner.js"
+    ];
+    for (const relativePath of allP21CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+      }
+    }
+  });
+
+  it("ResearchRequestStore is immutable-once-saved -- no update/delete method exists", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/research-request-store.ts"), "utf8");
+    assert.doesNotMatch(contents, /^\s*update\s*\(/m, "research-request-store.ts must not expose an update() method");
+    assert.doesNotMatch(contents, /^\s*delete\s*\(/m, "research-request-store.ts must not expose a delete() method");
+  });
+
+  it("the mock research provider's CODE (outside doc comments) performs no real network I/O -- deterministic, in-process only, matching the P6/P7 mock precedent. 'fetch(' itself is deliberately NOT scanned here -- it is the provider's own legitimately-named interface method (ResearchProvider.fetch), not a network call.", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/adapters/src/mock-research-provider.ts"), "utf8"));
+    for (const forbidden of ["node:http", "node:https", "node:net", "node:dns", "XMLHttpRequest", "WebSocket"]) {
+      assert.equal(code.includes(forbidden), false, `mock-research-provider.ts's actual code must not reference ${forbidden} -- it must stay a deterministic, network-free provider`);
+    }
+  });
+
+  it("Evidence naming does not collide with P16's Evidence -- ResearchEvidence is a distinct exported type, never re-exported as bare Evidence", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/research-types.ts"), "utf8");
+    assert.doesNotMatch(contents, /export\s+interface\s+Evidence\b/, "research-types.ts must not export a bare `Evidence` interface -- that name is already P16's (verification-types.ts); this file's equivalent concept must stay named ResearchEvidence");
+  });
+});

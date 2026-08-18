@@ -62,6 +62,28 @@ import {
 } from "./design-specification-types.js";
 import { BUILD_OPERATION_STATUSES, BUILD_STATUSES, type BuildOperation, type BuildResult } from "./build-types.js";
 import {
+  MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH,
+  RESEARCH_EVIDENCE_CONFIDENCES,
+  RESEARCH_EVIDENCE_STATUSES,
+  RESEARCH_PROVIDER_ERROR_KINDS,
+  RESEARCH_REQUEST_STATUSES,
+  SOURCE_RELIABILITIES,
+  SOURCE_STATUSES,
+  SOURCE_TYPES,
+  type ResearchEvidence,
+  type ResearchFetchContent,
+  type ResearchFetchInvocationResult,
+  type ResearchFetchRequest,
+  type ResearchInvocationStatus,
+  type ResearchProviderDescriptor,
+  type ResearchProviderError,
+  type ResearchRequest,
+  type ResearchSearchInvocationResult,
+  type ResearchSearchRequest,
+  type ResearchSourceCandidate,
+  type Source
+} from "./research-types.js";
+import {
   PLAN_RISK_SEVERITIES,
   PLAN_STATUSES,
   PLAN_STEP_STATUSES,
@@ -322,6 +344,237 @@ export function assertEntityRelationship(value: unknown): asserts value is Entit
   );
 }
 
+function isSourceType(value: unknown): value is (typeof SOURCE_TYPES)[number] {
+  return typeof value === "string" && (SOURCE_TYPES as readonly string[]).includes(value);
+}
+
+function isSourceReliability(value: unknown): value is (typeof SOURCE_RELIABILITIES)[number] {
+  return typeof value === "string" && (SOURCE_RELIABILITIES as readonly string[]).includes(value);
+}
+
+function isSourceStatus(value: unknown): value is (typeof SOURCE_STATUSES)[number] {
+  return typeof value === "string" && (SOURCE_STATUSES as readonly string[]).includes(value);
+}
+
+/** P21: validates a `Source` -- environment-independent, provider-independent
+ * (nothing here knows about a specific search engine or `ResearchProvider`
+ * implementation). `locator` is intentionally unvalidated as a URL (a
+ * `Source` can be a verbally-cited standard with no fetchable address) --
+ * see `research-provider.ts` (core) for where a real locator IS checked
+ * before ever being fetched. */
+export function assertSource(value: unknown): asserts value is Source {
+  invariant(isPlainObject(value), "source must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "source.id is required");
+  invariant(value.locator === null || (typeof value.locator === "string" && value.locator.length > 0), "source.locator must be a non-empty string or null");
+  invariant(typeof value.title === "string" && value.title.trim().length > 0, "source.title is required");
+  invariant(value.publisher === null || typeof value.publisher === "string", "source.publisher must be a string or null");
+  invariant(isSourceType(value.sourceType), "invalid source.sourceType");
+  invariant(isSourceReliability(value.reliability), "invalid source.reliability");
+  invariant(isIsoTimestamp(value.retrievedAt), "source.retrievedAt must be an ISO timestamp");
+  invariant(value.publishedAt === null || isIsoTimestamp(value.publishedAt), "source.publishedAt must be an ISO timestamp or null");
+  invariant(value.contentHash === null || (typeof value.contentHash === "string" && value.contentHash.length > 0), "source.contentHash must be a non-empty string or null");
+  invariant(isSourceStatus(value.status), "invalid source.status");
+  invariant(isEntitySource(value.source), "invalid source.source");
+  invariant(isIsoTimestamp(value.createdAt), "source.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "source.metadata must be a JSON-serializable object");
+}
+
+function isResearchEvidenceConfidence(value: unknown): value is (typeof RESEARCH_EVIDENCE_CONFIDENCES)[number] {
+  return typeof value === "string" && (RESEARCH_EVIDENCE_CONFIDENCES as readonly string[]).includes(value);
+}
+
+function isResearchEvidenceStatus(value: unknown): value is (typeof RESEARCH_EVIDENCE_STATUSES)[number] {
+  return typeof value === "string" && (RESEARCH_EVIDENCE_STATUSES as readonly string[]).includes(value);
+}
+
+/** P21: `claim` is required and non-empty (evidence with no claim is not
+ * evidence of anything -- see `research-types.ts`'s own doc comment); the
+ * `excerpt` length bound is enforced HERE, not merely hoped for from
+ * whatever normalized it -- the "validator is authoritative" discipline
+ * every prior phase's own invariant already uses. */
+export function assertResearchEvidence(value: unknown): asserts value is ResearchEvidence {
+  invariant(isPlainObject(value), "research evidence must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchEvidence.id is required");
+  invariant(typeof value.sourceId === "string" && value.sourceId.length > 0, "researchEvidence.sourceId is required");
+  invariant(typeof value.claim === "string" && value.claim.trim().length > 0, "researchEvidence.claim is required");
+  invariant(
+    value.excerpt === null || (typeof value.excerpt === "string" && value.excerpt.length <= MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH),
+    `researchEvidence.excerpt must be a string of at most ${MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH} characters, or null`
+  );
+  invariant(isResearchEvidenceConfidence(value.confidence), "invalid researchEvidence.confidence");
+  invariant(value.relevanceNote === null || typeof value.relevanceNote === "string", "researchEvidence.relevanceNote must be a string or null");
+  invariant(isIsoTimestamp(value.retrievedAt), "researchEvidence.retrievedAt must be an ISO timestamp");
+  invariant(isResearchEvidenceStatus(value.status), "invalid researchEvidence.status");
+  invariant(isEntitySource(value.source), "invalid researchEvidence.source");
+  invariant(isIsoTimestamp(value.createdAt), "researchEvidence.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchEvidence.metadata must be a JSON-serializable object");
+}
+
+function isResearchRequestStatus(value: unknown): value is (typeof RESEARCH_REQUEST_STATUSES)[number] {
+  return typeof value === "string" && (RESEARCH_REQUEST_STATUSES as readonly string[]).includes(value);
+}
+
+/** P21: `query`/`purpose` both required and non-empty -- the P21 brief's
+ * own Section 12 insists research must explain WHY, not just what, and
+ * this is where that requirement is actually enforced, not merely
+ * requested in a system instruction a model could ignore. */
+export function assertResearchRequest(value: unknown): asserts value is ResearchRequest {
+  invariant(isPlainObject(value), "research request must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchRequest.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "researchRequest.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "researchRequest.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.query === "string" && value.query.trim().length > 0, "researchRequest.query is required");
+  invariant(typeof value.purpose === "string" && value.purpose.trim().length > 0, "researchRequest.purpose is required");
+  invariant(isStringArray(value.relatedRequirementIds), "researchRequest.relatedRequirementIds must be an array of strings");
+  invariant(isStringArray(value.relatedConstraintIds), "researchRequest.relatedConstraintIds must be an array of strings");
+  invariant(
+    value.relatedPlanId === null || (typeof value.relatedPlanId === "string" && value.relatedPlanId.length > 0),
+    "researchRequest.relatedPlanId must be a non-empty string or null"
+  );
+  invariant(
+    value.relatedPlanStepId === null || (typeof value.relatedPlanStepId === "string" && value.relatedPlanStepId.length > 0),
+    "researchRequest.relatedPlanStepId must be a non-empty string or null"
+  );
+  invariant(Array.isArray(value.preferredSourceTypes), "researchRequest.preferredSourceTypes must be an array");
+  for (const sourceType of value.preferredSourceTypes) invariant(isSourceType(sourceType), "invalid entry in researchRequest.preferredSourceTypes");
+  invariant(
+    typeof value.maxResults === "number" && Number.isInteger(value.maxResults) && value.maxResults >= 1,
+    "researchRequest.maxResults must be a positive integer"
+  );
+  invariant(
+    value.freshnessRequirementDays === null || (typeof value.freshnessRequirementDays === "number" && Number.isFinite(value.freshnessRequirementDays) && value.freshnessRequirementDays >= 0),
+    "researchRequest.freshnessRequirementDays must be a non-negative number or null"
+  );
+  invariant(isResearchRequestStatus(value.status), "invalid researchRequest.status");
+  invariant(isEntitySource(value.source), "invalid researchRequest.source");
+  invariant(isIsoTimestamp(value.createdAt), "researchRequest.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchRequest.metadata must be a JSON-serializable object");
+}
+
+// ---------------------------------------------------------------------------
+// P21: ResearchProvider wire contract -- mirrors ModelRequest/ModelResponse/
+// ModelInvocationResult's exact validation shape and discriminated-status
+// discipline (see model-types.ts's identical family).
+// ---------------------------------------------------------------------------
+
+export function assertResearchProviderDescriptor(value: unknown): asserts value is ResearchProviderDescriptor {
+  invariant(isPlainObject(value), "research provider descriptor must be an object");
+  invariant(typeof value.providerId === "string" && value.providerId.length > 0, "researchProviderDescriptor.providerId is required");
+  invariant(typeof value.name === "string" && value.name.length > 0, "researchProviderDescriptor.name is required");
+  invariant(typeof value.version === "string" && value.version.length > 0, "researchProviderDescriptor.version is required");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchProviderDescriptor.metadata must be a JSON-serializable object");
+}
+
+export function assertResearchSearchRequest(value: unknown): asserts value is ResearchSearchRequest {
+  invariant(isPlainObject(value), "research search request must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchSearchRequest.id is required");
+  invariant(typeof value.query === "string" && value.query.trim().length > 0, "researchSearchRequest.query is required");
+  invariant(
+    typeof value.maxResults === "number" && Number.isInteger(value.maxResults) && value.maxResults >= 1,
+    "researchSearchRequest.maxResults must be a positive integer"
+  );
+  invariant(Array.isArray(value.preferredSourceTypes), "researchSearchRequest.preferredSourceTypes must be an array");
+  for (const sourceType of value.preferredSourceTypes) invariant(isSourceType(sourceType), "invalid entry in researchSearchRequest.preferredSourceTypes");
+  invariant(isIsoTimestamp(value.createdAt), "researchSearchRequest.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchSearchRequest.metadata must be a JSON-serializable object");
+}
+
+/** UNTRUSTED provider output -- bounded the same way `ResearchEvidence.excerpt`
+ * is, so a hostile/oversized provider response is defused HERE, at the
+ * boundary, before it can reach anywhere near an accepted `Source`/
+ * `ResearchEvidence` (P21 brief Section 21: "oversized responses"). */
+export function assertResearchSourceCandidate(value: unknown): asserts value is ResearchSourceCandidate {
+  invariant(isPlainObject(value), "research source candidate must be an object");
+  invariant(value.locator === null || typeof value.locator === "string", "researchSourceCandidate.locator must be a string or null");
+  invariant(typeof value.title === "string" && value.title.trim().length > 0, "researchSourceCandidate.title is required");
+  invariant(value.publisher === null || typeof value.publisher === "string", "researchSourceCandidate.publisher must be a string or null");
+  invariant(isSourceType(value.sourceType), "invalid researchSourceCandidate.sourceType");
+  invariant(value.publishedAt === null || typeof value.publishedAt === "string", "researchSourceCandidate.publishedAt must be a string or null");
+  invariant(
+    typeof value.snippet === "string" && value.snippet.length <= MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH,
+    `researchSourceCandidate.snippet must be a string of at most ${MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH} characters`
+  );
+}
+
+function isResearchProviderErrorKind(value: unknown): value is (typeof RESEARCH_PROVIDER_ERROR_KINDS)[number] {
+  return typeof value === "string" && (RESEARCH_PROVIDER_ERROR_KINDS as readonly string[]).includes(value);
+}
+
+export function assertResearchProviderError(value: unknown): asserts value is ResearchProviderError {
+  invariant(isPlainObject(value), "research provider error must be an object");
+  invariant(isResearchProviderErrorKind(value.kind), "invalid researchProviderError.kind");
+  invariant(typeof value.message === "string" && value.message.length > 0, "researchProviderError.message is required");
+}
+
+function isResearchInvocationStatus(value: unknown): value is ResearchInvocationStatus {
+  return value === "success" || value === "error";
+}
+
+export function assertResearchSearchInvocationResult(value: unknown): asserts value is ResearchSearchInvocationResult {
+  invariant(isPlainObject(value), "research search invocation result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchSearchInvocationResult.id is required");
+  invariant(typeof value.requestId === "string" && value.requestId.length > 0, "researchSearchInvocationResult.requestId is required");
+  invariant(typeof value.providerId === "string" && value.providerId.length > 0, "researchSearchInvocationResult.providerId is required");
+  invariant(isResearchInvocationStatus(value.status), "invalid researchSearchInvocationResult.status");
+  if (value.status === "success") {
+    invariant(value.error === null, "researchSearchInvocationResult.error must be null when status is success");
+    invariant(Array.isArray(value.results), "researchSearchInvocationResult.results must be an array when status is success");
+    for (const result of value.results) assertResearchSourceCandidate(result);
+  } else {
+    invariant(value.results === null, "researchSearchInvocationResult.results must be null when status is error");
+    assertResearchProviderError(value.error);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "researchSearchInvocationResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "researchSearchInvocationResult.completedAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchSearchInvocationResult.metadata must be a JSON-serializable object");
+}
+
+export function assertResearchFetchRequest(value: unknown): asserts value is ResearchFetchRequest {
+  invariant(isPlainObject(value), "research fetch request must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchFetchRequest.id is required");
+  invariant(typeof value.locator === "string" && value.locator.trim().length > 0, "researchFetchRequest.locator is required");
+  invariant(isIsoTimestamp(value.createdAt), "researchFetchRequest.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchFetchRequest.metadata must be a JSON-serializable object");
+}
+
+/** UNTRUSTED provider output -- `excerpt` bounded exactly like
+ * `ResearchSourceCandidate.snippet`. */
+export function assertResearchFetchContent(value: unknown): asserts value is ResearchFetchContent {
+  invariant(isPlainObject(value), "research fetch content must be an object");
+  invariant(typeof value.locator === "string" && value.locator.length > 0, "researchFetchContent.locator is required");
+  invariant(typeof value.title === "string" && value.title.trim().length > 0, "researchFetchContent.title is required");
+  invariant(value.publisher === null || typeof value.publisher === "string", "researchFetchContent.publisher must be a string or null");
+  invariant(isSourceType(value.sourceType), "invalid researchFetchContent.sourceType");
+  invariant(value.publishedAt === null || typeof value.publishedAt === "string", "researchFetchContent.publishedAt must be a string or null");
+  invariant(isIsoTimestamp(value.retrievedAt), "researchFetchContent.retrievedAt must be an ISO timestamp");
+  invariant(
+    typeof value.excerpt === "string" && value.excerpt.length <= MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH,
+    `researchFetchContent.excerpt must be a string of at most ${MAX_RESEARCH_EVIDENCE_EXCERPT_LENGTH} characters`
+  );
+  invariant(value.contentHash === null || (typeof value.contentHash === "string" && value.contentHash.length > 0), "researchFetchContent.contentHash must be a non-empty string or null");
+}
+
+export function assertResearchFetchInvocationResult(value: unknown): asserts value is ResearchFetchInvocationResult {
+  invariant(isPlainObject(value), "research fetch invocation result must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "researchFetchInvocationResult.id is required");
+  invariant(typeof value.requestId === "string" && value.requestId.length > 0, "researchFetchInvocationResult.requestId is required");
+  invariant(typeof value.providerId === "string" && value.providerId.length > 0, "researchFetchInvocationResult.providerId is required");
+  invariant(isResearchInvocationStatus(value.status), "invalid researchFetchInvocationResult.status");
+  if (value.status === "success") {
+    invariant(value.error === null, "researchFetchInvocationResult.error must be null when status is success");
+    assertResearchFetchContent(value.content);
+  } else {
+    invariant(value.content === null, "researchFetchInvocationResult.content must be null when status is error");
+    assertResearchProviderError(value.error);
+  }
+  invariant(isIsoTimestamp(value.startedAt), "researchFetchInvocationResult.startedAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.completedAt), "researchFetchInvocationResult.completedAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "researchFetchInvocationResult.metadata must be a JSON-serializable object");
+}
+
 export function assertProject(value: unknown): asserts value is Project {
   invariant(isPlainObject(value), "project must be an object");
   invariant(typeof value.id === "string" && value.id.length > 0, "project.id is required");
@@ -335,6 +588,8 @@ export function assertProject(value: unknown): asserts value is Project {
   invariant(Array.isArray(value.experiments), "project.experiments must be an array");
   invariant(Array.isArray(value.preferences), "project.preferences must be an array");
   invariant(Array.isArray(value.relationships), "project.relationships must be an array");
+  invariant(Array.isArray(value.sources), "project.sources must be an array");
+  invariant(Array.isArray(value.researchEvidence), "project.researchEvidence must be an array");
   invariant(
     typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 1,
     "project.version must be a positive integer"
@@ -352,6 +607,8 @@ export function assertProject(value: unknown): asserts value is Project {
   for (const experiment of value.experiments) assertExperiment(experiment);
   for (const preference of value.preferences) assertPreference(preference);
   for (const relationship of value.relationships) assertEntityRelationship(relationship);
+  for (const source of value.sources) assertSource(source);
+  for (const evidence of value.researchEvidence) assertResearchEvidence(evidence);
 }
 
 export function assertSessionState(value: unknown): asserts value is SessionState {

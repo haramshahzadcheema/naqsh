@@ -12,6 +12,7 @@ export * from "./requirement-candidate-types.js";
 export * from "./clarification-types.js";
 export * from "./design-specification-types.js";
 export * from "./build-types.js";
+export * from "./research-types.js";
 export * from "./transitions.js";
 export * from "./ids.js";
 export * from "./tool-schema.js";
