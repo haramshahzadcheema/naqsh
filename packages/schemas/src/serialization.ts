@@ -10,6 +10,7 @@ import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
 import type { Candidate } from "./candidate-types.js";
 import type { CandidateMetricValue, OptimizationProblem, OptimizationResult } from "./optimization-types.js";
+import type { MemoryRecord } from "./memory-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
@@ -26,6 +27,7 @@ import {
   assertAutonomyGrant,
   assertCandidate,
   assertCandidateMetricValue,
+  assertMemoryRecord,
   assertOptimizationProblem,
   assertOptimizationResult,
   assertChange,
@@ -299,6 +301,18 @@ export function deserializeOptimizationResult(serialized: string): OptimizationR
   requireNonEmptyString(serialized, "serialized optimization result is required");
   const parsed: unknown = JSON.parse(serialized);
   assertOptimizationResult(parsed);
+  return parsed;
+}
+
+export function serializeMemoryRecord(record: MemoryRecord): string {
+  assertMemoryRecord(record);
+  return JSON.stringify(record);
+}
+
+export function deserializeMemoryRecord(serialized: string): MemoryRecord {
+  requireNonEmptyString(serialized, "serialized memory record is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertMemoryRecord(parsed);
   return parsed;
 }
 

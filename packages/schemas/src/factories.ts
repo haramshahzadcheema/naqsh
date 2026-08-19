@@ -92,6 +92,8 @@ import type {
   OptimizationResult,
   OptimizationResultInput
 } from "./optimization-types.js";
+import { assertMemoryRecord } from "./validators.js";
+import type { MemoryReferences, MemoryReferencesInput, MemoryRecord, MemoryRecordInput } from "./memory-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
 import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
@@ -1382,6 +1384,79 @@ export function createOptimizationResult(input: OptimizationResultInput): Optimi
   };
   assertOptimizationResult(result);
   return deepFreeze(result);
+}
+
+const EMPTY_MEMORY_REFERENCES: MemoryReferences = {
+  requirementIds: [],
+  constraintIds: [],
+  decisionIds: [],
+  preferenceIds: [],
+  objectIds: [],
+  experimentIds: [],
+  candidateIds: [],
+  verificationResultIds: [],
+  optimizationResultIds: [],
+  researchEvidenceIds: [],
+  sourceIds: [],
+  checkpointIds: [],
+  changeIds: []
+};
+
+function buildMemoryReferences(input: MemoryReferencesInput | undefined): MemoryReferences {
+  const merged: MemoryReferences = { ...EMPTY_MEMORY_REFERENCES, ...input };
+  return {
+    requirementIds: safeStructuredClone(merged.requirementIds, "memoryRecord.references.requirementIds"),
+    constraintIds: safeStructuredClone(merged.constraintIds, "memoryRecord.references.constraintIds"),
+    decisionIds: safeStructuredClone(merged.decisionIds, "memoryRecord.references.decisionIds"),
+    preferenceIds: safeStructuredClone(merged.preferenceIds, "memoryRecord.references.preferenceIds"),
+    objectIds: safeStructuredClone(merged.objectIds, "memoryRecord.references.objectIds"),
+    experimentIds: safeStructuredClone(merged.experimentIds, "memoryRecord.references.experimentIds"),
+    candidateIds: safeStructuredClone(merged.candidateIds, "memoryRecord.references.candidateIds"),
+    verificationResultIds: safeStructuredClone(merged.verificationResultIds, "memoryRecord.references.verificationResultIds"),
+    optimizationResultIds: safeStructuredClone(merged.optimizationResultIds, "memoryRecord.references.optimizationResultIds"),
+    researchEvidenceIds: safeStructuredClone(merged.researchEvidenceIds, "memoryRecord.references.researchEvidenceIds"),
+    sourceIds: safeStructuredClone(merged.sourceIds, "memoryRecord.references.sourceIds"),
+    checkpointIds: safeStructuredClone(merged.checkpointIds, "memoryRecord.references.checkpointIds"),
+    changeIds: safeStructuredClone(merged.changeIds, "memoryRecord.references.changeIds")
+  };
+}
+
+/**
+ * Builds a `MemoryRecord` (P24). `status` defaults to `"active"` -- the
+ * initial/ongoing state every memory starts in (see `memory-types.ts`'s own
+ * doc comment on `MemoryStatus`). `confidence`/`supersededByMemoryId` are
+ * forced to their empty state (`null`) unless the input's own
+ * `provenanceKind`/`status` actually calls for them -- mirrors
+ * `createClarification`'s (P19) identical "status-driven field defaulting"
+ * discipline, so a caller cannot accidentally smuggle a stray confidence
+ * number or a dangling supersession pointer past the type's own invariants
+ * (`assertMemoryRecord` would reject it anyway; defaulting it away here
+ * means a well-behaved caller never has to think about it).
+ */
+export function createMemoryRecord(input: MemoryRecordInput): MemoryRecord {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const status = input.status ?? "active";
+  const provenanceKind = input.provenanceKind;
+  const record: MemoryRecord = {
+    id: input.id ?? createId("memory"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    kind: input.kind,
+    title: input.title,
+    content: input.content,
+    provenanceKind,
+    confidence: provenanceKind === "model_synthesis" && typeof input.confidence === "number" ? input.confidence : null,
+    references: buildMemoryReferences(input.references),
+    status,
+    supersedesMemoryId: input.supersedesMemoryId ?? null,
+    supersededByMemoryId: status === "superseded" ? (input.supersededByMemoryId ?? null) : null,
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "memoryRecord.metadata")
+  };
+  assertMemoryRecord(record);
+  return deepFreeze(record);
 }
 
 /** `toolResult` is cloned+frozen along with everything else via `deepFreeze`

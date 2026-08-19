@@ -2189,6 +2189,175 @@ triggered); environment-independent generalization (P26 — optimization
 here is already environment-independent, operating purely on recorded
 metrics); any UI (consistent with every prior phase's identical deferral).
 
+## Long-Term Engineering Memory (P24)
+
+**What this phase answers.** P0–P23 already produce durable, individually
+authoritative records — `Decision`, `Experiment`, `VerificationResult`,
+`OptimizationResult`, `ResearchEvidence`, `Change`. What none of them offer
+is a queryable, project-scoped layer that PRESERVES and CONNECTS why those
+records mattered, once the project's current state has moved past them.
+P24's central rule, taken literally from the brief: **MEMORY IS NOT THE
+WORLD MODEL.** `WorldModelState` (P1) is what is true NOW; a `MemoryRecord`
+(`packages/schemas/src/memory-types.ts`) is what has been learned, decided,
+attempted, observed, or recorded OVER TIME — "steel was evaluated during
+experiment E17 but rejected because mass exceeded the requirement" stays
+true and retrievable forever, even after the project's material later
+changes again. `MemoryRecord` therefore lives in its OWN store
+(`MemoryStore`, core), exactly like `Candidate`/`OptimizationProblem`/
+`Clarification` — never `WorldModelState`, never written via the Change
+Model (repo-boundaries-enforced: no P24 file imports the transition/reducer
+machinery or calls `updateWorldModel`/`recordTransition`).
+
+**Deliberately does NOT duplicate an existing entity.** `Decision`/
+`Preference` (P1), `Requirement`/`Constraint`/`EngineeringObject` (P1),
+`Experiment`/`Candidate` (P22), `VerificationResult` (P16),
+`OptimizationResult` (P23), `ResearchEvidence`/`Source` (P21), `Checkpoint`
+(P15), `Change` (P2) — every one of these is referenced by id only
+(`MemoryReferences`, thirteen typed id arrays, one per entity kind), never
+re-embedded or re-described. `Decision`'s own P1 doc comment already called
+it "the seed of project memory (P24)" — this phase is that promise kept,
+not a competing mechanism layered on top.
+
+**Provenance is the load-bearing concept.** `MemoryKind` (`decision` /
+`lesson` / `failure` / `success` / `experiment_finding` /
+`verification_finding` / `optimization_finding` / `research_finding` /
+`preference` / `historical_observation`) says WHAT KIND of memory this is;
+`MemoryProvenanceKind` (`user_statement` / `world_model_state` /
+`change_model` / `experiment_result` / `verification_result` /
+`optimization_result` / `research_evidence` / `environment_observation` /
+`system_analysis` / `model_synthesis`) is an INDEPENDENT axis saying WHAT
+KIND OF GROUNDING the memory's content rests on — preserving the brief's
+own explicit distinction between "observed fact, verified result, research
+evidence, user statement, model inference, system-generated summary."
+`assertMemoryRecord` (schemas) enforces that six of the ten provenance
+kinds REQUIRE a non-empty reference into the specific store/entity they
+claim to be grounded in — a memory can never claim `"verification_result"`
+provenance while carrying zero `references.verificationResultIds`, making
+"a memory summary can never override the real verified result it claims to
+summarize" a structural fact of the type, not a convention a caller has to
+remember (mirrors `CandidateMetricValue`'s (P23) identical
+status/provenanceKind consistency discipline).
+
+**Confidence never hedges a deterministic fact.** `confidence` is a finite
+number in `[0, 1]` restricted to `provenanceKind: "model_synthesis"` ONLY —
+every other provenance kind is grounded in a deterministic record or a
+plain human statement, neither of which a probabilistic "confidence" number
+could qualify without implying the underlying fact (a real
+`VerificationResult`, a real `OptimizationResult`) is itself uncertain.
+This is the brief's own "do not allow confidence to override deterministic
+verification," enforced by `assertMemoryRecord` rather than merely
+documented: a verification-grounded memory cannot even carry a confidence
+field.
+
+**Temporal semantics — never rewrite history.** `MemoryStatus` distinguishes
+`active` (current), `superseded` (replaced by a newer memory, never
+deleted), `archived` (no longer relevant, but was valid), and `rejected`
+(found incorrect after creation). A memory's CONTENT
+(`title`/`content`/`references`) is immutable once created — mirrors
+`Candidate`/`Check`/`OptimizationProblem`'s "process record, no in-place
+content edit" discipline; only lifecycle fields (`status`,
+`supersededByMemoryId`, `updatedAt`) ever change, applied exclusively by
+`MemoryStore.archive`/`.supersede` (core), exactly like
+`Clarification.status`'s (P19) identical "transitions replace the stored
+record with a new frozen snapshot" precedent. Two ACTIVE, contradictory
+memories about the same subject are explicitly allowed to coexist — memory
+never silently reconciles or rewrites history; a caller who wants to
+formally link an old fact to a newer one calls `memory_supersede`.
+
+**Supersession — explicit, bidirectional, and cycle-safe.**
+`supersedesMemoryId` (declared at creation, forward-looking) and
+`supersededByMemoryId` (set ONLY by `MemoryStore.supersede` on the OLD
+record, backward-looking) together make "A superseded B" / "B supersedes A"
+unambiguous in both directions. `MemoryStore.supersede(oldId, newId)` is
+the ONE place a formal transition ever happens: it requires `oldId` to
+currently be `"active"` (a record can be the "old" side of a supersession
+at most once — its status permanently leaves `"active"` the first time),
+and additionally walks `newId`'s own `supersededByMemoryId` chain to reject
+a cycle (`newId` must not already be transitively superseded by `oldId`) —
+the one case a single-outgoing-edge history graph cannot rule out purely by
+construction. A real `A → B → C` chain (tested) leaves every link
+independently retrievable; a direct or longer cycle attempt is rejected
+(tested) with a specific error naming which two records would have closed
+the loop. One new memory MAY legitimately consolidate/supersede several
+older ones at once (`supersede(a, c)` and `supersede(b, c)` both
+succeeding) — an audit pass found `getRelatedMemoryRecords` originally
+returning only the FIRST such predecessor via `.find`, silently dropping
+the rest; it now uses `.filter` and returns every one. `deserializeMemoryStore`
+additionally validates the WHOLE supersession graph at load time — every
+`supersededByMemoryId` must resolve to a real record in the same payload,
+and no cycle may exist — closing the one remaining trust gap a hand-edited
+or corrupted serialized store could otherwise smuggle past per-record shape
+validation alone (mirrors `deserializeChangeHistory`'s (P2) identical
+chain-integrity precedent, applied to a graph instead of a sequence).
+
+**Tools mirror the established `create_check`/`dismiss_clarification`
+shapes exactly; a new `ToolTarget: "memory"` was added additively, the same
+way `"checkpoint"` was in P15, `"research"` in P21, and `"optimization"` in
+P23.** Five tools, matching the brief's own explicit list and "only add
+tools that are actually necessary":
+  - `memory_add` (`suggest`/`memory`) creates a new record; `projectId`/
+    `projectVersion` are read from LIVE `WorldModelState`, never
+    caller-supplied. Deterministic semantic validation
+    (`validateMemoryRecordSemantics`, mirroring
+    `validateOptimizationProblemSemantics`'s (P23) exact shape) cross-checks
+    every reference against a REAL store or the current project before
+    saving, and rejects an obvious duplicate (same project/kind/title
+    already active). An optional `supersedesMemoryId` is checked to resolve
+    to a real, active, same-project memory but does NOT itself apply the
+    transition — that stays `memory_supersede`'s single responsibility, to
+    avoid a partial-failure window where a new record could be saved but
+    the old one left un-superseded.
+  - `memory_search` (`observe`/`memory`) — deterministic, bounded,
+    ALWAYS project-scoped retrieval (`projectId` is never a tool input; it
+    is read from live state and used for both the pure filter and the
+    store lookup, defense in depth). Filters: `kind`/`status`/
+    `provenanceKind`/`source`/`referencedEntityId`/`textQuery`. Ordering is
+    fully deterministic and documented: a title-text match sorts before a
+    content-only match, then `createdAt` descending, then `id` ascending as
+    an always-available final tiebreak — no random ids, no object/Map
+    iteration order, no model call deciding relevance (brief: "Do NOT use
+    an LLM to secretly decide which memory is relevant"). Bounded by
+    `MAX_MEMORY_SEARCH_RESULTS` (100) regardless of a caller-requested
+    limit, defaulting to 20.
+  - `memory_get` (`observe`/`memory`) retrieves one record by id AND
+    answers the brief's own "getRelatedMemory" operation in the same call
+    (rather than a sixth tool) — `related` lists the direct supersession
+    neighbors plus any other memory sharing a reference id, letting a
+    caller answer "why was Candidate B selected?" by walking real, typed
+    links outward from one memory id, never a second free-text explanation
+    disconnected from the evidence.
+  - `memory_archive` (`suggest`/`memory`) transitions `active` →
+    `archived`/`rejected`; content untouched, a given `reason` is recorded
+    in `metadata.archiveReason` (never overwriting the memory's own
+    original provenance), mirroring `dismiss_clarification`'s (P19)
+    identical discipline.
+  - `memory_supersede` (`suggest`/`memory`) is the sole place a formal
+    supersession is ever applied (see above).
+
+**Project isolation is structural, not merely tested.** Every tool reads
+`projectId` exclusively from live `WorldModelState`; every store lookup
+that crosses a project boundary (`memory_get`/`memory_archive`/
+`memory_supersede` fetching an existing record, `memory_add` validating a
+`supersedesMemoryId`) explicitly compares `.projectId` against the current
+project and treats a mismatch as not-found — a memory from Project A can
+never surface, be archived, or be superseded through Project B's own tool
+calls (repo-boundaries-enforced across all five tools).
+
+**Deliberately NOT implemented (P25+ territory).** Bounded autonomous
+background experimentation that would write memory without an explicit
+tool call (P25 — every `memory_add`/`memory_supersede`/`memory_archive`
+call here is explicit, human/agent triggered); an environment-independent
+generalization of the memory layer (P26 — this phase's memory is already
+environment-independent, referencing only ids); a "MemoryService" class
+distinct from the tool layer (the five tools collectively ARE that service
+boundary, exactly matching how no prior phase built a separate
+`XService` class either — each tool handler already is one typed,
+authorized, validated operation); vector search/embeddings (the brief's own
+explicit "a clean deterministic retrieval layer is preferable at P24" —
+`searchMemoryRecords` is a pure, bounded, fully deterministic filter+sort
+function, nothing more); any UI (consistent with every prior phase's
+identical deferral).
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`

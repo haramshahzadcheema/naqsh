@@ -115,6 +115,13 @@ import {
   type OptimizationResult
 } from "./optimization-types.js";
 import {
+  MEMORY_KINDS,
+  MEMORY_PROVENANCE_KINDS,
+  MEMORY_STATUSES,
+  type MemoryReferences,
+  type MemoryRecord
+} from "./memory-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
@@ -2644,6 +2651,133 @@ export function assertOptimizationResult(value: unknown): asserts value is Optim
   invariant(isIsoTimestamp(value.computedAt), "optimizationResult.computedAt must be an ISO timestamp");
   invariant(isEntitySource(value.source), "invalid optimizationResult.source");
   invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "optimizationResult.metadata must be a JSON-serializable object");
+}
+
+function isMemoryKind(value: unknown): value is (typeof MEMORY_KINDS)[number] {
+  return typeof value === "string" && (MEMORY_KINDS as readonly string[]).includes(value);
+}
+
+function isMemoryProvenanceKind(value: unknown): value is (typeof MEMORY_PROVENANCE_KINDS)[number] {
+  return typeof value === "string" && (MEMORY_PROVENANCE_KINDS as readonly string[]).includes(value);
+}
+
+function isMemoryStatus(value: unknown): value is (typeof MEMORY_STATUSES)[number] {
+  return typeof value === "string" && (MEMORY_STATUSES as readonly string[]).includes(value);
+}
+
+const MEMORY_REFERENCE_FIELDS = [
+  "requirementIds",
+  "constraintIds",
+  "decisionIds",
+  "preferenceIds",
+  "objectIds",
+  "experimentIds",
+  "candidateIds",
+  "verificationResultIds",
+  "optimizationResultIds",
+  "researchEvidenceIds",
+  "sourceIds",
+  "checkpointIds",
+  "changeIds"
+] as const;
+
+function assertMemoryReferences(value: unknown): asserts value is MemoryReferences {
+  invariant(isPlainObject(value), "memoryRecord.references must be an object");
+  for (const field of MEMORY_REFERENCE_FIELDS) {
+    invariant(isStringArray(value[field]), `memoryRecord.references.${field} must be an array of strings`);
+  }
+}
+
+function memoryReferenceCount(references: MemoryReferences): number {
+  return MEMORY_REFERENCE_FIELDS.reduce((total, field) => total + references[field].length, 0);
+}
+
+/**
+ * Phase 24. Enforces two structural rules beyond plain shape-checking (see
+ * `memory-types.ts`'s own doc comment for the full reasoning):
+ *
+ *   1. `confidence` is non-null ONLY for `provenanceKind: "model_synthesis"`
+ *      -- every other provenance kind is grounded in a deterministic record
+ *      or a plain statement, neither of which a probabilistic confidence
+ *      number could qualify without implying the underlying fact is itself
+ *      uncertain (brief: "Do not allow confidence to override deterministic
+ *      verification").
+ *   2. Six provenance kinds REQUIRE a non-empty reference into the specific
+ *      store/entity kind they claim to be grounded in -- a memory cannot
+ *      claim `"verification_result"` provenance while carrying zero
+ *      `references.verificationResultIds`, matching the brief's own
+ *      explicit examples ("The memory must reference the experiment rather
+ *      than fabricate its result" / "the actual OptimizationResult" / "Never
+ *      allow memory summaries to override verification results"). A
+ *      `"model_synthesis"` memory must carry AT LEAST ONE reference of ANY
+ *      kind -- the brief's "Any model-generated memory must retain... source
+ *      references" applied as a real, checked minimum rather than a
+ *      convention.
+ */
+export function assertMemoryRecord(value: unknown): asserts value is MemoryRecord {
+  invariant(isPlainObject(value), "memoryRecord must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "memoryRecord.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "memoryRecord.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "memoryRecord.projectVersion must be a positive integer"
+  );
+  invariant(isMemoryKind(value.kind), "invalid memoryRecord.kind");
+  invariant(typeof value.title === "string" && value.title.trim().length > 0, "memoryRecord.title is required");
+  invariant(typeof value.content === "string" && value.content.trim().length > 0, "memoryRecord.content is required");
+  invariant(isMemoryProvenanceKind(value.provenanceKind), "invalid memoryRecord.provenanceKind");
+  invariant(
+    value.confidence === null || (typeof value.confidence === "number" && Number.isFinite(value.confidence) && value.confidence >= 0 && value.confidence <= 1),
+    "memoryRecord.confidence must be a finite number in [0, 1] or null"
+  );
+  assertMemoryReferences(value.references);
+  invariant(isMemoryStatus(value.status), "invalid memoryRecord.status");
+  invariant(
+    value.supersedesMemoryId === null || (typeof value.supersedesMemoryId === "string" && value.supersedesMemoryId.length > 0),
+    "memoryRecord.supersedesMemoryId must be a non-empty string or null"
+  );
+  invariant(
+    value.supersededByMemoryId === null || (typeof value.supersededByMemoryId === "string" && value.supersededByMemoryId.length > 0),
+    "memoryRecord.supersededByMemoryId must be a non-empty string or null"
+  );
+  invariant(isEntitySource(value.source), "invalid memoryRecord.source");
+  invariant(isIsoTimestamp(value.createdAt), "memoryRecord.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "memoryRecord.updatedAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "memoryRecord.metadata must be a JSON-serializable object");
+
+  invariant(value.supersedesMemoryId !== value.id, "memoryRecord cannot supersede itself");
+  invariant(value.supersededByMemoryId !== value.id, "memoryRecord cannot be superseded by itself");
+
+  // status <-> supersededByMemoryId consistency (mirrors Clarification's
+  // identical status <-> supersededBy discipline, P19).
+  if (value.status === "superseded") {
+    invariant(value.supersededByMemoryId !== null, 'memoryRecord.status "superseded" requires a non-null supersededByMemoryId');
+  } else {
+    invariant(value.supersededByMemoryId === null, 'a non-superseded memoryRecord must not carry supersededByMemoryId');
+  }
+
+  // confidence <-> provenanceKind consistency (see this function's own doc comment).
+  if (value.provenanceKind === "model_synthesis") {
+    invariant(memoryReferenceCount(value.references) > 0, 'memoryRecord.provenanceKind "model_synthesis" requires at least one non-empty references field');
+  } else {
+    invariant(value.confidence === null, `memoryRecord.confidence must be null unless provenanceKind is "model_synthesis"`);
+  }
+
+  // provenanceKind <-> grounding-reference consistency (see this function's own doc comment).
+  const groundingRequirements: Partial<Record<(typeof MEMORY_PROVENANCE_KINDS)[number], keyof MemoryReferences>> = {
+    verification_result: "verificationResultIds",
+    optimization_result: "optimizationResultIds",
+    experiment_result: "experimentIds",
+    research_evidence: "researchEvidenceIds",
+    change_model: "changeIds"
+  };
+  const requiredField = groundingRequirements[value.provenanceKind as (typeof MEMORY_PROVENANCE_KINDS)[number]];
+  if (requiredField) {
+    invariant(
+      value.references[requiredField].length > 0,
+      `memoryRecord.provenanceKind "${value.provenanceKind}" requires a non-empty references.${requiredField}`
+    );
+  }
 }
 
 /**

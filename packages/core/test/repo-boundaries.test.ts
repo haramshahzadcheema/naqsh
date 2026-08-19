@@ -2326,3 +2326,139 @@ describe("P23 multi-objective optimization: deterministic-only math, no Gemini v
     }
   });
 });
+
+describe("P24 long-term engineering memory: memory is not the World Model, no fabricated grounding, deterministic-only retrieval, no P25/P26 leakage", () => {
+  // Phase 24's central architectural rule: "MEMORY IS NOT THE WORLD MODEL."
+  // Every check below proves one specific way that boundary could have
+  // silently eroded: a MemoryRecord never lives in WorldModelState or goes
+  // through the Change Model, a memory claiming grounded provenance can
+  // only ever exist with a real reference into the store/entity it claims,
+  // search/ranking never depends on a model call, and project isolation is
+  // enforced by every read/write tool, not merely documented.
+  const p24CoreFiles = [
+    "packages/core/src/memory-store.ts",
+    "packages/core/src/memory-semantics.ts",
+    "packages/core/src/memory-add-tool.ts",
+    "packages/core/src/memory-search-tool.ts",
+    "packages/core/src/memory-get-tool.ts",
+    "packages/core/src/memory-archive-tool.ts",
+    "packages/core/src/memory-supersede-tool.ts"
+  ];
+
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("no arbitrary code execution anywhere in the P24 files", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of p24CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("no P24 core file imports @naqsh/adapters -- core stays adapter-agnostic, same boundary every prior phase already enforces", () => {
+    for (const relativePath of p24CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    }
+  });
+
+  it("no P24 core file imports ModelProvider or EnvironmentAdapter -- memory search/ranking is deterministic code only, never a model call, matching the brief's explicit 'Do NOT use an LLM to secretly decide which memory is relevant'", () => {
+    for (const relativePath of p24CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, /from\s+["'`]\.\/model-provider(-contract)?\.js["'`]/, `${relativePath} must not import ModelProvider`);
+      assert.doesNotMatch(code, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import EnvironmentAdapter`);
+    }
+  });
+
+  it("MEMORY IS NOT THE WORLD MODEL: no P24 file imports the transition/reducer machinery or calls updateWorldModel/recordTransition -- a MemoryRecord is never written via the Change Model", () => {
+    for (const relativePath of p24CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, /from\s+["'`]\.\/transitions\.js["'`]/, `${relativePath} must not import the World Model transition/reducer machinery`);
+      assert.doesNotMatch(code, /updateWorldModel\s*\(/, `${relativePath} must not call updateWorldModel`);
+      assert.doesNotMatch(code, /recordTransition\s*\(/, `${relativePath} must not call recordTransition`);
+    }
+  });
+
+  it("memory-types.ts references every related entity (Decision/Preference/Requirement/Constraint/Experiment/Candidate/VerificationResult/OptimizationResult/ResearchEvidence/Source/Checkpoint/Change) by id only -- it never re-declares one as a duplicated shape", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/memory-types.ts"), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /export\s+interface\s+(Decision|Preference|Requirement|Constraint|Experiment|Candidate|VerificationResult|OptimizationResult|ResearchEvidence|Source|Checkpoint|Change)\b/,
+      "memory-types.ts must not define a second, duplicate entity -- P24 types reference every related entity by id"
+    );
+  });
+
+  it("all five P24 tools are classified into the 'memory' target, with read tools observe and write/lifecycle tools suggest -- none of them ever mutate the World Model or the environment", () => {
+    const toolClassifications: Record<string, string> = {
+      "packages/core/src/memory-add-tool.ts": "suggest",
+      "packages/core/src/memory-search-tool.ts": "observe",
+      "packages/core/src/memory-get-tool.ts": "observe",
+      "packages/core/src/memory-archive-tool.ts": "suggest",
+      "packages/core/src/memory-supersede-tool.ts": "suggest"
+    };
+    for (const [relativePath, mutation] of Object.entries(toolClassifications)) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, new RegExp(`mutation:\\s*["'\`]${mutation}["'\`]`), `${relativePath} must declare mutation: "${mutation}"`);
+      assert.match(contents, /target:\s*["'`]memory["'`]/, `${relativePath} must declare target: "memory"`);
+    }
+  });
+
+  it("record-candidate-metric-value-tool.ts-style grounding gate is real code: assertMemoryRecord enforces confidence is null unless provenanceKind is model_synthesis, and requires a real reference for verification_result/optimization_result/experiment_result/research_evidence/change_model provenance", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/schemas/src/validators.ts"), "utf8"));
+    assert.match(code, /memoryRecord\.confidence must be null unless provenanceKind is "model_synthesis"/, "assertMemoryRecord must reject a stray confidence outside model_synthesis provenance");
+    assert.match(code, /groundingRequirements/, "assertMemoryRecord must enforce a real reference for each grounded provenanceKind");
+  });
+
+  it("MemoryStore.supersede defends against cycles -- the check is real code, not merely documented", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/memory-store.ts"), "utf8"));
+    assert.match(code, /isReachableViaSupersession/, "memory-store.ts must actually check reachability before applying a supersede transition");
+    assert.match(code, /would create a cycle/, "memory-store.ts must reject a supersede call that would create a cycle");
+  });
+
+  it("PROJECT ISOLATION IS CRITICAL: every P24 tool reads projectId from live WorldModelState (never a caller-supplied field) and scopes its store access to the current project", () => {
+    const toolFiles = [
+      "packages/core/src/memory-add-tool.ts",
+      "packages/core/src/memory-search-tool.ts",
+      "packages/core/src/memory-get-tool.ts",
+      "packages/core/src/memory-archive-tool.ts",
+      "packages/core/src/memory-supersede-tool.ts"
+    ];
+    for (const relativePath of toolFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.match(code, /getState\s*\(\s*\)/, `${relativePath} must read live WorldModelState via getState()`);
+      assert.match(
+        code,
+        /listForProject\s*\(\s*state\.project\.id\s*\)|\.projectId\s*!==\s*state\.project\.id/,
+        `${relativePath} must scope its memory access to the current project (listForProject or an explicit projectId comparison)`
+      );
+    }
+  });
+
+  it("no P24 core file implements bounded autonomous experimentation or an environment-independent agent loop -- those are P25/P26, out of scope this phase", () => {
+    const forbiddenPatterns = [/setInterval\s*\(/, /setTimeout\s*\(/, /class\s+\w*Autonomous\w*\b/i, /new\s+EnvironmentAdapter\b/];
+    for (const relativePath of p24CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not contain ${pattern} -- that would be P25/P26 scope creep`);
+      }
+    }
+  });
+
+  it("searchMemoryRecords and getRelatedMemoryRecords are bounded -- MAX_MEMORY_SEARCH_RESULTS is real code, not merely documented", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/memory-semantics.ts"), "utf8"));
+    assert.match(code, /MAX_MEMORY_SEARCH_RESULTS/, "memory-semantics.ts must define and use a real upper bound on search results");
+    assert.match(code, /Math\.min\s*\(\s*requestedLimit,\s*MAX_MEMORY_SEARCH_RESULTS\s*\)/, "searchMemoryRecords must actually clamp the requested limit");
+  });
+});

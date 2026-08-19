@@ -15,6 +15,7 @@ export * from "./build-types.js";
 export * from "./research-types.js";
 export * from "./candidate-types.js";
 export * from "./optimization-types.js";
+export * from "./memory-types.js";
 export * from "./transitions.js";
 export * from "./ids.js";
 export * from "./tool-schema.js";
