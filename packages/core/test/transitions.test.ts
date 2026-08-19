@@ -176,6 +176,52 @@ describe("updateWorldModel: project transitions increment version and validate",
     );
   });
 
+  it("updates an experiment by id while keeping the id stable (P22 -- closes the P1 gap where Experiment had lifecycle fields but no reducer to change them after creation)", () => {
+    const state = buildState();
+    const withExperiment = updateWorldModel(state, {
+      kind: "add_experiment",
+      experiment: createExperiment({ objective: "Test candidate A", hypothesis: "It will pass check X.", status: "running" })
+    });
+    const experimentId = withExperiment.project.experiments[0]!.id;
+    const updated = updateWorldModel(withExperiment, {
+      kind: "update_experiment",
+      experimentId,
+      patch: { status: "complete", buildResultId: "build_1", result: { buildSuccess: true } }
+    });
+    assert.equal(updated.project.experiments[0]!.id, experimentId);
+    assert.equal(updated.project.experiments[0]!.status, "complete");
+    assert.equal(updated.project.experiments[0]!.buildResultId, "build_1");
+  });
+
+  it("update_experiment can be applied twice in sequence -- e.g. build result first, verification results attached afterward", () => {
+    const state = buildState();
+    const withExperiment = updateWorldModel(state, {
+      kind: "add_experiment",
+      experiment: createExperiment({ objective: "Test candidate A", hypothesis: "x", status: "running", candidateId: "candidate_1" })
+    });
+    const experimentId = withExperiment.project.experiments[0]!.id;
+    const afterBuild = updateWorldModel(withExperiment, {
+      kind: "update_experiment",
+      experimentId,
+      patch: { status: "complete", buildResultId: "build_1" }
+    });
+    const afterVerification = updateWorldModel(afterBuild, {
+      kind: "update_experiment",
+      experimentId,
+      patch: { verificationResultIds: ["verif_1", "verif_2"] }
+    });
+    const experiment = afterVerification.project.experiments[0]!;
+    assert.equal(experiment.candidateId, "candidate_1", "fields not touched by either patch survive both updates");
+    assert.equal(experiment.buildResultId, "build_1", "fields set by the FIRST patch survive the SECOND patch");
+    assert.deepEqual(experiment.verificationResultIds, ["verif_1", "verif_2"]);
+  });
+
+  it("rejects update_experiment for an unknown experimentId as a no-op, not an error (mirrors update_requirement's identical behavior)", () => {
+    const state = buildState();
+    const next = updateWorldModel(state, { kind: "update_experiment", experimentId: "does_not_exist", patch: { status: "complete" } });
+    assert.equal(next.project.experiments.length, 0);
+  });
+
   it("updates a requirement by id while keeping the id stable", () => {
     const state = buildState();
     const withRequirement = updateWorldModel(state, {

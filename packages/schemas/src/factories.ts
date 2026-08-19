@@ -77,6 +77,8 @@ import {
   WorldModelValidationError
 } from "./validators.js";
 import type { Proposal, ProposalInput } from "./proposal-types.js";
+import { assertCandidate } from "./validators.js";
+import type { Candidate, CandidateInput } from "./candidate-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
 import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
@@ -296,6 +298,11 @@ export function createExperiment(input: ExperimentInput = {}): Experiment {
     status: input.status ?? "planned",
     result: input.result ?? null,
     conclusion: input.conclusion ?? null,
+    candidateId: input.candidateId ?? null,
+    buildResultId: input.buildResultId ?? null,
+    verificationResultIds: safeStructuredClone(input.verificationResultIds ?? [], "experiment.verificationResultIds"),
+    checkpointBeforeId: input.checkpointBeforeId ?? null,
+    checkpointAfterId: input.checkpointAfterId ?? null,
     source: input.source ?? "system",
     createdAt,
     updatedAt: input.updatedAt ?? createdAt,
@@ -1215,6 +1222,39 @@ export function createProposal(input: ProposalInput): Proposal {
   };
   assertProposal(proposal);
   return deepFreeze(proposal);
+}
+
+/** Builds a `Candidate` (P22) -- mirrors `createProposal`'s exact shape.
+ * `status` defaults to `"proposed"` (a freshly created candidate is
+ * exactly that -- not yet experimented on); nothing in this factory ever
+ * produces `"tested"`/`"abandoned"` unless the caller explicitly asks for
+ * it, matching `DesignSpecificationStatus`'s identical "only produce a
+ * documented subset by default" discipline. */
+export function createCandidate(input: CandidateInput): Candidate {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const candidate: Candidate = {
+    id: input.id ?? createId("candidate"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    planId: input.planId,
+    planStepId: input.planStepId ?? null,
+    designSpecificationId: input.designSpecificationId ?? null,
+    proposalId: input.proposalId ?? null,
+    relevantRequirementIds: safeStructuredClone(input.relevantRequirementIds ?? [], "candidate.relevantRequirementIds"),
+    relevantConstraintIds: safeStructuredClone(input.relevantConstraintIds ?? [], "candidate.relevantConstraintIds"),
+    relevantResearchEvidenceIds: safeStructuredClone(input.relevantResearchEvidenceIds ?? [], "candidate.relevantResearchEvidenceIds"),
+    assumptionIds: safeStructuredClone(input.assumptionIds ?? [], "candidate.assumptionIds"),
+    hypothesis: input.hypothesis,
+    rationale: input.rationale,
+    parentCandidateId: input.parentCandidateId ?? null,
+    status: input.status ?? "proposed",
+    source: input.source ?? "agent",
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
+    metadata: safeStructuredClone(input.metadata ?? {}, "candidate.metadata")
+  };
+  assertCandidate(candidate);
+  return deepFreeze(candidate);
 }
 
 /** `toolResult` is cloned+frozen along with everything else via `deepFreeze`

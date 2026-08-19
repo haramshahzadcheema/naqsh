@@ -8,6 +8,7 @@ import type {
 import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model-types.js";
 import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
+import type { Candidate } from "./candidate-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
@@ -22,6 +23,7 @@ import {
   assertApproval,
   assertAuthorizationDecision,
   assertAutonomyGrant,
+  assertCandidate,
   assertChange,
   assertCheck,
   assertCheckpoint,
@@ -245,6 +247,18 @@ export function deserializeProposal(serialized: string): Proposal {
   requireNonEmptyString(serialized, "serialized proposal is required");
   const parsed: unknown = JSON.parse(serialized);
   assertProposal(parsed);
+  return parsed;
+}
+
+export function serializeCandidate(candidate: Candidate): string {
+  assertCandidate(candidate);
+  return JSON.stringify(candidate);
+}
+
+export function deserializeCandidate(serialized: string): Candidate {
+  requireNonEmptyString(serialized, "serialized candidate is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertCandidate(parsed);
   return parsed;
 }
 

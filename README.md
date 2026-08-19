@@ -1844,16 +1844,192 @@ tested code path (an earlier audit pass caught this hardcoded to
 explicit `provenance`). No separate "uploaded
 document" system was built.
 
-**Deliberately NOT implemented (P22+ territory).** Multiple candidate
-designs or research alternatives compared against each other (P22);
-multi-objective optimization over research findings (P23); persistent
-long-term memory of past research across projects/sessions (P24);
-background/unattended research experimentation (P25); a sophisticated
-universal source-trust-ranking engine (deferred past P23); a real
-live-web `ResearchProvider` implementation (explicitly out of scope this
-phase — see above); any UI (`apps/web` has no existing foundation to
-extend — building one from scratch was judged out of scope for "minimum
-UI only," consistent with every prior phase's identical deferral).
+**Deliberately NOT implemented in P21 (see P22 below for what changed).**
+Multiple candidate designs or research alternatives compared against each
+other (P22, now implemented — see below); multi-objective optimization
+over research findings (still P23); persistent long-term memory of past
+research across projects/sessions (still P24); background/unattended
+research experimentation (still P25); a sophisticated universal
+source-trust-ranking engine (deferred past P23); a real live-web
+`ResearchProvider` implementation (explicitly out of scope this phase —
+see above); any UI (`apps/web` has no existing foundation to extend —
+building one from scratch was judged out of scope for "minimum UI only,"
+consistent with every prior phase's identical deferral).
+
+## Multiple Candidate Designs / Experimentation (P22)
+
+**What this phase answers.** Every prior phase produced exactly ONE
+alternative per plan step (one `DesignSpecification`, one `Proposal`, one
+build). Nothing let NAQSH consider several competing approaches to the
+same step side by side, run each through a real, isolated experiment, and
+compare what actually happened — without deleting or corrupting the
+others. P22 is that capability, and only that: it does NOT rank, score, or
+optimize across candidates (P23), does not remember candidates across
+projects/sessions (P24), does not run experiments autonomously/unattended
+(P25), and does not add a UI.
+
+**`Candidate` (new, in `packages/schemas/src/candidate-types.ts`) — a
+process record, not `Project` state.** Mirrors `DesignSpecification`
+(P20)/`Proposal` (P10)'s identical "describes a proposed alternative, not
+yet accepted project truth" pattern: it lives in its own store
+(`CandidateStore`, core), never in `Project`, never added via a
+`WorldModelTransition`. A `Candidate` is one level ABOVE a
+`DesignSpecification` — it is the alternative itself (its `hypothesis`,
+`rationale`, and which `relevantRequirementIds`/`relevantConstraintIds`/
+`relevantResearchEvidenceIds`/`assumptionIds` it is trying to satisfy),
+and REFERENCES a `DesignSpecification`/`Proposal` by id rather than
+duplicating either. `parentCandidateId` records lineage among coexisting
+ALTERNATIVES (a tree — several candidates can share one parent, unlike
+`DesignSpecification`'s strict linear `supersedes` chain), and
+`CandidateStore.listChildren()` returns direct children only for exactly
+that reason. There is deliberately no "selected"/"optimal"/"best"
+`CandidateStatus` — recording that a candidate was chosen reuses the
+EXISTING `Decision` entity (P1) plus `EntityRelationship`/`metadata`, the
+same "reuse the extension point" convention P18 already established,
+never a new status this phase would have to invent.
+
+**Candidates sharing `(planId, planStepId)` ARE the "candidate set" — no
+separate grouping entity.** The same convention multiple `Proposal`s/
+`DesignSpecification`s for one plan step already use.
+
+**`Experiment` (P1) extended additively, not duplicated.** The brief
+required evaluating the existing model first: P1–P21 never needed an
+experiment to reference which candidate produced it, which build it came
+from, which checks were run against it, or which environment checkpoint
+bounded it, because nothing before P22 executed more than one alternative
+per plan step. Five new, all-optional/nullable fields were added —
+`candidateId`, `buildResultId`, `verificationResultIds`,
+`checkpointBeforeId`, `checkpointAfterId` — all defaulting to `null`/`[]`
+in `createExperiment`, so every P1–P21 experiment remains valid unchanged.
+A genuine, previously-unnoticed gap was closed in the same pass: no
+`update_experiment` `WorldModelTransition` ever existed despite
+`Experiment.status`/`.result`/`.conclusion` implying a lifecycle — added
+now, mirroring `update_requirement`'s exact `{id, patch}` shape.
+
+**`create_candidate` (tool, `mutation: "suggest"`, `target:
+"world_model"`) — flat, already-decided fields in, a validated, stored
+`Candidate` out.** Mirrors `create_check`'s (P16) exact shape: no second
+Gemini-calling orchestration function was built (unlike
+`generatePlanProposal`, which both a function AND `create_plan` wrap) —
+the agent's hypothesis/rationale come from its own normal tool-calling
+reasoning, and this tool deterministically validates what it's handed.
+Because this repository has no `PlanStore` (the same deferral
+`create_proposal` already documents), the caller supplies the full `plan`
+value directly; it is deep-validated (`assertPlan`) before anything else
+runs. `projectId`/`projectVersion` are read from LIVE `WorldModelState`,
+never caller-supplied, closing the obvious spoofing path. Semantic
+validation (`candidate-semantics.ts`, `validateCandidateSemantics`) is a
+pure function — mirrors `validateDesignSpecificationSemantics`'s exact
+split between shape (`assertCandidate`) and cross-reference validation —
+checking the candidate's plan/project match, that its requirement/
+constraint references were actually cited by its plan step (or the
+whole-plan union, for a step-less candidate), that its assumptions exist
+in the plan, that its requirement/constraint/research-evidence references
+resolve in the CURRENT project, and that its `designSpecificationId`/
+`parentCandidateId` (when supplied) resolve to real records generated for
+the SAME plan/step. A candidate can never become an unexplained orphan.
+
+**`add_experiment`/`update_experiment` (tools, new) — a PRE-EXISTING gap
+closed by the P22 audit pass.** `add_experiment` has been a registered
+`WorldModelTransition` since P1, but no `Tool` ever wrapped it — nothing
+in P1–P21 needed to record an experiment at runtime (only tests called
+`recordTransition` directly). Both are classified `mutation: "mutate"`,
+`target: "world_model"` — `Experiment` lives in `Project.experiments`
+exactly like `Requirement`/`Source`, so recording or updating one requires
+the same real P4 approval any other World Model write does; a model never
+gains extra permission merely because it is running multiple candidates
+(the audit brief's own explicit AUDIT #7 requirement). `update_experiment`'s
+input schema deliberately exposes only the OUTCOME fields (`status`,
+`result`, `conclusion`, `buildResultId`, `verificationResultIds`,
+`checkpointAfterId`) — never `id`/`objective`/`hypothesis`/`candidateId`/
+`checkpointBeforeId`/`source`/`createdAt`, so a later call can never quietly
+rewrite which candidate an experiment "really" tested. It also verifies
+`experimentId` resolves to a real experiment before recording the
+transition (`experiment_not_found`), since the reducer itself silently
+no-ops on an unknown id (matching `update_requirement`'s already-established
+P1 behavior) — the tool is what turns a caller's mistake into a real error.
+
+**`experiment-executor.ts` (`executeExperimentForCandidate`) — the
+execution half, and the isolation-critical piece.** A plain orchestrating
+core function (never a registered `Tool` itself), mirroring
+`executeBuildForDesignSpecification`'s (P20) exact shape EXACTLY: it takes
+only a `registry` — never its own `getState`/`setState`/`history`. An
+earlier version of this file called `recordTransition` directly with its
+own state/history parameters to record `add_experiment`/`update_experiment`,
+which meant those two writes completely skipped the `authorize` hook,
+unlike every other step in this same function — precisely the "P22
+shortcut mutates state directly, skipping the Tool boundary" failure mode
+a subsequent audit pass caught and fixed by building the two tools above.
+Order of operations, now ENTIRELY through `executeTool`: (1) capture an
+isolation baseline by calling the registered `create_checkpoint` TOOL —
+never a direct `CheckpointStore`/`ArtifactStore` write, never a second
+checkpoint mechanism; (2) record the `Experiment` as `"running"` via the
+registered `add_experiment` TOOL, with `candidateId` and
+`checkpointBeforeId` set; (3) run the candidate's build via the EXISTING,
+UNMODIFIED `executeBuildForDesignSpecification` (P20), through the exact
+same `executeTool`/`authorize` boundary every other tool call goes
+through — no bypass path; (4) update the `Experiment` via the registered
+`update_experiment` TOOL with the build outcome. Running
+`create_check`/`run_verification` against the result, and any checkpoint
+RESTORE, are deliberately SEPARATE, explicit steps the caller performs
+afterward — this file never auto-restores, which is exactly what lets a
+caller (or a test) prove isolation instead of having it silently assumed.
+
+**Isolation, proven adversarially, not just documented.** The critical
+test (`experiment-executor.test.ts`): Candidate A runs and genuinely
+mutates the mock environment (creates a real object); the caller then
+calls the EXISTING `restore_checkpoint` tool with A's `checkpointBeforeId`;
+Candidate B then runs a DIFFERENT design from that restored baseline —
+and its resulting environment object is asserted to be neither A's nor
+contaminated by it. One consequence worth naming explicitly: because
+`restore_checkpoint` (P15, unmodified) restores the World Model and the
+environment TOGETHER, atomically — "git revert" semantics established
+back in P15 — restoring to a checkpoint taken BEFORE Candidate A's
+`Experiment` existed also reverts that `Experiment` out of the CURRENT
+live `Project.experiments`. This is not a silent deletion: the append-only
+`ChangeHistory` (never rewritten, only ever appended to, even by
+`restore_checkpoint` itself) still records that A's experiment was
+created, ran, failed, and was later reverted — the full audit trail
+survives even when live state moves on. `CandidateStore` itself is
+untouched by any restore, since it is a process store, not `Project`
+state — Candidate A's own record persists unconditionally. Additional
+regression coverage (added during the audit pass) proves isolation holds
+on the success/success path too (not only success/failure), that a
+restore against an unknown checkpoint id is reported as a real error
+rather than a silent no-op, and that three sequential candidates
+(fail/succeed/succeed) each start from a clean baseline in turn rather
+than accumulating state.
+
+**`compareCandidates` (core function) + `compare_candidates` (tool,
+`mutation: "observe"`, `target: "world_model"`) — structural comparison,
+explicitly no scoring.** Requires every supplied candidate to share the
+same `(planId, planStepId)` — the "candidate set" itself. For each
+candidate, returns its hypothesis/rationale/status/references AND every
+`Experiment` that named it (`Experiment.candidateId`), each with its
+`buildResultId`, checkpoint ids, and — when a `VerificationResultStore` is
+supplied — a summary of each check's `checkId`/`status` resolved from its
+`verificationResultIds`. There is no `score`/`rank`/`winner`/`optimal`
+field anywhere in the result, no sort-based ordering of candidates, and no
+rollup of "did this candidate pass everything" — a repo-boundaries guard
+enforces this structurally, not just by convention. A caller who wants a
+verdict draws it themselves; P23 is where the system draws one.
+
+**Security and architecture, unchanged.** No new execution mechanism (no
+`eval`/`Function`/`child_process`/dynamic `import()` in any P22 file,
+repo-boundaries-enforced); no bypass of `executeTool`/`authorize`
+anywhere in the candidate-execution path; `CandidateStore` never imports
+`@naqsh/adapters`; `Candidate`/`CandidateStore` are both immutable-once-
+saved (no `update`/`delete` method exists on either); no P22 file
+duplicates P16/P17's verification machinery or P9's Plan machinery.
+
+**Deliberately NOT implemented (P23+ territory).** Scoring, ranking, or
+Pareto analysis across candidates (P23); persistent long-term memory of
+past candidates/experiments across projects/sessions (P24); autonomous/
+unattended experimentation (a human or agent must explicitly call
+`create_candidate`/`executeExperimentForCandidate` for each one — P25);
+multi-environment support beyond the single connected `EnvironmentAdapter`
+session (P26); any UI (consistent with every prior phase's identical
+deferral — `apps/web` has no existing foundation to extend).
 
 ## Error model
 

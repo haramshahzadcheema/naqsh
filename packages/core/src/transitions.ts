@@ -246,6 +246,27 @@ const registry: TransitionRegistry = {
     describeChange: describeAdd("experiment", (project) => project.experiments),
     resolveForReplay: (transition, after) => ({ ...transition, experiment: after as never })
   },
+  update_experiment: {
+    target: "project",
+    mutates: true,
+    apply: (project, transition) => ({
+      ...project,
+      experiments: project.experiments.map((experiment) =>
+        experiment.id === transition.experimentId
+          ? createExperiment({ ...experiment, ...transition.patch, id: experiment.id })
+          : experiment
+      )
+    }),
+    describeChange: (before, after, transition) => ({
+      entityType: "experiment",
+      entityId: transition.experimentId,
+      before: before.experiments.find((experiment) => experiment.id === transition.experimentId) ?? null,
+      after: after.experiments.find((experiment) => experiment.id === transition.experimentId) ?? null
+    }),
+    // experimentId is explicit and patch never generates a new id --
+    // always deterministic as-is (mirrors update_requirement exactly).
+    resolveForReplay: (transition) => transition
+  },
   add_preference: {
     target: "project",
     mutates: true,

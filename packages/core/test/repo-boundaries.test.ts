@@ -2036,3 +2036,151 @@ describe("P21 traceable engineering research: bounded provider boundary, no arbi
     assert.doesNotMatch(contents, /export\s+interface\s+Evidence\b/, "research-types.ts must not export a bare `Evidence` interface -- that name is already P16's (verification-types.ts); this file's equivalent concept must stay named ResearchEvidence");
   });
 });
+
+describe("P22 multiple candidate designs / experimentation: no duplicated models, no bypassed authorization, no accidentally-implemented P23 ranking, correct tool classifications, no arbitrary execution", () => {
+  // Phase 22's central architectural rules: (1) `Candidate` REFERENCES every
+  // existing entity it relates to (Objective/Requirement/Plan/Proposal/
+  // DesignSpecification/Experiment/ResearchEvidence) by id, never
+  // duplicating one; (2) candidate EXECUTION goes through the exact same
+  // executeTool/authorize boundary as everything else -- no second
+  // execution mechanism, no direct EnvironmentAdapter calls; (3) candidate
+  // COMPARISON is structural only -- no scoring/ranking/"winner" logic,
+  // which is explicitly P23's job, not this phase's. Every check below
+  // proves one specific way that boundary could have silently eroded.
+  const p22CoreFiles = [
+    "packages/core/src/candidate-semantics.ts",
+    "packages/core/src/candidate-store.ts",
+    "packages/core/src/create-candidate-tool.ts",
+    "packages/core/src/add-experiment-tool.ts",
+    "packages/core/src/update-experiment-tool.ts",
+    "packages/core/src/experiment-executor.ts",
+    "packages/core/src/candidate-comparison.ts",
+    "packages/core/src/candidate-comparison-tool.ts"
+  ];
+
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("no arbitrary code execution anywhere in the P22 files", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of p22CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("no P22 core file imports @naqsh/adapters -- core stays adapter-agnostic, same boundary every prior phase already enforces", () => {
+    for (const relativePath of p22CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    }
+  });
+
+  it("create_candidate is classified suggest/world_model; compare_candidates is classified observe/world_model -- neither ever mutates the World Model or the environment", () => {
+    const createCandidateContents = readFileSync(join(repoRoot, "packages/core/src/create-candidate-tool.ts"), "utf8");
+    assert.match(createCandidateContents, /mutation:\s*["'`]suggest["'`]/, "create-candidate-tool.ts must declare mutation: \"suggest\"");
+    assert.match(createCandidateContents, /target:\s*["'`]world_model["'`]/, "create-candidate-tool.ts must declare target: \"world_model\"");
+
+    const compareCandidatesContents = readFileSync(join(repoRoot, "packages/core/src/candidate-comparison-tool.ts"), "utf8");
+    assert.match(compareCandidatesContents, /mutation:\s*["'`]observe["'`]/, "candidate-comparison-tool.ts must declare mutation: \"observe\"");
+    assert.match(compareCandidatesContents, /target:\s*["'`]world_model["'`]/, "candidate-comparison-tool.ts must declare target: \"world_model\"");
+  });
+
+  it("CandidateStore is immutable-once-saved -- no update/delete method exists, matching DesignSpecificationStore/CheckStore's identical discipline", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/candidate-store.ts"), "utf8");
+    assert.doesNotMatch(contents, /^\s*update\s*\(/m, "candidate-store.ts must not expose an update() method");
+    assert.doesNotMatch(contents, /^\s*delete\s*\(/m, "candidate-store.ts must not expose a delete() method");
+  });
+
+  it("experiment-executor.ts never touches an EnvironmentAdapter directly -- it only reaches the environment through executeTool, the same boundary every other tool call goes through", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/experiment-executor.ts"), "utf8"));
+    assert.doesNotMatch(code, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, "experiment-executor.ts must not import environment-adapter.js/environment-adapter-contract.ts -- it must call the environment only through registered, authorized tools");
+    assert.doesNotMatch(code, /invokeRegisteredTool/, "experiment-executor.ts must not call invokeRegisteredTool directly -- executeTool is the only sanctioned entry point");
+  });
+
+  it("experiment-executor.ts routes checkpoint capture through the registered create_checkpoint TOOL, not a direct CheckpointStore/ArtifactStore write", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/experiment-executor.ts"), "utf8"));
+    assert.doesNotMatch(code, /from\s+["'`]\.\/checkpoint-store\.js["'`]/, "experiment-executor.ts must not import checkpoint-store.js directly");
+    assert.doesNotMatch(code, /from\s+["'`]\.\/artifact-store\.js["'`]/, "experiment-executor.ts must not import artifact-store.js directly");
+    assert.match(code, /toolName:\s*["'`]create_checkpoint["'`]/, "experiment-executor.ts must capture its isolation baseline via the create_checkpoint tool");
+  });
+
+  it("AUDIT FIX: experiment-executor.ts records add_experiment/update_experiment through the registered TOOLS (executeTool), never a direct recordTransition call with its own getState/setState/history -- an earlier version bypassed the authorize hook for exactly these two writes", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/experiment-executor.ts"), "utf8"));
+    assert.doesNotMatch(code, /from\s+["'`]\.\/record-transition\.js["'`]/, "experiment-executor.ts must not import record-transition.js directly");
+    assert.doesNotMatch(code, /from\s+["'`]\.\/change-history\.js["'`]/, "experiment-executor.ts must not import change-history.js directly");
+    assert.match(code, /toolName:\s*["'`]add_experiment["'`]/, "experiment-executor.ts must record the experiment via the add_experiment tool");
+    assert.match(code, /toolName:\s*["'`]update_experiment["'`]/, "experiment-executor.ts must record the outcome via the update_experiment tool");
+  });
+
+  it("add_experiment and update_experiment are both classified mutation:'mutate', target:'world_model' -- Experiment lives in Project.experiments exactly like Requirement/Source, so recording/updating one requires the same real approval any other World Model write does", () => {
+    for (const relativePath of ["packages/core/src/add-experiment-tool.ts", "packages/core/src/update-experiment-tool.ts"]) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must declare mutation: "mutate"`);
+      assert.match(contents, /target:\s*["'`]world_model["'`]/, `${relativePath} must declare target: "world_model"`);
+    }
+  });
+
+  it("update_experiment cannot repurpose itself into rewriting an experiment's identity -- its input schema declares no id/candidateId/checkpointBeforeId/objective/hypothesis/source/createdAt property", () => {
+    const contents = readFileSync(join(repoRoot, "packages/core/src/update-experiment-tool.ts"), "utf8");
+    const schemaStart = contents.indexOf("const inputSchema");
+    const schemaEnd = contents.indexOf("const outputSchema");
+    assert.ok(schemaStart >= 0 && schemaEnd > schemaStart, "update-experiment-tool.ts must declare inputSchema before outputSchema");
+    const inputSchemaText = contents.slice(schemaStart, schemaEnd);
+    for (const forbiddenField of ["candidateId:", "checkpointBeforeId:", "objective:", "hypothesis:", "source:", "createdAt:"]) {
+      assert.equal(inputSchemaText.includes(forbiddenField), false, `update-experiment-tool.ts's inputSchema must not declare a "${forbiddenField}" property -- an experiment's identity is fixed at creation`);
+    }
+  });
+
+  it("candidate-comparison.ts and candidate-comparison-tool.ts define no scoring/ranking FIELD or sort-based ranking operation -- that is explicitly P23's job, not this phase's. (Prose that merely explains what is deliberately NOT done -- e.g. this file's own \"never declares a winner\" tool description -- is not scanned; only actual structural code is.)", () => {
+    const forbiddenStructural = [
+      /\b(score|rank|winner|optimal|recommended|pareto)\s*[:?]\s*(number|string|boolean)/i, // a field DECLARATION
+      /\.sort\s*\(/, // any sort-based ordering of candidates
+      /interface\s+\w*(Score|Rank|Ranking)\b/i
+    ];
+    for (const relativePath of ["packages/core/src/candidate-comparison.ts", "packages/core/src/candidate-comparison-tool.ts"]) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenStructural) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not define a scoring/ranking field or sort-based ordering`);
+      }
+    }
+  });
+
+  it("candidate-types.ts references every related entity by id only -- it never re-declares Requirement/Constraint/Plan/Proposal/DesignSpecification/Experiment/ResearchEvidence as a nested/duplicated shape", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/candidate-types.ts"), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /export\s+interface\s+(Requirement|Constraint|Plan|PlanStep|Proposal|DesignSpecification|Experiment|ResearchEvidence|Source)\b/,
+      "candidate-types.ts must not define a second, duplicate entity -- Candidate references every related entity by id"
+    );
+  });
+
+  it("no P22 core file defines a second Gemini-calling orchestration function for candidate generation -- candidate creation happens through the agent's own normal tool-calling loop, not a bespoke generateCandidate()", () => {
+    for (const relativePath of p22CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /function\s+generateCandidate/, `${relativePath} must not define a generateCandidate() orchestration function`);
+      assert.doesNotMatch(contents, /from\s+["'`]\.\/model-provider\.js["'`]/, `${relativePath} must not import ModelProvider -- P22 does not call Gemini directly`);
+    }
+  });
+
+  it("no P22 core file duplicates P16/P17's verification machinery or P9's Plan machinery -- both are reused unmodified", () => {
+    const forbiddenImports = ["./verify.js", "./evidence.js", "./objective-satisfaction.js", "./planner.js"];
+    for (const relativePath of p22CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+      }
+    }
+  });
+});

@@ -304,6 +304,34 @@ describe("world model state", () => {
     const deserialized = deserializeWorldModelState(serializeWorldModelState(state));
     assert.deepEqual(deserialized, state);
   });
+
+  it("AUDIT (P22): round-trips a project whose Experiment carries every P22-added field (candidateId/buildResultId/verificationResultIds/checkpointBeforeId/checkpointAfterId) with full fidelity", () => {
+    const project = createProject({
+      name: "Bracket Study",
+      description: "x",
+      experiments: [
+        {
+          objective: "Test load capacity",
+          hypothesis: "The ribbed plate holds 500N",
+          status: "complete",
+          result: { buildStatus: "completed" },
+          conclusion: "Build completed successfully.",
+          candidateId: "candidate_1",
+          buildResultId: "build_1",
+          verificationResultIds: ["vr_1", "vr_2"],
+          checkpointBeforeId: "chkpt_before_1",
+          checkpointAfterId: "chkpt_after_1"
+        }
+      ]
+    });
+    const state = createWorldModelState({ project, session: { projectId: project.id } });
+    const deserialized = deserializeWorldModelState(serializeWorldModelState(state));
+    assert.deepEqual(deserialized, state);
+    assert.equal(deserialized.project.experiments[0]!.candidateId, "candidate_1");
+    assert.deepEqual(deserialized.project.experiments[0]!.verificationResultIds, ["vr_1", "vr_2"]);
+    assert.equal(deserialized.project.experiments[0]!.checkpointBeforeId, "chkpt_before_1");
+    assert.equal(deserialized.project.experiments[0]!.checkpointAfterId, "chkpt_after_1");
+  });
 });
 
 describe("createObjective", () => {

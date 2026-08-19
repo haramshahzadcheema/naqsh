@@ -69,6 +69,23 @@ export interface AddExperimentTransition extends BaseTransition<"add_experiment"
   experiment: ExperimentInput;
 }
 
+/**
+ * P22: patches a single existing `Experiment` -- closes a gap P1-P21 left
+ * open despite `Experiment` (P1) having always had lifecycle-shaped fields
+ * (`status`/`result`/`conclusion`) that implied progression over time: no
+ * reducer ever existed to actually change them after `add_experiment`
+ * created one. P22 needs this for real -- an experiment is recorded as
+ * `"running"` before a candidate's build executes, then patched to
+ * `"complete"`/`"failed"` with `buildResultId`/`result` once it finishes,
+ * then patched again with `verificationResultIds` once checks run against
+ * what it built. Mirrors `UpdateRequirementTransition`'s exact
+ * `{id, patch}` shape and reducer semantics (merge onto the existing
+ * record, re-validate, keep the id stable). */
+export interface UpdateExperimentTransition extends BaseTransition<"update_experiment"> {
+  experimentId: string;
+  patch: ExperimentInput;
+}
+
 export interface AddPreferenceTransition extends BaseTransition<"add_preference"> {
   preference: PreferenceInput;
 }
@@ -155,6 +172,7 @@ export type ProjectTransition =
   | AddObjectTransition
   | AddDecisionTransition
   | AddExperimentTransition
+  | UpdateExperimentTransition
   | AddPreferenceTransition
   | AddRelationshipTransition
   | RemoveRelationshipTransition

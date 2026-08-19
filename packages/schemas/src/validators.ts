@@ -94,12 +94,14 @@ import {
   type PlanStep
 } from "./plan-types.js";
 import { PROPOSAL_STATUSES, type Proposal } from "./proposal-types.js";
+import { CANDIDATE_STATUSES, type Candidate } from "./candidate-types.js";
 import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
   CHANGE_CAUSE_KINDS,
   ENTITY_KINDS,
+  EXPERIMENT_STATUSES,
   TOOL_ERROR_KINDS,
   TOOL_MUTATION_KINDS,
   TOOL_TARGETS,
@@ -115,6 +117,7 @@ import {
   type EngineeringObject,
   type EntityRelationship,
   type Experiment,
+  type ExperimentStatus,
   type Objective,
   type Preference,
   type Project,
@@ -279,18 +282,28 @@ export function assertExperiment(value: unknown): asserts value is Experiment {
   );
   invariant(typeof value.hypothesis === "string", "experiment.hypothesis must be a string");
   invariant(Array.isArray(value.inputs) && isJsonSafeValue(value.inputs), "experiment.inputs must be a JSON-serializable array");
-  invariant(
-    value.status === "planned" ||
-      value.status === "running" ||
-      value.status === "complete" ||
-      value.status === "failed" ||
-      value.status === "cancelled",
-    "invalid experiment status"
-  );
+  invariant(EXPERIMENT_STATUSES.includes(value.status as ExperimentStatus), "invalid experiment status");
   invariant(isJsonSafeValue(value.result), "experiment.result must be JSON-serializable");
   invariant(
     value.conclusion === null || typeof value.conclusion === "string",
     "experiment.conclusion must be a string or null"
+  );
+  invariant(
+    value.candidateId === null || (typeof value.candidateId === "string" && value.candidateId.length > 0),
+    "experiment.candidateId must be a non-empty string or null"
+  );
+  invariant(
+    value.buildResultId === null || (typeof value.buildResultId === "string" && value.buildResultId.length > 0),
+    "experiment.buildResultId must be a non-empty string or null"
+  );
+  invariant(isStringArray(value.verificationResultIds), "experiment.verificationResultIds must be an array of strings");
+  invariant(
+    value.checkpointBeforeId === null || (typeof value.checkpointBeforeId === "string" && value.checkpointBeforeId.length > 0),
+    "experiment.checkpointBeforeId must be a non-empty string or null"
+  );
+  invariant(
+    value.checkpointAfterId === null || (typeof value.checkpointAfterId === "string" && value.checkpointAfterId.length > 0),
+    "experiment.checkpointAfterId must be a non-empty string or null"
   );
   invariant(isEntitySource(value.source), "invalid experiment source");
   invariant(isIsoTimestamp(value.createdAt), "experiment.createdAt must be an ISO timestamp");
@@ -1638,6 +1651,61 @@ export function assertProposal(value: unknown): asserts value is Proposal {
   invariant(
     isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
     "proposal.metadata must be a JSON-serializable object"
+  );
+}
+
+function isCandidateStatus(value: unknown): value is (typeof CANDIDATE_STATUSES)[number] {
+  return typeof value === "string" && (CANDIDATE_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a `Candidate` (P22) -- shape only, environment-independent,
+ * knows nothing about `DesignSpecification`'s own internal fields (only
+ * that `designSpecificationId`, when set, is a non-empty string
+ * reference). Cross-references (does `planId` resolve? does
+ * `designSpecificationId` actually belong to the same plan step? do
+ * `relevantRequirementIds` resolve?) are `candidate-semantics.ts`'s job
+ * (core), matching `assertProposal`/`assertDesignSpecification`'s
+ * identical "shape here, semantics in a separate pure function" split.
+ */
+export function assertCandidate(value: unknown): asserts value is Candidate {
+  invariant(isPlainObject(value), "candidate must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "candidate.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "candidate.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "candidate.projectVersion must be a positive integer"
+  );
+  invariant(typeof value.planId === "string" && value.planId.length > 0, "candidate.planId is required");
+  invariant(
+    value.planStepId === null || (typeof value.planStepId === "string" && value.planStepId.length > 0),
+    "candidate.planStepId must be a non-empty string or null"
+  );
+  invariant(
+    value.designSpecificationId === null || (typeof value.designSpecificationId === "string" && value.designSpecificationId.length > 0),
+    "candidate.designSpecificationId must be a non-empty string or null"
+  );
+  invariant(
+    value.proposalId === null || (typeof value.proposalId === "string" && value.proposalId.length > 0),
+    "candidate.proposalId must be a non-empty string or null"
+  );
+  invariant(isStringArray(value.relevantRequirementIds), "candidate.relevantRequirementIds must be an array of strings");
+  invariant(isStringArray(value.relevantConstraintIds), "candidate.relevantConstraintIds must be an array of strings");
+  invariant(isStringArray(value.relevantResearchEvidenceIds), "candidate.relevantResearchEvidenceIds must be an array of strings");
+  invariant(isStringArray(value.assumptionIds), "candidate.assumptionIds must be an array of strings");
+  invariant(typeof value.hypothesis === "string" && value.hypothesis.trim().length > 0, "candidate.hypothesis is required");
+  invariant(typeof value.rationale === "string" && value.rationale.trim().length > 0, "candidate.rationale is required");
+  invariant(
+    value.parentCandidateId === null || (typeof value.parentCandidateId === "string" && value.parentCandidateId.length > 0),
+    "candidate.parentCandidateId must be a non-empty string or null"
+  );
+  invariant(isCandidateStatus(value.status), "invalid candidate.status");
+  invariant(isEntitySource(value.source), "invalid candidate.source");
+  invariant(isIsoTimestamp(value.createdAt), "candidate.createdAt must be an ISO timestamp");
+  invariant(isIsoTimestamp(value.updatedAt), "candidate.updatedAt must be an ISO timestamp");
+  invariant(
+    isPlainObject(value.metadata) && isJsonSafeValue(value.metadata),
+    "candidate.metadata must be a JSON-serializable object"
   );
 }
 

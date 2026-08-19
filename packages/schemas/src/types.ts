@@ -126,6 +126,47 @@ export type DecisionInput = Partial<Decision>;
 
 export type ExperimentStatus = "planned" | "running" | "complete" | "failed" | "cancelled";
 
+export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ["planned", "running", "complete", "failed", "cancelled"];
+
+/**
+ * P22: additive extension (five new, all-optional/nullable fields) to the
+ * P1 `Experiment` entity -- NOT a second, incompatible Experiment type.
+ * The P22 brief explicitly required evaluating the existing model first:
+ * P1-P21 never needed an experiment to reference WHICH candidate produced
+ * it, WHICH build it came from, WHICH deterministic checks were run
+ * against it, or WHAT environment checkpoint bounded it, because nothing
+ * before P22 executed more than one alternative per plan step. All five
+ * fields default to `null`/`[]` in `createExperiment`, so every experiment
+ * created by P1-P21 code remains valid unchanged -- this is a pure
+ * addition, not a breaking change to an already-audited entity.
+ *
+ *   candidateId          -- the `Candidate` (candidate-types.ts, P22) this
+ *                            experiment tested, or `null` for an experiment
+ *                            unrelated to candidate comparison (P1-P21's
+ *                            original, still-valid use case).
+ *   buildResultId        -- the `BuildResult` (P20) produced by executing
+ *                            the candidate's design, if any.
+ *   verificationResultIds -- `VerificationResult` (P16) ids produced by
+ *                            running checks against what this experiment
+ *                            built -- REFERENCED, never duplicated; an
+ *                            experiment never carries its own copy of
+ *                            pass/fail state.
+ *   checkpointBeforeId   -- the `Checkpoint` (P15) the environment was at
+ *                            (or was restored to) immediately before this
+ *                            experiment ran -- the isolation record the
+ *                            P22 brief's own "prove Candidate B does not
+ *                            inherit unintended state from Candidate A"
+ *                            requirement depends on.
+ *   checkpointAfterId    -- a `Checkpoint` taken immediately after this
+ *                            experiment ran, if the caller chose to save
+ *                            one (e.g. to inspect or restore this specific
+ *                            experiment's resulting state later).
+ *
+ * `result`/`conclusion`/`status` (P1, unchanged) remain the general-purpose
+ * fields every experiment already had; P22 adds STRUCTURED, typed
+ * traceability alongside them rather than repurposing the untyped `result`
+ * bag to carry ids that deserve real validation.
+ */
 export interface Experiment {
   id: string;
   objective: string;
@@ -134,6 +175,11 @@ export interface Experiment {
   status: ExperimentStatus;
   result: unknown;
   conclusion: string | null;
+  candidateId: string | null;
+  buildResultId: string | null;
+  verificationResultIds: string[];
+  checkpointBeforeId: string | null;
+  checkpointAfterId: string | null;
   source: EntitySource;
   createdAt: string;
   updatedAt: string;
