@@ -2022,14 +2022,172 @@ anywhere in the candidate-execution path; `CandidateStore` never imports
 saved (no `update`/`delete` method exists on either); no P22 file
 duplicates P16/P17's verification machinery or P9's Plan machinery.
 
-**Deliberately NOT implemented (P23+ territory).** Scoring, ranking, or
-Pareto analysis across candidates (P23); persistent long-term memory of
-past candidates/experiments across projects/sessions (P24); autonomous/
-unattended experimentation (a human or agent must explicitly call
-`create_candidate`/`executeExperimentForCandidate` for each one — P25);
-multi-environment support beyond the single connected `EnvironmentAdapter`
-session (P26); any UI (consistent with every prior phase's identical
-deferral — `apps/web` has no existing foundation to extend).
+**Deliberately NOT implemented in P22 (see P23 below for what changed).**
+Scoring, ranking, or Pareto analysis across candidates (P23, now
+implemented — see below); persistent long-term memory of past candidates/
+experiments across projects/sessions (still P24); autonomous/unattended
+experimentation (a human or agent must explicitly call `create_candidate`/
+`executeExperimentForCandidate` for each one — still P25); multi-environment
+support beyond the single connected `EnvironmentAdapter` session (still
+P26); any UI (consistent with every prior phase's identical deferral —
+`apps/web` has no existing foundation to extend).
+
+## Multi-Objective Optimization (P23)
+
+**What this phase answers.** P22 established Objective → Requirements →
+Candidates → Experiments → Deterministic Verification → Factual Results.
+P23 adds ONE more deterministic layer: Metrics → objective measurements →
+candidate comparison → tradeoff analysis → Pareto/weighted optimization.
+The brief's own central rule, enforced structurally: "NAQSH may optimize
+based on VERIFIED/MEASURED engineering results. It must NOT optimize based
+on arbitrary LLM opinions." Gemini may propose objectives/weights (which
+then pass the same deterministic validation any tool input does); it never
+computes a measurement, a Pareto dominance relation, or a final score.
+
+**New domain concepts (`packages/schemas/src/optimization-types.ts`) —
+minimal, additive, and none of them duplicate an existing entity.**
+`OptimizationObjective` (`metricKey`, `description`, explicit
+`direction: "minimize" | "maximize"` — never encoded as negated numbers or
+a magic metric name — optional `unit`, optional `requirementId`
+traceability link, optional `weight`) and `OptimizationConstraint` (same
+shape, plus reuses P16's own `NumericComparisonOperator`/`compareNumeric`
+directly rather than inventing a second comparison vocabulary) together
+form an `OptimizationProblem` — a process record (own store, never
+`WorldModelState`, mirrors `Candidate`/`DesignSpecification`'s identical
+"proposed, not yet accepted" pattern) naming an explicit `candidateIds`
+set, exactly like `compare_candidates`'s (P22) own tool-input convention.
+
+**`CandidateMetricValue` — the measurement itself, and where the brief's
+central rule is actually enforced against a live store.** `status`
+(`"measured" | "estimated" | "unavailable"`) and `provenanceKind`
+(`"verification_result" | "research_evidence" | "declared"`) are NOT
+independent free choices — a shape-level consistency rule
+(`assertCandidateMetricValue`) requires `"measured"` to always pair with
+`"verification_result"`, `"estimated"` to always pair with `"declared"` or
+`"research_evidence"`, and `"unavailable"` to always carry a `null` value.
+The DEEPER guarantee — that a claimed `verificationResultId` is REAL —
+is `record_candidate_metric_value` (tool)'s job: it looks up the actual
+`VerificationResult`, REJECTS one whose own `status` is `"inconclusive"`
+(an inconclusive verification cannot honestly back a measured claim), and
+then DERIVES `value`/`unit` directly from that `VerificationResult`'s own
+`actual`/`evidence.unit` — a caller-supplied `value` for this path is
+IGNORED, never trusted, so a "measured" claim is structurally impossible
+to fabricate by merely pointing at a real-looking id. It also rejects a
+`VerificationResult` whose OWN `projectId` doesn't match the candidate's
+project (`VerificationResultStore` is not project-scoped) — a subsequent
+audit pass caught this exact cross-project gap, mirroring
+`ObjectiveSatisfactionResult`'s (P17) already-established
+`verification_result_wrong_project` check for the identical
+not-project-scoped cross-reference pattern, and closed it the same way.
+This is the literal
+implementation of the brief's own example: "Estimated cost is $500" (
+`provenanceKind: "declared"`, `status: "estimated"`) can never become
+"Verified cost = $487" (`provenanceKind: "verification_result"`,
+`status: "measured"`) without an actual `VerificationResult` behind it.
+Append-only (mirrors `VerificationResult`/`BuildResult`) — a metric can be
+re-measured or refined from an estimate into a real measurement over time;
+the earlier record stays a real historical fact, never overwritten.
+
+**Feasibility and data completeness — distinct, non-collapsible states.**
+Every candidate entering optimization gets `"feasible" | "infeasible" |
+"unknown"` (never silently defaulted to `"feasible"` when a constraint's
+metric is missing) and, separately, `"complete" | "incomplete"` for its
+OBJECTIVE data. A DEFINITE constraint violation always wins over an
+`"unknown"` one on a different metric. A unit mismatch between a metric and
+its objective/constraint's declared unit is treated as unusable — never
+silently compared as equal — mirroring P16's own `verify.ts`
+`unit_mismatch` → inconclusive precedent exactly (an audit pass caught an
+earlier version of this check silently treating a metric with NO recorded
+unit as "compatible" with a declared one whenever the metric's own unit
+was null; it now shares the exact `expectedUnit === null || evidenceUnit
+=== expectedUnit` semantics `verify.ts`'s `checkUnitCompatible` already
+established, via a single `unitsCompatible` helper used by both the
+constraint and the Pareto-eligibility paths). Only candidates that are
+BOTH feasible AND data-complete (`paretoEligible`) ever participate in
+Pareto dominance; infeasible/unknown/incomplete candidates are reported in
+their own separate id lists on `OptimizationResult`, never hidden.
+
+**`computeOptimizationResult` (`optimization-engine.ts`) — the deterministic
+core, and the ONLY place Pareto dominance, feasibility, and weighted scores
+are ever computed.** A pure function: no `ModelProvider`, no
+`EnvironmentAdapter`, no I/O — reads `OptimizationProblem` and the recorded
+`CandidateMetricValue`s, returns an `OptimizationResult`
+(repo-boundaries-enforced). Candidate A dominates candidate B iff A is
+at-least-as-good on every objective (respecting each objective's OWN
+`direction`) and strictly better on at least one; ties (identical values on
+every objective) mean neither dominates — both remain Pareto-optimal, by
+definition, no special-case code required. `paretoOptimalCandidateIds` may
+legitimately contain MULTIPLE ids — nothing ever calls a Pareto-optimal
+candidate "the best." Iteration always follows the problem's own
+`candidateIds` order (never object/Map iteration order), and "most recent
+measurement wins" ties are broken by store insertion order — both
+explicit, both tested, both what make identical input always produce
+identical output. The function also defends its own structural invariants
+before computing anything — rejecting a problem with a duplicate objective
+`metricKey` or a duplicate `candidateId` — rather than silently trusting an
+unvalidated caller, mirroring `compareCandidates`'s (P22) identical
+defensive precedent; an audit pass found this missing and added it.
+
+**Weighted scoring — explicit and strictly opt-in, never a silent
+default.** Computed ONLY when EVERY objective in the problem carries an
+explicit, non-negative, finite `weight` (never partially, never inferred).
+Each objective's raw values are min-max normalized to `[0, 1]` across the
+candidates that HAVE a usable value for it (1 = better, respecting
+`direction`; an exactly-equal range normalizes every value to `1.0` rather
+than dividing by zero — documented and tested explicitly, along with
+negative values and mixed-scale metrics). A candidate missing a usable
+value for ANY weighted objective gets `weightedScore: null` for itself —
+never a fabricated contribution — while candidates with complete data
+still score normally. The engine never sorts or ranks by score; array
+order always follows the problem's own `candidateIds`.
+
+**Explainability is structured data, not model prose.** Each proven
+`DominanceRelation` embeds a `comparisons` array — per objective, both
+candidates' raw values, whether the dominator is at-least-as-good, and
+whether it is strictly better — the brief's own "Candidate B is
+Pareto-dominated by Candidate A because: cost: A=700, B=850, A is
+better..." example, expressed as deterministic facts a model may later
+summarize but never invents.
+
+**Tools (`packages/core`) — mirror `create_candidate`/`run_verification`'s
+(P22/P16) exact shapes; a new `ToolTarget: "optimization"` was added
+additively, the same way `"checkpoint"` was in P15 and `"research"` was
+activated in P21.** `create_optimization_problem` (`suggest`/`optimization`)
+validates deep-nested objectives/constraints through their own factories,
+then cross-checks `candidateIds` against a real `CandidateStore` and
+rejects two objectives sharing one `metricKey` (ambiguous direction).
+`record_candidate_metric_value` (`suggest`/`optimization`) is the
+integrity gate described above. `run_optimization` (`suggest`/
+`optimization`) locates a saved `OptimizationProblem`, calls the pure
+engine, and persists a new, immutable `OptimizationResult` (append-only,
+mirrors `run_verification`'s identical "read-only against the World Model,
+persists a new record" shape) — never accepts or lets a model override
+what the engine decided.
+
+**World Model / Change Model integration.** No parallel optimization state
+universe: `OptimizationProblem`/`CandidateMetricValue`/`OptimizationResult`
+each live in their own store (mirrors `CandidateStore`/
+`VerificationResultStore`), reference `Candidate`/`Requirement`/
+`Constraint`/`VerificationResult`/`ResearchEvidence` by id only, and never
+touch `WorldModelState`. Running an optimization is a pure ANALYSIS, never
+a fake engineering change — no `Change`/`WorldModelTransition` is ever
+recorded for it, matching the brief's own explicit "a pure optimization
+computation should NOT pretend it modified the engineering world."
+
+**Verification remains authoritative.** Build success, experiment success,
+verification success, objective satisfaction, and optimization feasibility
+are five separate concepts, never conflated: a candidate is never feasible
+merely because its build succeeded, and a metric is never "measured"
+merely because a tool call claimed it was.
+
+**Deliberately NOT implemented (P24+ territory).** Persistent long-term
+memory of past optimization results across projects/sessions (P24, though
+`OptimizationResult`'s structured, self-contained shape is exactly what a
+future P24 store would consume); autonomous/background re-optimization
+loops (P25 — every `run_optimization` call here is explicit, human/agent
+triggered); environment-independent generalization (P26 — optimization
+here is already environment-independent, operating purely on recorded
+metrics); any UI (consistent with every prior phase's identical deferral).
 
 ## Error model
 

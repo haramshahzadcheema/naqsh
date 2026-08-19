@@ -79,6 +79,19 @@ import {
 import type { Proposal, ProposalInput } from "./proposal-types.js";
 import { assertCandidate } from "./validators.js";
 import type { Candidate, CandidateInput } from "./candidate-types.js";
+import { assertCandidateMetricValue, assertOptimizationConstraint, assertOptimizationObjective, assertOptimizationProblem, assertOptimizationResult } from "./validators.js";
+import type {
+  CandidateMetricValue,
+  CandidateMetricValueInput,
+  OptimizationConstraint,
+  OptimizationConstraintInput,
+  OptimizationObjective,
+  OptimizationObjectiveInput,
+  OptimizationProblem,
+  OptimizationProblemInput,
+  OptimizationResult,
+  OptimizationResultInput
+} from "./optimization-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
 import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
@@ -1255,6 +1268,120 @@ export function createCandidate(input: CandidateInput): Candidate {
   };
   assertCandidate(candidate);
   return deepFreeze(candidate);
+}
+
+/** Builds an `OptimizationObjective` (P23). `weight` defaults to `null`
+ * ("no weight assigned yet") -- never invented. */
+export function createOptimizationObjective(input: OptimizationObjectiveInput): OptimizationObjective {
+  const objective: OptimizationObjective = {
+    id: input.id ?? createId("optobjective"),
+    metricKey: input.metricKey,
+    description: input.description,
+    direction: input.direction,
+    unit: input.unit ?? null,
+    requirementId: input.requirementId ?? null,
+    weight: input.weight ?? null,
+    metadata: safeStructuredClone(input.metadata ?? {}, "optimizationObjective.metadata")
+  };
+  assertOptimizationObjective(objective);
+  return deepFreeze(objective);
+}
+
+/** Builds an `OptimizationConstraint` (P23). Reuses `NumericComparisonOperator`
+ * (P16) directly -- no second comparison vocabulary. */
+export function createOptimizationConstraint(input: OptimizationConstraintInput): OptimizationConstraint {
+  const constraint: OptimizationConstraint = {
+    id: input.id ?? createId("optconstraint"),
+    metricKey: input.metricKey,
+    description: input.description,
+    operator: input.operator,
+    threshold: input.threshold,
+    unit: input.unit ?? null,
+    constraintId: input.constraintId ?? null,
+    metadata: safeStructuredClone(input.metadata ?? {}, "optimizationConstraint.metadata")
+  };
+  assertOptimizationConstraint(constraint);
+  return deepFreeze(constraint);
+}
+
+/** Builds a `CandidateMetricValue` (P23). `status` defaults to `"measured"`
+ * ONLY as a type default -- the status/provenanceKind/value consistency
+ * rule (`assertCandidateMetricValue`) means an unsupported combination is
+ * rejected outright, so this default never silently produces an
+ * unauthoritative "measured" claim; a caller recording an estimate MUST
+ * pass `status: "estimated"` explicitly. */
+export function createCandidateMetricValue(input: CandidateMetricValueInput): CandidateMetricValue {
+  const metricValue: CandidateMetricValue = {
+    id: input.id ?? createId("metricvalue"),
+    candidateId: input.candidateId,
+    metricKey: input.metricKey,
+    status: input.status ?? "measured",
+    value: input.value ?? null,
+    unit: input.unit ?? null,
+    provenanceKind: input.provenanceKind,
+    verificationResultId: input.verificationResultId ?? null,
+    researchEvidenceId: input.researchEvidenceId ?? null,
+    experimentId: input.experimentId ?? null,
+    source: input.source ?? "agent",
+    measuredAt: input.measuredAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "candidateMetricValue.metadata")
+  };
+  assertCandidateMetricValue(metricValue);
+  return deepFreeze(metricValue);
+}
+
+/** Builds an `OptimizationProblem` (P23) -- mirrors `createCandidate`'s
+ * exact shape. `objectives`/`constraints` are built through their own
+ * factories first (each independently validated), matching
+ * `createDesignSpecification`'s identical "build nested entities through
+ * their own factory, then validate the whole" precedent. */
+export function createOptimizationProblem(input: OptimizationProblemInput): OptimizationProblem {
+  const problem: OptimizationProblem = {
+    id: input.id ?? createId("optproblem"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    planId: input.planId ?? null,
+    planStepId: input.planStepId ?? null,
+    candidateIds: safeStructuredClone(input.candidateIds, "optimizationProblem.candidateIds"),
+    objectives: input.objectives.map((objective) => createOptimizationObjective(objective)),
+    constraints: (input.constraints ?? []).map((constraint) => createOptimizationConstraint(constraint)),
+    normalizationMethod: input.normalizationMethod ?? "min_max",
+    source: input.source ?? "agent",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "optimizationProblem.metadata")
+  };
+  assertOptimizationProblem(problem);
+  return deepFreeze(problem);
+}
+
+/** Builds an `OptimizationResult` (P23) -- ALWAYS called from
+ * `optimization-engine.ts`'s (core) pure `computeOptimizationResult`, never
+ * hand-constructed by a tool (mirrors `createVerificationResult`'s
+ * identical "no LLM verdict" precedent). `candidateEvaluations`/`dominance`
+ * are accepted as already-shaped values (not their own "...Input" variant)
+ * because they are ALWAYS produced by the deterministic engine itself, the
+ * same convention `VerificationResultInput.evidence` already uses for a
+ * fully-formed `Evidence` value. */
+export function createOptimizationResult(input: OptimizationResultInput): OptimizationResult {
+  const result: OptimizationResult = {
+    id: input.id ?? createId("optresult"),
+    problemId: input.problemId,
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    candidateEvaluations: safeStructuredClone(input.candidateEvaluations, "optimizationResult.candidateEvaluations"),
+    paretoOptimalCandidateIds: safeStructuredClone(input.paretoOptimalCandidateIds, "optimizationResult.paretoOptimalCandidateIds"),
+    dominatedCandidateIds: safeStructuredClone(input.dominatedCandidateIds, "optimizationResult.dominatedCandidateIds"),
+    infeasibleCandidateIds: safeStructuredClone(input.infeasibleCandidateIds, "optimizationResult.infeasibleCandidateIds"),
+    unknownFeasibilityCandidateIds: safeStructuredClone(input.unknownFeasibilityCandidateIds, "optimizationResult.unknownFeasibilityCandidateIds"),
+    incompleteDataCandidateIds: safeStructuredClone(input.incompleteDataCandidateIds, "optimizationResult.incompleteDataCandidateIds"),
+    dominance: safeStructuredClone(input.dominance, "optimizationResult.dominance"),
+    algorithm: input.algorithm ?? "pareto-dominance-v1",
+    computedAt: input.computedAt ?? toIsoTimestamp(),
+    source: input.source ?? "system",
+    metadata: safeStructuredClone(input.metadata ?? {}, "optimizationResult.metadata")
+  };
+  assertOptimizationResult(result);
+  return deepFreeze(result);
 }
 
 /** `toolResult` is cloned+frozen along with everything else via `deepFreeze`

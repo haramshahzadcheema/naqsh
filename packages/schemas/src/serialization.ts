@@ -9,6 +9,7 @@ import type { ModelInvocationResult, ModelRequest, ModelResponse } from "./model
 import type { Plan } from "./plan-types.js";
 import type { Proposal } from "./proposal-types.js";
 import type { Candidate } from "./candidate-types.js";
+import type { CandidateMetricValue, OptimizationProblem, OptimizationResult } from "./optimization-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
@@ -24,6 +25,9 @@ import {
   assertAuthorizationDecision,
   assertAutonomyGrant,
   assertCandidate,
+  assertCandidateMetricValue,
+  assertOptimizationProblem,
+  assertOptimizationResult,
   assertChange,
   assertCheck,
   assertCheckpoint,
@@ -259,6 +263,42 @@ export function deserializeCandidate(serialized: string): Candidate {
   requireNonEmptyString(serialized, "serialized candidate is required");
   const parsed: unknown = JSON.parse(serialized);
   assertCandidate(parsed);
+  return parsed;
+}
+
+export function serializeCandidateMetricValue(metricValue: CandidateMetricValue): string {
+  assertCandidateMetricValue(metricValue);
+  return JSON.stringify(metricValue);
+}
+
+export function deserializeCandidateMetricValue(serialized: string): CandidateMetricValue {
+  requireNonEmptyString(serialized, "serialized candidate metric value is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertCandidateMetricValue(parsed);
+  return parsed;
+}
+
+export function serializeOptimizationProblem(problem: OptimizationProblem): string {
+  assertOptimizationProblem(problem);
+  return JSON.stringify(problem);
+}
+
+export function deserializeOptimizationProblem(serialized: string): OptimizationProblem {
+  requireNonEmptyString(serialized, "serialized optimization problem is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertOptimizationProblem(parsed);
+  return parsed;
+}
+
+export function serializeOptimizationResult(result: OptimizationResult): string {
+  assertOptimizationResult(result);
+  return JSON.stringify(result);
+}
+
+export function deserializeOptimizationResult(serialized: string): OptimizationResult {
+  requireNonEmptyString(serialized, "serialized optimization result is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertOptimizationResult(parsed);
   return parsed;
 }
 

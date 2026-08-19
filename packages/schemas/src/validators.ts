@@ -96,6 +96,25 @@ import {
 import { PROPOSAL_STATUSES, type Proposal } from "./proposal-types.js";
 import { CANDIDATE_STATUSES, type Candidate } from "./candidate-types.js";
 import {
+  CANDIDATE_FEASIBILITIES,
+  CONSTRAINT_OUTCOME_REASON_KINDS,
+  DATA_COMPLETENESS_VALUES,
+  METRIC_VALUE_PROVENANCE_KINDS,
+  METRIC_VALUE_STATUSES,
+  NORMALIZATION_METHODS,
+  OBJECTIVE_DIRECTIONS,
+  type CandidateEvaluation,
+  type CandidateMetricSnapshot,
+  type CandidateMetricValue,
+  type ConstraintEvaluationOutcome,
+  type DominanceRelation,
+  type ObjectiveComparisonEntry,
+  type OptimizationConstraint,
+  type OptimizationObjective,
+  type OptimizationProblem,
+  type OptimizationResult
+} from "./optimization-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
@@ -2359,6 +2378,272 @@ export function assertBuildResult(value: unknown): asserts value is BuildResult 
   );
   invariant(isEntitySource(value.source), "invalid buildResult.source");
   invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "buildResult.metadata must be a JSON-serializable object");
+}
+
+function isObjectiveDirection(value: unknown): value is (typeof OBJECTIVE_DIRECTIONS)[number] {
+  return typeof value === "string" && (OBJECTIVE_DIRECTIONS as readonly string[]).includes(value);
+}
+
+function isMetricValueStatus(value: unknown): value is (typeof METRIC_VALUE_STATUSES)[number] {
+  return typeof value === "string" && (METRIC_VALUE_STATUSES as readonly string[]).includes(value);
+}
+
+function isMetricValueProvenanceKind(value: unknown): value is (typeof METRIC_VALUE_PROVENANCE_KINDS)[number] {
+  return typeof value === "string" && (METRIC_VALUE_PROVENANCE_KINDS as readonly string[]).includes(value);
+}
+
+function isNormalizationMethod(value: unknown): value is (typeof NORMALIZATION_METHODS)[number] {
+  return typeof value === "string" && (NORMALIZATION_METHODS as readonly string[]).includes(value);
+}
+
+function isCandidateFeasibility(value: unknown): value is (typeof CANDIDATE_FEASIBILITIES)[number] {
+  return typeof value === "string" && (CANDIDATE_FEASIBILITIES as readonly string[]).includes(value);
+}
+
+function isDataCompleteness(value: unknown): value is (typeof DATA_COMPLETENESS_VALUES)[number] {
+  return typeof value === "string" && (DATA_COMPLETENESS_VALUES as readonly string[]).includes(value);
+}
+
+function isConstraintOutcomeReasonKind(value: unknown): value is (typeof CONSTRAINT_OUTCOME_REASON_KINDS)[number] {
+  return typeof value === "string" && (CONSTRAINT_OUTCOME_REASON_KINDS as readonly string[]).includes(value);
+}
+
+export function assertOptimizationObjective(value: unknown): asserts value is OptimizationObjective {
+  invariant(isPlainObject(value), "optimizationObjective must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "optimizationObjective.id is required");
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "optimizationObjective.metricKey is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "optimizationObjective.description is required");
+  invariant(isObjectiveDirection(value.direction), "invalid optimizationObjective.direction");
+  invariant(value.unit === null || typeof value.unit === "string", "optimizationObjective.unit must be a string or null");
+  invariant(
+    value.requirementId === null || (typeof value.requirementId === "string" && value.requirementId.length > 0),
+    "optimizationObjective.requirementId must be a non-empty string or null"
+  );
+  invariant(
+    value.weight === null || (typeof value.weight === "number" && Number.isFinite(value.weight) && value.weight >= 0),
+    "optimizationObjective.weight must be a non-negative finite number or null"
+  );
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "optimizationObjective.metadata must be a JSON-serializable object");
+}
+
+export function assertOptimizationConstraint(value: unknown): asserts value is OptimizationConstraint {
+  invariant(isPlainObject(value), "optimizationConstraint must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "optimizationConstraint.id is required");
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "optimizationConstraint.metricKey is required");
+  invariant(typeof value.description === "string" && value.description.trim().length > 0, "optimizationConstraint.description is required");
+  invariant(isNumericComparisonOperator(value.operator), "invalid optimizationConstraint.operator");
+  invariant(typeof value.threshold === "number" && Number.isFinite(value.threshold), "optimizationConstraint.threshold must be a finite number");
+  invariant(value.unit === null || typeof value.unit === "string", "optimizationConstraint.unit must be a string or null");
+  invariant(
+    value.constraintId === null || (typeof value.constraintId === "string" && value.constraintId.length > 0),
+    "optimizationConstraint.constraintId must be a non-empty string or null"
+  );
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "optimizationConstraint.metadata must be a JSON-serializable object");
+}
+
+/**
+ * Enforces the status/provenanceKind consistency rule `CandidateMetricValue`'s
+ * own doc comment documents -- "measured" can only ever be backed by a real
+ * verification result, "estimated" only ever by a declared/research figure,
+ * "unavailable" only ever carries a null value. This is what keeps a
+ * model-generated number from masquerading as a measured engineering result
+ * a structural, unconditional fact of the TYPE, not a convention a caller
+ * has to remember.
+ */
+export function assertCandidateMetricValue(value: unknown): asserts value is CandidateMetricValue {
+  invariant(isPlainObject(value), "candidateMetricValue must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "candidateMetricValue.id is required");
+  invariant(typeof value.candidateId === "string" && value.candidateId.length > 0, "candidateMetricValue.candidateId is required");
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "candidateMetricValue.metricKey is required");
+  invariant(isMetricValueStatus(value.status), "invalid candidateMetricValue.status");
+  invariant(
+    value.value === null || (typeof value.value === "number" && Number.isFinite(value.value)),
+    "candidateMetricValue.value must be a finite number or null"
+  );
+  invariant(value.unit === null || typeof value.unit === "string", "candidateMetricValue.unit must be a string or null");
+  invariant(isMetricValueProvenanceKind(value.provenanceKind), "invalid candidateMetricValue.provenanceKind");
+  invariant(
+    value.verificationResultId === null || (typeof value.verificationResultId === "string" && value.verificationResultId.length > 0),
+    "candidateMetricValue.verificationResultId must be a non-empty string or null"
+  );
+  invariant(
+    value.researchEvidenceId === null || (typeof value.researchEvidenceId === "string" && value.researchEvidenceId.length > 0),
+    "candidateMetricValue.researchEvidenceId must be a non-empty string or null"
+  );
+  invariant(
+    value.experimentId === null || (typeof value.experimentId === "string" && value.experimentId.length > 0),
+    "candidateMetricValue.experimentId must be a non-empty string or null"
+  );
+  invariant(isEntitySource(value.source), "invalid candidateMetricValue.source");
+  invariant(isIsoTimestamp(value.measuredAt), "candidateMetricValue.measuredAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "candidateMetricValue.metadata must be a JSON-serializable object");
+
+  // status <-> provenanceKind <-> value consistency (see this function's own doc comment).
+  if (value.status === "measured") {
+    invariant(value.provenanceKind === "verification_result", 'candidateMetricValue.status "measured" requires provenanceKind "verification_result"');
+    invariant(value.verificationResultId !== null, 'candidateMetricValue.status "measured" requires a non-null verificationResultId');
+    invariant(value.value !== null, 'candidateMetricValue.status "measured" requires a non-null value');
+  } else if (value.status === "estimated") {
+    invariant(
+      value.provenanceKind === "declared" || value.provenanceKind === "research_evidence",
+      'candidateMetricValue.status "estimated" requires provenanceKind "declared" or "research_evidence"'
+    );
+    invariant(value.value !== null, 'candidateMetricValue.status "estimated" requires a non-null value');
+  } else {
+    invariant(value.value === null, 'candidateMetricValue.status "unavailable" requires a null value');
+  }
+  if (value.provenanceKind === "verification_result") {
+    invariant(value.verificationResultId !== null, 'candidateMetricValue.provenanceKind "verification_result" requires a non-null verificationResultId');
+  }
+  if (value.provenanceKind === "research_evidence") {
+    invariant(value.researchEvidenceId !== null, 'candidateMetricValue.provenanceKind "research_evidence" requires a non-null researchEvidenceId');
+  }
+  if (value.provenanceKind === "declared") {
+    invariant(value.verificationResultId === null, 'candidateMetricValue.provenanceKind "declared" must not carry a verificationResultId');
+    invariant(value.researchEvidenceId === null, 'candidateMetricValue.provenanceKind "declared" must not carry a researchEvidenceId');
+  }
+}
+
+export function assertOptimizationProblem(value: unknown): asserts value is OptimizationProblem {
+  invariant(isPlainObject(value), "optimizationProblem must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "optimizationProblem.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "optimizationProblem.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "optimizationProblem.projectVersion must be a positive integer"
+  );
+  invariant(
+    value.planId === null || (typeof value.planId === "string" && value.planId.length > 0),
+    "optimizationProblem.planId must be a non-empty string or null"
+  );
+  invariant(
+    value.planStepId === null || (typeof value.planStepId === "string" && value.planStepId.length > 0),
+    "optimizationProblem.planStepId must be a non-empty string or null"
+  );
+  invariant(isStringArray(value.candidateIds) && value.candidateIds.length > 0, "optimizationProblem.candidateIds must be a non-empty array of strings");
+  invariant(Array.isArray(value.objectives) && value.objectives.length > 0, "optimizationProblem.objectives must be a non-empty array");
+  for (const objective of value.objectives) assertOptimizationObjective(objective);
+  invariant(Array.isArray(value.constraints), "optimizationProblem.constraints must be an array");
+  for (const constraint of value.constraints) assertOptimizationConstraint(constraint);
+  invariant(isNormalizationMethod(value.normalizationMethod), "invalid optimizationProblem.normalizationMethod");
+  invariant(isEntitySource(value.source), "invalid optimizationProblem.source");
+  invariant(isIsoTimestamp(value.createdAt), "optimizationProblem.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "optimizationProblem.metadata must be a JSON-serializable object");
+}
+
+function assertCandidateMetricSnapshot(value: unknown): asserts value is CandidateMetricSnapshot {
+  invariant(isPlainObject(value), "candidateMetricSnapshot must be an object");
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "candidateMetricSnapshot.metricKey is required");
+  invariant(isMetricValueStatus(value.status), "invalid candidateMetricSnapshot.status");
+  invariant(
+    value.value === null || (typeof value.value === "number" && Number.isFinite(value.value)),
+    "candidateMetricSnapshot.value must be a finite number or null"
+  );
+  invariant(value.unit === null || typeof value.unit === "string", "candidateMetricSnapshot.unit must be a string or null");
+  invariant(
+    value.provenanceKind === null || isMetricValueProvenanceKind(value.provenanceKind),
+    "invalid candidateMetricSnapshot.provenanceKind"
+  );
+  invariant(
+    value.metricValueId === null || (typeof value.metricValueId === "string" && value.metricValueId.length > 0),
+    "candidateMetricSnapshot.metricValueId must be a non-empty string or null"
+  );
+}
+
+function assertConstraintEvaluationOutcome(value: unknown): asserts value is ConstraintEvaluationOutcome {
+  invariant(isPlainObject(value), "constraintEvaluationOutcome must be an object");
+  invariant(
+    typeof value.optimizationConstraintId === "string" && value.optimizationConstraintId.length > 0,
+    "constraintEvaluationOutcome.optimizationConstraintId is required"
+  );
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "constraintEvaluationOutcome.metricKey is required");
+  invariant(isNumericComparisonOperator(value.operator), "invalid constraintEvaluationOutcome.operator");
+  invariant(typeof value.threshold === "number" && Number.isFinite(value.threshold), "constraintEvaluationOutcome.threshold must be a finite number");
+  invariant(value.unit === null || typeof value.unit === "string", "constraintEvaluationOutcome.unit must be a string or null");
+  invariant(
+    value.actualValue === null || (typeof value.actualValue === "number" && Number.isFinite(value.actualValue)),
+    "constraintEvaluationOutcome.actualValue must be a finite number or null"
+  );
+  invariant(value.satisfied === null || typeof value.satisfied === "boolean", "constraintEvaluationOutcome.satisfied must be a boolean or null");
+  invariant(isConstraintOutcomeReasonKind(value.reasonKind), "invalid constraintEvaluationOutcome.reasonKind");
+}
+
+function assertObjectiveComparisonEntry(value: unknown): asserts value is ObjectiveComparisonEntry {
+  invariant(isPlainObject(value), "objectiveComparisonEntry must be an object");
+  invariant(typeof value.metricKey === "string" && value.metricKey.trim().length > 0, "objectiveComparisonEntry.metricKey is required");
+  invariant(isObjectiveDirection(value.direction), "invalid objectiveComparisonEntry.direction");
+  invariant(
+    typeof value.dominatorValue === "number" && Number.isFinite(value.dominatorValue),
+    "objectiveComparisonEntry.dominatorValue must be a finite number"
+  );
+  invariant(
+    typeof value.dominatedValue === "number" && Number.isFinite(value.dominatedValue),
+    "objectiveComparisonEntry.dominatedValue must be a finite number"
+  );
+  invariant(typeof value.dominatorAtLeastAsGood === "boolean", "objectiveComparisonEntry.dominatorAtLeastAsGood must be a boolean");
+  invariant(typeof value.dominatorStrictlyBetter === "boolean", "objectiveComparisonEntry.dominatorStrictlyBetter must be a boolean");
+}
+
+function assertDominanceRelation(value: unknown): asserts value is DominanceRelation {
+  invariant(isPlainObject(value), "dominanceRelation must be an object");
+  invariant(
+    typeof value.dominatorCandidateId === "string" && value.dominatorCandidateId.length > 0,
+    "dominanceRelation.dominatorCandidateId is required"
+  );
+  invariant(
+    typeof value.dominatedCandidateId === "string" && value.dominatedCandidateId.length > 0,
+    "dominanceRelation.dominatedCandidateId is required"
+  );
+  invariant(Array.isArray(value.comparisons) && value.comparisons.length > 0, "dominanceRelation.comparisons must be a non-empty array");
+  for (const comparison of value.comparisons) assertObjectiveComparisonEntry(comparison);
+  invariant(
+    value.comparisons.some((comparison: ObjectiveComparisonEntry) => comparison.dominatorStrictlyBetter),
+    "dominanceRelation must have at least one comparison where the dominator is strictly better"
+  );
+  invariant(
+    value.comparisons.every((comparison: ObjectiveComparisonEntry) => comparison.dominatorAtLeastAsGood),
+    "dominanceRelation must have the dominator at least as good on every comparison"
+  );
+}
+
+function assertCandidateEvaluation(value: unknown): asserts value is CandidateEvaluation {
+  invariant(isPlainObject(value), "candidateEvaluation must be an object");
+  invariant(typeof value.candidateId === "string" && value.candidateId.length > 0, "candidateEvaluation.candidateId is required");
+  invariant(isCandidateFeasibility(value.feasibility), "invalid candidateEvaluation.feasibility");
+  invariant(isDataCompleteness(value.dataCompleteness), "invalid candidateEvaluation.dataCompleteness");
+  invariant(Array.isArray(value.metrics), "candidateEvaluation.metrics must be an array");
+  for (const metric of value.metrics) assertCandidateMetricSnapshot(metric);
+  invariant(Array.isArray(value.constraintResults), "candidateEvaluation.constraintResults must be an array");
+  for (const constraintResult of value.constraintResults) assertConstraintEvaluationOutcome(constraintResult);
+  invariant(typeof value.paretoEligible === "boolean", "candidateEvaluation.paretoEligible must be a boolean");
+  invariant(
+    value.weightedScore === null || (typeof value.weightedScore === "number" && Number.isFinite(value.weightedScore)),
+    "candidateEvaluation.weightedScore must be a finite number or null"
+  );
+}
+
+export function assertOptimizationResult(value: unknown): asserts value is OptimizationResult {
+  invariant(isPlainObject(value), "optimizationResult must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "optimizationResult.id is required");
+  invariant(typeof value.problemId === "string" && value.problemId.length > 0, "optimizationResult.problemId is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "optimizationResult.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "optimizationResult.projectVersion must be a positive integer"
+  );
+  invariant(Array.isArray(value.candidateEvaluations), "optimizationResult.candidateEvaluations must be an array");
+  for (const evaluation of value.candidateEvaluations) assertCandidateEvaluation(evaluation);
+  invariant(isStringArray(value.paretoOptimalCandidateIds), "optimizationResult.paretoOptimalCandidateIds must be an array of strings");
+  invariant(isStringArray(value.dominatedCandidateIds), "optimizationResult.dominatedCandidateIds must be an array of strings");
+  invariant(isStringArray(value.infeasibleCandidateIds), "optimizationResult.infeasibleCandidateIds must be an array of strings");
+  invariant(isStringArray(value.unknownFeasibilityCandidateIds), "optimizationResult.unknownFeasibilityCandidateIds must be an array of strings");
+  invariant(isStringArray(value.incompleteDataCandidateIds), "optimizationResult.incompleteDataCandidateIds must be an array of strings");
+  invariant(Array.isArray(value.dominance), "optimizationResult.dominance must be an array");
+  for (const relation of value.dominance) assertDominanceRelation(relation);
+  invariant(typeof value.algorithm === "string" && value.algorithm.trim().length > 0, "optimizationResult.algorithm is required");
+  invariant(isIsoTimestamp(value.computedAt), "optimizationResult.computedAt must be an ISO timestamp");
+  invariant(isEntitySource(value.source), "invalid optimizationResult.source");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "optimizationResult.metadata must be a JSON-serializable object");
 }
 
 /**

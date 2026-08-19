@@ -2184,3 +2184,145 @@ describe("P22 multiple candidate designs / experimentation: no duplicated models
     }
   });
 });
+
+describe("P23 multi-objective optimization: deterministic-only math, no Gemini verdicts, no World Model bypass, no P24/P25/P26 leakage", () => {
+  // Phase 23's central architectural rule: "NAQSH may optimize based on
+  // VERIFIED/MEASURED engineering results. It must NOT optimize based on
+  // arbitrary LLM opinions." Every check below proves one specific way that
+  // boundary could have silently eroded: the deterministic engine never
+  // touches a ModelProvider/EnvironmentAdapter, a "measured" metric can only
+  // ever be traced to a real VerificationResult, and Pareto/optimization
+  // results never carry a hidden "best candidate" verdict.
+  const p23CoreFiles = [
+    "packages/core/src/optimization-semantics.ts",
+    "packages/core/src/optimization-engine.ts",
+    "packages/core/src/optimization-metric-store.ts",
+    "packages/core/src/optimization-problem-store.ts",
+    "packages/core/src/optimization-result-store.ts",
+    "packages/core/src/create-optimization-problem-tool.ts",
+    "packages/core/src/record-candidate-metric-value-tool.ts",
+    "packages/core/src/run-optimization-tool.ts"
+  ];
+
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("no arbitrary code execution anywhere in the P23 files", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of p23CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("no P23 core file imports @naqsh/adapters -- core stays adapter-agnostic, same boundary every prior phase already enforces", () => {
+    for (const relativePath of p23CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    }
+  });
+
+  it("the deterministic engine (optimization-engine.ts) never imports ModelProvider or EnvironmentAdapter -- Pareto dominance, feasibility, and weighted scores are computed by deterministic code only, never by Gemini or a live environment call", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/optimization-engine.ts"), "utf8"));
+    assert.doesNotMatch(code, /from\s+["'`]\.\/model-provider(-contract)?\.js["'`]/, "optimization-engine.ts must not import ModelProvider");
+    assert.doesNotMatch(code, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, "optimization-engine.ts must not import EnvironmentAdapter");
+    assert.doesNotMatch(code, /invokeRegisteredTool/, "optimization-engine.ts must not call invokeRegisteredTool -- it is a pure function, not an orchestrator");
+  });
+
+  it("no P23 core file imports ModelProvider or EnvironmentAdapter -- not just the engine, every P23 file stays out of the Gemini/environment path entirely (defense in depth, not just the single most obvious file)", () => {
+    for (const relativePath of p23CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, /from\s+["'`]\.\/model-provider(-contract)?\.js["'`]/, `${relativePath} must not import ModelProvider`);
+      assert.doesNotMatch(code, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import EnvironmentAdapter`);
+    }
+  });
+
+  it("AUDIT FIX: computeOptimizationResult defends its own structural invariants (no duplicate objective metricKey, no duplicate candidateId) rather than silently trusting an unvalidated caller -- mirrors compareCandidates's (P22) identical defensive precedent", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/optimization-engine.ts"), "utf8"));
+    assert.match(code, /WorldModelValidationError/, "optimization-engine.ts must defensively reject a malformed problem, not silently produce wrong output");
+  });
+
+  it("AUDIT FIX: the unit-compatibility check exactly mirrors P16's verify.ts checkUnitCompatible semantics -- a metric with no recorded unit is UNUSABLE when a unit is declared, never silently assumed compatible", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/optimization-engine.ts"), "utf8"));
+    assert.doesNotMatch(
+      code,
+      /declaredUnit\s*!==\s*null\s*&&\s*metric\.unit\s*!==\s*null\s*&&\s*declaredUnit\s*!==\s*metric\.unit/,
+      "optimization-engine.ts must not reintroduce the earlier buggy 'both sides must be non-null to detect a mismatch' condition"
+    );
+    assert.match(code, /unitsCompatible/, "optimization-engine.ts must use the shared unitsCompatible helper for both usability and mismatch-reason checks");
+  });
+
+  it("all three P23 tools are classified suggest/optimization -- none of them ever mutate the World Model or the environment", () => {
+    const toolFiles: Record<string, string> = {
+      "packages/core/src/create-optimization-problem-tool.ts": "create_optimization_problem",
+      "packages/core/src/record-candidate-metric-value-tool.ts": "record_candidate_metric_value",
+      "packages/core/src/run-optimization-tool.ts": "run_optimization"
+    };
+    for (const [relativePath, toolName] of Object.entries(toolFiles)) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, /mutation:\s*["'`]suggest["'`]/, `${relativePath} (${toolName}) must declare mutation: "suggest"`);
+      assert.match(contents, /target:\s*["'`]optimization["'`]/, `${relativePath} (${toolName}) must declare target: "optimization"`);
+    }
+  });
+
+  it("record-candidate-metric-value-tool.ts actually cross-checks a claimed verification_result against the real VerificationResultStore, and rejects an inconclusive one -- the central integrity gate is real code, not merely documented", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/record-candidate-metric-value-tool.ts"), "utf8"));
+    assert.match(code, /verificationResultStore\.getById/, "record-candidate-metric-value-tool.ts must look up the claimed verificationResultId in a real VerificationResultStore");
+    assert.match(code, /"inconclusive"/, "record-candidate-metric-value-tool.ts must reject an inconclusive VerificationResult");
+    assert.match(code, /verificationResult\.actual/, "record-candidate-metric-value-tool.ts must derive the metric value from the VerificationResult's own actual field, not trust a caller-supplied one");
+  });
+
+  it("AUDIT FIX: record-candidate-metric-value-tool.ts rejects a VerificationResult belonging to a DIFFERENT project than the candidate -- VerificationResultStore is not project-scoped, mirroring ObjectiveSatisfactionResult's (P17) already-established verification_result_wrong_project check for the identical cross-reference", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/record-candidate-metric-value-tool.ts"), "utf8"));
+    assert.match(code, /verification_result_wrong_project/, "record-candidate-metric-value-tool.ts must reject a cross-project VerificationResult reference");
+    assert.match(code, /verificationResult\.projectId\s*!==\s*candidate\.projectId/, "record-candidate-metric-value-tool.ts must actually compare verificationResult.projectId against candidate.projectId");
+  });
+
+  it("optimization-types.ts references every related entity (Requirement/Constraint/Candidate/Experiment/VerificationResult/ResearchEvidence) by id only -- it never re-declares one as a duplicated shape", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/optimization-types.ts"), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /export\s+interface\s+(Requirement|Constraint|Candidate|Experiment|VerificationResult|ResearchEvidence|Objective)\b/,
+      "optimization-types.ts must not define a second, duplicate entity -- P23 types reference every related entity by id"
+    );
+  });
+
+  it("OptimizationResult / candidate-comparison.ts never define a scoring/ranking/'winner' FIELD or sort-based ranking operation outside the one explicit, opt-in weightedScore -- Pareto analysis never silently declares a single best candidate", () => {
+    const forbiddenFieldDeclaration = /\b(winner|bestCandidateId|recommendation|rank)\s*[:?]\s*(number|string|boolean)/i;
+    for (const relativePath of ["packages/schemas/src/optimization-types.ts", "packages/core/src/optimization-engine.ts"]) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, forbiddenFieldDeclaration, `${relativePath} must not define a winner/bestCandidateId/recommendation/rank field`);
+    }
+  });
+
+  it("no P23 core file implements long-term memory, autonomous/background experimentation, or a new environment adapter -- those are P24/P25/P26, out of scope this phase", () => {
+    const forbiddenPatterns = [/setInterval\s*\(/, /setTimeout\s*\(/, /class\s+\w*Memory\b/i, /new\s+EnvironmentAdapter\b/];
+    for (const relativePath of p23CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not contain ${pattern} -- that would be P24/P25/P26 scope creep`);
+      }
+    }
+  });
+
+  it("no P23 core file duplicates P16's verification machinery or P9's planning machinery -- both are reused unmodified (P23 legitimately reuses verify.ts's compareNumeric directly, which is not duplication)", () => {
+    const forbiddenImports = ["./evidence.js", "./objective-satisfaction.js", "./planner.js", "./design-generator.js"];
+    for (const relativePath of p23CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const forbidden of forbiddenImports) {
+        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
+      }
+    }
+  });
+});

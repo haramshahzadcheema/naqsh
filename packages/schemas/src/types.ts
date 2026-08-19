@@ -579,6 +579,12 @@ export type ToolValueSchema =
  * extend this list only when a real producer exists (an EnvironmentAdapter
  * for a new target, a verification engine, etc.), never speculatively.
  */
+/** P23: extended with `"optimization"` -- the exact same additive convention
+ * this type's own doc comment already committed to, applied literally. A
+ * genuinely new functional area (multi-objective optimization is neither
+ * project state, environment, verification-per-se, nor research), matching
+ * how `"checkpoint"` was added in P15 and `"research"` was finally activated
+ * in P21. */
 export type ToolTarget =
   | "world_model"
   | "environment"
@@ -587,7 +593,8 @@ export type ToolTarget =
   | "simulation"
   | "robotics"
   | "eda"
-  | "checkpoint";
+  | "checkpoint"
+  | "optimization";
 
 export const TOOL_TARGETS: readonly ToolTarget[] = [
   "world_model",
@@ -597,7 +604,8 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
   "simulation",
   "robotics",
   "eda",
-  "checkpoint"
+  "checkpoint",
+  "optimization"
 ];
 
 /**
