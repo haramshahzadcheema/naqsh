@@ -55,6 +55,61 @@ describe("planBuildOperations: deterministic translation", () => {
   });
 });
 
+describe("planBuildOperations: P26 -- targetObjectId plans modify_environment_object instead of create_environment_object", () => {
+  it("an output with targetObjectId set plans one modify_environment_object call per property, never create_environment_object", () => {
+    const design = createDesignSpecification(
+      designInput({
+        expectedOutputs: [
+          {
+            id: "out_sensor",
+            componentId: "comp_plate",
+            environmentObjectType: "sensor",
+            environmentGenericType: null,
+            properties: { setpointN: 600, toleranceN: 8 },
+            targetObjectId: "envobj_sensor_1"
+          }
+        ]
+      })
+    );
+    const operations = planBuildOperations(design);
+    assert.equal(operations.length, 2, "one modify call per property key");
+    assert.ok(operations.every((op) => op.toolName === "modify_environment_object"));
+    assert.deepEqual(operations[0]!.input, { objectId: "envobj_sensor_1", propertyKey: "setpointN", value: 600 });
+    assert.deepEqual(operations[1]!.input, { objectId: "envobj_sensor_1", propertyKey: "toleranceN", value: 8 });
+  });
+
+  it("a targetObjectId output with empty properties plans zero operations -- never a phantom no-op call", () => {
+    const design = createDesignSpecification(
+      designInput({
+        expectedOutputs: [{ id: "out_sensor", componentId: "comp_plate", environmentObjectType: "sensor", environmentGenericType: null, properties: {}, targetObjectId: "envobj_sensor_1" }]
+      })
+    );
+    assert.deepEqual(planBuildOperations(design), []);
+  });
+
+  it("mixes create-target and modify-target outputs correctly within the same design, preserving declared order", () => {
+    const design = createDesignSpecification(
+      designInput({
+        expectedOutputs: [
+          { id: "out_plate", componentId: "comp_plate", environmentObjectType: "part", environmentGenericType: "solid", properties: { Length: 100 } },
+          { id: "out_sensor", componentId: "comp_hole", environmentObjectType: "sensor", environmentGenericType: null, properties: { setpointN: 600 }, targetObjectId: "envobj_sensor_1" }
+        ]
+      })
+    );
+    const operations = planBuildOperations(design);
+    assert.equal(operations.length, 2);
+    assert.equal(operations[0]!.toolName, "create_environment_object");
+    assert.equal(operations[1]!.toolName, "modify_environment_object");
+  });
+
+  it("targetObjectId defaults to null -- every pre-existing design (no field supplied) is completely unaffected", () => {
+    const design = createDesignSpecification(designInput());
+    assert.ok(design.expectedOutputs.every((output) => output.targetObjectId === null));
+    const operations = planBuildOperations(design);
+    assert.ok(operations.every((op) => op.toolName === "create_environment_object"));
+  });
+});
+
 /** Mirrors create-environment-object-tool.test.ts's fake adapter, with an
  * optional forced failure on the Nth createObject call to exercise
  * partial-build/fail-safely behavior. */

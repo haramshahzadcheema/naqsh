@@ -102,6 +102,19 @@ export interface DesignRelationshipInput {
  * exactly like `modify-environment-object-tool.ts`'s own `value` field
  * already accepts a polymorphic value for the identical reason. This file
  * does not know or care what "Length" means to any given adapter.
+ *
+ * `targetObjectId` (P26): when non-null, this output realizes its intent
+ * by MODIFYING an already-existing environment object (via the real
+ * `modify_environment_object` tool, one call per `properties` entry)
+ * instead of creating a new one -- `planBuildOperations` (core) branches on
+ * exactly this field. This is what lets "build" work against an
+ * environment whose topology is fixed and only supports the "modify"
+ * capability (a simulation environment's sensors/actuators are seeded
+ * once, never created/deleted -- see `mock-simulation-environment.ts`,
+ * @naqsh/adapters) without requiring "create" as a universal prerequisite
+ * -- the P26 brief's own explicit "the experiment model must not require
+ * geometry as a universal prerequisite." `null` (the default) preserves
+ * every existing design's exact prior behavior: create a new object.
  */
 export interface ExpectedBuildOutput {
   id: string;
@@ -110,6 +123,7 @@ export interface ExpectedBuildOutput {
   environmentObjectType: string;
   environmentGenericType: EnvironmentObjectGenericType | null;
   properties: Record<string, unknown>;
+  targetObjectId: string | null;
 }
 
 export interface ExpectedBuildOutputInput {
@@ -118,6 +132,7 @@ export interface ExpectedBuildOutputInput {
   environmentObjectType: string;
   environmentGenericType?: EnvironmentObjectGenericType | null;
   properties?: Record<string, unknown>;
+  targetObjectId?: string | null;
 }
 
 export interface DesignSpecification {

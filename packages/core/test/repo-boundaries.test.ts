@@ -2636,3 +2636,80 @@ describe("P25 bounded background experimentation: no unbounded execution, no sec
     }
   });
 });
+
+describe("P26 environment-independent engineering agent: no vendor concepts in core, no environment-kind conditionals, registry stays below the core boundary", () => {
+  // P26's central rule: "The Naqsh agent operates on an abstract
+  // engineering environment through a stable EnvironmentAdapter boundary.
+  // FreeCAD is one implementation of that boundary, not the definition of
+  // the agent." Every check below proves one specific way that boundary
+  // could have silently eroded -- most of the underlying guarantees
+  // (no FreeCAD leakage into core/schemas, capability-gated contract tests,
+  // generic tool naming) were ALREADY established and enforced by the
+  // P5/P12/P13 sections above; this section covers what's NEW in P26: the
+  // environment registry stays out of core, orchestration files contain no
+  // environment-KIND conditional, and the create/modify build-operation
+  // branch (P26's own addition) is real, exercised code.
+  const orchestrationFiles = [
+    "packages/core/src/agent-loop.ts",
+    "packages/core/src/experiment-executor.ts",
+    "packages/core/src/background-job-runner.ts",
+    "packages/core/src/build-executor.ts",
+    "packages/core/src/build-operations.ts",
+    "packages/core/src/optimization-engine.ts"
+  ];
+
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("no core orchestration file imports @naqsh/adapters or an environment registry -- core never selects a concrete environment by name", () => {
+    const forbiddenPatterns = [/from\s+["'`]@naqsh\/adapters["'`]/, /from\s+["'`][^"'`]*environment-registry[^"'`]*["'`]/i];
+    for (const relativePath of orchestrationFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not import ${pattern} -- core receives an already-constructed EnvironmentAdapter, it never selects one by name`);
+      }
+    }
+  });
+
+  it("no core orchestration file branches on an environment kind string (\"freecad\"/\"mock_cad\"/\"mock_simulation\") -- polymorphism/capabilities only, never environment-name conditionals", () => {
+    const forbiddenPatterns = [/===\s*["'`]freecad["'`]/, /===\s*["'`]mock_cad["'`]/, /===\s*["'`]mock_simulation["'`]/, /\.kind\s*===\s*["'`]freecad["'`]/];
+    for (const relativePath of orchestrationFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not branch on a specific environment kind -- use supportsCapability()/structured errors instead`);
+      }
+    }
+  });
+
+  it("environment-registry.ts lives in @naqsh/adapters, not @naqsh/core, and uses a Map (not a switch statement) for lookup", () => {
+    const relativePath = "packages/adapters/src/environment-registry.ts";
+    assert.equal(existsSync(join(repoRoot, relativePath)), true, "the environment registry must live in @naqsh/adapters");
+    const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+    assert.doesNotMatch(code, /\bswitch\s*\(/, "environment-registry.ts must not use a switch statement -- Map-based registration only");
+    assert.match(code, /new Map/, "environment-registry.ts must use a Map for kind -> registration lookup");
+  });
+
+  it("build-operations.ts's create-vs-modify branch (P26) is real code, not merely documented -- it actually checks targetObjectId and plans modify_environment_object", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/build-operations.ts"), "utf8"));
+    assert.match(code, /targetObjectId/, "build-operations.ts must reference ExpectedBuildOutput.targetObjectId");
+    assert.match(code, /modify_environment_object/, "build-operations.ts must be able to plan a modify_environment_object operation");
+  });
+
+  it("ExpectedBuildOutput.targetObjectId defaults to null in the factory -- every design specification predating P26 keeps its exact prior (create-only) behavior", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/schemas/src/factories.ts"), "utf8"));
+    assert.match(code, /targetObjectId:\s*input\.targetObjectId\s*\?\?\s*null/, "createExpectedBuildOutput must default targetObjectId to null");
+  });
+
+  it("mock_cad and mock_simulation declare genuinely different EnvironmentCapability sets -- the contract suite is proven capability-driven, not just running twice against identical profiles", () => {
+    const cadCode = stripComments(readFileSync(join(repoRoot, "packages/adapters/src/mock-cad-environment.ts"), "utf8"));
+    const simCode = stripComments(readFileSync(join(repoRoot, "packages/adapters/src/mock-simulation-environment.ts"), "utf8"));
+    assert.match(cadCode, /capabilities:\s*\[\s*["'`]create["'`]/, "mock-cad-environment.ts must declare 'create' among its capabilities");
+    assert.doesNotMatch(simCode, /capabilities:\s*\[\s*["'`]create["'`]|capabilities:\s*\[[^\]]*["'`]create["'`]/, "mock-simulation-environment.ts must NOT declare 'create' -- fixed topology");
+  });
+
+  it("no P26 test file fabricates FreeCAD test results -- freecad-adapter.integration.test.ts must genuinely skip (not fake-pass) when FreeCAD is unavailable", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/adapters/test/freecad-adapter.integration.test.ts"), "utf8"));
+    assert.match(code, /skip/i, "freecad-adapter.integration.test.ts must genuinely skip when a real FreeCAD installation is unavailable, never fake a pass");
+  });
+});

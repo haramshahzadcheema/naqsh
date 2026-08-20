@@ -1976,7 +1976,8 @@ export function createExpectedBuildOutput(input: ExpectedBuildOutputInput): Expe
     componentId: input.componentId,
     environmentObjectType: input.environmentObjectType,
     environmentGenericType: input.environmentGenericType ?? null,
-    properties: safeStructuredClone(input.properties ?? {}, "expectedBuildOutput.properties")
+    properties: safeStructuredClone(input.properties ?? {}, "expectedBuildOutput.properties"),
+    targetObjectId: input.targetObjectId ?? null
   };
   assertExpectedBuildOutput(output);
   return Object.freeze(output);

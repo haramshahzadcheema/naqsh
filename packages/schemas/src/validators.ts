@@ -2261,6 +2261,10 @@ export function assertExpectedBuildOutput(value: unknown): asserts value is Expe
     "invalid expectedBuildOutput.environmentGenericType"
   );
   invariant(isPlainObject(value.properties) && isJsonSafeValue(value.properties), "expectedBuildOutput.properties must be a JSON-serializable object");
+  invariant(
+    value.targetObjectId === null || (typeof value.targetObjectId === "string" && value.targetObjectId.length > 0),
+    "expectedBuildOutput.targetObjectId must be a non-empty string or null"
+  );
 }
 
 /**

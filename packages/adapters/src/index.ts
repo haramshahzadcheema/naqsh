@@ -12,3 +12,11 @@ export {
   type MockResearchSearchOutcome,
   type MockResearchSearchResponder
 } from "./mock-research-provider.js";
+export {
+  createEnvironmentRegistry,
+  createDefaultEnvironmentRegistry,
+  EnvironmentRegistryError,
+  type EnvironmentRegistration,
+  type EnvironmentRegistry,
+  type EnvironmentRegistryErrorKind
+} from "./environment-registry.js";

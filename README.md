@@ -145,7 +145,7 @@ scanned across every `.ts` file in `core/src`, `schemas/src`,
   run unmodified against adapters with entirely different capability
   profiles — proven today by `packages/adapters`' mocks
   (`createMockCadEnvironment`: full capability set;
-  `createMockSimulationEnvironment`: `modify` only, fixed topology;
+  `createMockSimulationEnvironment`: `modify` + `checkpoint` only, fixed topology (P26);
   `createMockEnvironment`: P6's deterministic lab, see below) and intended
   to run against a real `FreeCADAdapter` in P12+ the exact same way.
   `EnvironmentObject` is deliberately NOT `EngineeringObject`: an adapter
@@ -2660,6 +2660,198 @@ job (a fresh `BackgroundJob` IS how a retry is expressed — there is no
 `completed`/`failed` → `queued` transition, deliberately, since that would
 make a terminal status non-terminal); any UI (consistent with every prior
 phase's identical deferral).
+
+## Environment-Independent Engineering Agent (P26)
+
+**What this phase answers.** P0–P25 already built the pieces this phase's
+statement depends on — they just hadn't been proven together, deliberately,
+against two fundamentally different environments in one place. P26's
+opening claim, taken literally: **"The Naqsh agent operates on an abstract
+engineering environment through a stable `EnvironmentAdapter` boundary.
+FreeCAD is one implementation of that boundary, not the definition of the
+agent."** This phase does not introduce a new abstraction layer — the
+`EnvironmentAdapter` contract (P5), its capability model, and the reusable
+`runEnvironmentAdapterContractTests` suite were already environment-neutral
+by construction, audited repeatedly across P12/P13's own "no FreeCAD
+leakage into core/schemas" boundary tests. P26's actual work: closing the
+one real architectural gap that prevented a NON-CAD environment from using
+P22's own experiment machinery (see "The create-vs-modify build gap"
+below), adding a typed environment **registry** (a genuine gap — no such
+selector existed before this phase), and proving the whole thing end-to-end
+with a **golden portability test** that runs one workflow implementation,
+unmodified, against a CAD-like and a simulation-like environment.
+
+**The `EnvironmentAdapter` contract (P5, unchanged) is already the
+boundary.** Twelve methods (`describe`/`health`/`connect`/`disconnect`/
+`listObjects`/`inspectObject`/`inspectDocument`/`createObject`/
+`modifyObject`/`deleteObject`/`save`/`checkpoint`/`restore`), every one
+present on every adapter regardless of what it supports — an unsupported
+operation returns `{status:"error", error:{kind:"unsupported_capability"}}`,
+never throws, never silently no-ops, never fakes success. `EnvironmentDescriptor.capabilities`
+(`create`/`modify`/`delete`/`save`/`checkpoint`) is what a caller checks via
+`supportsCapability()` before attempting an optional operation — though
+every method fails deterministically either way, so checking first is a
+convenience, not the enforcement mechanism. Authorization has no presence
+in this interface at all: an adapter is a dumb, uniformly-callable
+mechanism, never a policy decision point (enforced: no adapter file may
+import P4's authorization machinery) — every real mutation reaches an
+adapter only through a `Tool` handler, subject to `executeTool`'s
+`authorize` hook first.
+
+**Four adapters exist today, all satisfying the identical contract:**
+  - `createFreeCadAdapter` (`@naqsh/adapters`) — a real FreeCAD environment
+    via a headless, allowlisted subprocess boundary (`freecad-runtime.ts`
+    is the ONLY file in the repository that imports `node:child_process`,
+    enforced). Capabilities: `save`/`modify`/`checkpoint` — no
+    `create`/`delete` (Phase 12's own honest scope: FreeCAD's genuine
+    document lifecycle isn't attempted here).
+  - `createMockCadEnvironment` — deterministic, in-memory, FULL capability
+    set (`create`/`modify`/`delete`/`save`/`checkpoint`), seeded with a
+    bracket-like object. The "you can build new geometry" environment.
+  - `createMockSimulationEnvironment` — deterministic, in-memory, NARROW
+    capability set (`modify` + `checkpoint` only — P26 added `checkpoint`
+    to the original P5 profile; see below). Seeded with a fixed sensor/
+    actuator topology that can never be created into or deleted from — the
+    "you can only tune what already exists" environment, proving the
+    contract is genuinely capability-driven, not secretly CAD-shaped.
+  - `createMockEnvironment` — P6's general-purpose deterministic testing
+    harness (full capability set), what every phase before P12 tested
+    against before FreeCAD existed.
+
+All four run through the EXACT SAME reusable contract-test suite,
+`runEnvironmentAdapterContractTests` (`packages/core/src/environment-adapter-contract.ts`):
+one `describe`/`it` tree, called once per adapter, capability-aware
+throughout ("if this capability IS declared, prove the operation actually
+works end-to-end; if NOT, prove it fails with `unsupported_capability`") —
+the same test code asserts opposite outcomes depending only on
+`descriptor.capabilities`, which is what makes it safe to run against
+adapters as different as a full CAD mock and a fixed-topology simulation
+mock without ever being tailored to either.
+
+**The create-vs-modify build gap (P26's one real architectural fix).**
+P20's build pipeline (`build-operations.ts` → `create_environment_object`)
+was, until this phase, unconditionally create-flavored: `planBuildOperations`
+always planned a `create_environment_object` call, which requires the
+`create` capability — an environment with a fixed topology (like the
+original, `modify`-only simulation mock) could never be built against at
+all, meaning P22's experiment executor, P23's optimization (fed by
+experiments), and P25's background jobs were all silently CAD-only in
+practice despite being environment-agnostic in their own code. Fixed by
+adding `ExpectedBuildOutput.targetObjectId` (schemas, defaults to `null`,
+so every design specification written before P26 is completely
+unaffected): when set, `planBuildOperations` plans one `modify_environment_object`
+call per entry in `properties` (that tool sets one property per call)
+against the named EXISTING object, instead of one `create_environment_object`
+call. This is what lets "build" mean "realize this candidate's intent,
+however this environment supports doing so" — create where you can,
+modify where that's all you can do — closing the P26 brief's own explicit
+"the experiment model must not require geometry as a universal
+prerequisite." `mock-simulation-environment.ts` was widened to include the
+`checkpoint` capability (still no `create`/`delete`/`save`) specifically so
+a simulation experiment can use the SAME "checkpoint → mutate → verify →
+rollback/commit" pattern P22's `executeExperimentForCandidate` already
+requires of every environment — a real simulation environment plausibly
+CAN snapshot/restore its own parameter state around one bounded run
+without needing to create or delete simulated entities at all.
+
+**The environment registry (`@naqsh/adapters`, new this phase) — a typed
+selector, never a giant conditional.** `createEnvironmentRegistry()`
+returns a fresh, independent `Map`-based registry (no module-level
+singleton — two registries never share registrations); `.register({kind,
+description, create})` adds one named factory, rejecting an empty `kind`
+or a duplicate registration; `.create(kind)` constructs a FRESH adapter
+instance every call (never cached/reused — no shared mutable environment
+state across callers) and verifies the constructed adapter's own
+`describe().kind` actually matches the registration key, failing loudly
+(`EnvironmentRegistryError`) on a wiring bug rather than silently handing
+back a mismatched adapter. `createDefaultEnvironmentRegistry()` pre-registers
+all four adapters this repository ships. Lives in `@naqsh/adapters`, NOT
+`@naqsh/core` — the whole point is knowing about every concrete adapter by
+name, which is exactly what core must never do (enforced: no core
+orchestration file imports `@naqsh/adapters` or the registry itself; no
+core orchestration file branches on a literal environment-kind string like
+`"freecad"`/`"mock_cad"`/`"mock_simulation"`).
+
+**The golden portability test — the centerpiece proof**
+(`packages/adapters/test/p26-golden-portability.test.ts`). One function,
+`runGoldenWorkflow`, containing not one conditional on environment kind —
+every environment-specific fact (which adapter, whether the build creates
+or modifies, which property to verify, what threshold) arrives as external
+configuration. Called twice:
+
+```
+create project -> define objective -> create requirement -> generate plan
+  -> create proposal -> obtain approval -> execute through
+  EnvironmentAdapter -> verify result -> evaluate objective satisfaction
+  -> record experiment -> store meaningful memory
+```
+
+Run 1 (CAD): creates a new part with `massG: 320`, verifies `massG <= 400`,
+confirms objective satisfaction. Run 2 (simulation): MODIFIES the existing
+seeded sensor's `setpointN` to `550` (never calls `create_environment_object`
+at all — the tool isn't even authorized for that path to succeed), verifies
+`setpointN <= 600`, confirms objective satisfaction. Every step calls real,
+unmodified P1 (`updateWorldModel`)/P4 (`ApprovalStore`/`AutonomyGrantStore`/
+`createExecuteToolAuthorizer`)/P9 (`createPlan`)/P10 (`createProposal`)/P15
+(`create_checkpoint`)/P16 (`evaluateCheck`)/P17 (`evaluateObjectiveSatisfaction`)/
+P22 (`executeExperimentForCandidate`, the ONE function that actually
+touches the environment, called completely unmodified for both runs)/P24
+(`createMemoryRecord`, with `metadata.environmentKind` explicitly naming
+which environment the finding came from — memory provenance never defaults
+to an assumed environment). A companion test
+(`p26-optimization-and-job-portability.test.ts`) proves P23's
+`computeOptimizationResult` (which never imports `EnvironmentAdapter` at
+all) correctly ranks both CAD-flavored (mass/strength) and
+simulation-flavored (energy/thermal) candidates through the identical
+function call, and runs a real P25 `BackgroundJob` — two candidates,
+`runBackgroundJob`, completely unmodified — against the simulation mock,
+confirming both complete successfully while never calling
+`create_environment_object` even once.
+
+**Object identity stays session-scoped, by design, not by omission.**
+`EnvironmentObjectId` is a plain string (schemas), "meaningful only within
+the environment that issued it — never assumed to correlate with any World
+Model id or any OTHER environment's ids." `EnvironmentSession.environmentKind`
+is what actually scopes an id: a caller addresses an object as
+(session, objectId), never a bare objectId assumed globally unique. Two
+adapters' object ids can coincide by pure chance with zero risk, because
+nothing in this codebase ever compares an objectId without also knowing
+which session/adapter it came from — no giant opaque-string scheme was
+needed to prevent a collision that structurally can't occur.
+
+**Adding a new environment.** Implement `EnvironmentAdapter` (twelve
+methods, `packages/core/src/environment-adapter.ts`) in a new file under
+`packages/adapters/src/` — reuse `createInMemoryEnvironmentAdapter`
+(`in-memory-environment.ts`) if it's another deterministic mock (supply
+your own `descriptor`/`seedObjects`, exactly like `mock-cad-environment.ts`/
+`mock-simulation-environment.ts` do in ~30 lines each), or implement the
+interface directly for a real environment (mirror `freecad-adapter.ts`'s
+"one subprocess boundary" pattern if it needs to shell out to anything —
+never add a second `child_process` import site). Declare ONLY the
+capabilities genuinely supported; everything else must fail with
+`unsupported_capability`, never silently succeed. Add one test file calling
+`runEnvironmentAdapterContractTests("your_kind", () => createYourAdapter())`
+— this alone proves the generic contract holds. Register it in
+`createDefaultEnvironmentRegistry()` (`environment-registry.ts`) if it
+should be selectable by name. **No core file needs to change** — this is
+the acceptance test for "environment-independent": if adding an
+environment ever requires editing `agent-loop.ts`, `experiment-executor.ts`,
+`background-job-runner.ts`, or any other orchestration file, that is a
+regression in the boundary, not a normal part of the process.
+
+**Deliberately NOT implemented (P26 scope discipline).** No Kubernetes/
+message brokers/distributed schedulers/plugin marketplaces/dynamic code
+loading — a `Map`-based registry and four adapters this repository already
+had (three mocks, one real) are sufficient to prove the architecture; the
+brief's own explicit "P26 is about architectural portability, not turning a
+hackathon repository into a multinational corporation's procurement
+nightmare." No second/generalized "environment-independent agent" class —
+the existing orchestration (agent loop, experiment executor, background
+job runner) already IS environment-independent; there is nothing further
+to build on top of it for this phase. No third real (non-mock,
+non-FreeCAD) commercial adapter — the brief explicitly does not require
+one; mock CAD + mock simulation + real FreeCAD already demonstrate three
+genuinely different capability/vocabulary profiles.
 
 ## Error model
 
