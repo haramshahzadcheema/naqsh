@@ -2358,6 +2358,309 @@ explicit "a clean deterministic retrieval layer is preferable at P24" —
 function, nothing more); any UI (consistent with every prior phase's
 identical deferral).
 
+## Bounded Background Experimentation (P25)
+
+**What this phase answers.** Every prior phase's execution is synchronous
+and human/agent-initiated: submit a tool call, get a result. P25 answers
+"how do I ask NAQSH to evaluate several candidates without babysitting each
+one" — WITHOUT crossing into unrestricted autonomy. The brief's own framing,
+taken literally: **P25 is NOT "make the agent autonomous." P25 is: BOUNDED
+BACKGROUND ENGINEERING WORK.** A `BackgroundJob`
+(`packages/schemas/src/background-job-types.ts`) is a finite, explicitly
+scoped unit of work — "build and optionally verify up to N already-real
+`Candidate`s (P22)" — never an open-ended "keep working until told to
+stop." It lives in its own store (`BackgroundJobStore`, core), exactly like
+`Candidate`/`OptimizationProblem`/`MemoryRecord` — never `WorldModelState`,
+never written via the Change Model.
+
+**The job state machine is finite and explicit.** `JobStatus` — `queued` →
+`running` → (`paused` ↔ `running`) → `cancelling` → `cancelled`, or
+`running` → `completed`/`failed` — is enforced by
+`JOB_STATUS_TRANSITIONS` (a `Set<"from->to">`, schemas) and
+`BackgroundJobStore.transition` (core), which consults it before applying
+anything: `completed → running` and every other nonsense transition is
+rejected structurally, not by caller discipline (repo-boundaries-enforced:
+the transition table is real code, tested against both every legal and
+every illegal pair). `running`/`paused` are the ONLY non-terminal statuses
+`BackgroundJobStore.getRunningJobForProject` needs to check for the
+concurrency policy below.
+
+**The budget model has no way to express "unlimited."** `JobBudget`
+(schemas) is five REQUIRED, non-optional, positive-integer fields —
+`maxIterations`/`maxDurationMs`/`maxToolCalls`/`maxModelCalls`/
+`maxCandidates` — `assertJobBudget` rejects `0`, negative, `NaN`, and
+`Infinity` for every one of them (repo-boundaries-enforced: no `?:` on any
+`JobBudget` field). Only five dimensions are modeled, each because a REAL,
+already-existing part of this repo actually consumes it — `maxToolCalls`
+counts every `executeTool` call the job's own wrapped `authorize` observes
+(one candidate's `executeExperimentForCandidate` alone makes several:
+`create_checkpoint`, `add_experiment`, the build's own tool calls,
+`update_experiment`); `maxModelCalls` is reported by a caller-supplied
+`verifyCandidate` hook via `recordModelCall()`, since the runner itself
+never calls a model. Deliberately NOT modeled: `maxEnvironmentOperations`
+(environment operations already happen inside a tool call, so
+`maxToolCalls` is the correct, existing-architecture boundary — P25 never
+calls an `EnvironmentAdapter` directly); `maxCost`/token budget (no
+cost/token accounting exists anywhere in this repo's
+`ModelInvocationResult` yet — inventing one here would be speculative
+infrastructure, not integration); `maxMemoryRecords` (the runner never
+auto-creates a `MemoryRecord` itself). `JobBudgetConsumption` mirrors
+`JobBudget`'s shape exactly and only ever grows — every accounting helper
+(`accountIteration`/`accountCandidateEvaluated`/`accountToolCall`/
+`accountModelCall`/`accountDuration`, `background-job-budget.ts`) is pure,
+returning a new frozen snapshot, never mutating in place; there is no
+decrement/reset operation. `checkBudgetExhausted` checks all five
+dimensions in a FIXED, documented order (candidates → iterations →
+duration → tool calls → model calls), so when multiple are simultaneously
+exhausted the same `JobStopReason` is always reported for the same
+budget+consumption pair — never a function of object/Map iteration order.
+Duration is measured against a MONOTONIC `Clock` (`performance.now()` in
+production, a deterministic, manually-advanced `FakeClock` in tests) —
+never raw wall-clock timestamps, which are kept separately on
+`BackgroundJob` itself purely for human-readable audit purposes.
+
+**The bounded executor (`background-job-runner.ts`'s `runBackgroundJob`) is
+composition, not reimplementation.** Every actual unit of work is delegated
+to an EXISTING, unmodified system — the file's own central discipline:
+  - Candidate execution is the EXISTING, unmodified `executeExperimentForCandidate`
+    (P22) — isolation checkpoint, `Experiment` bookkeeping, and build
+    execution all stay exactly as P22 already built them. The runner never
+    re-implements any of it.
+  - Authorization is P4's, unmodified: `createExecuteToolAuthorizer` is
+    called AS-IS; the runner only LAYERS a tool-allowlist pre-check ON TOP
+    of it (`job.allowedTools.includes(tool.name)`, checked before
+    delegating to the real authorizer) — a job created under `"observe"`
+    can no more mutate the environment than any other `"observe"`-level
+    caller, and a job's OWN declared scope can further restrict what P4
+    would otherwise permit, but never expand it.
+  - Verification stays P16's job: `JobCandidateResult.verificationResultIds`
+    references real `VerificationResult`s an OPTIONAL caller-supplied
+    `verifyCandidate` hook produces (through the real
+    `evaluateCheck`/`run_verification` pipeline) — the runner never invents
+    its own notion of "passed," and a job with no `verifyCandidate` wired
+    is a legitimate "build-only" job, not a defect.
+  - Rollback, if requested (`rollbackAfterEachCandidate`), goes through the
+    real, registered `restore_checkpoint` tool — never a direct
+    checkpoint-store call. A job that leaves this off keeps the LAST
+    candidate's mutations applied (e.g. to hand off to a human) — an
+    honest default, not a missing feature.
+  - `optimizationResultId`/`objectiveSatisfactionResultId` on `JobResult`
+    reference real P23/P17 records a caller computes AFTER the bounded
+    loop finishes — the runner never recomputes Pareto dominance or an
+    objective-satisfaction verdict itself.
+
+**"Job completed" and "objective satisfied" are two different, never-conflated
+facts.** `JobResult.stopReason` (`completed`/`cancelled`/`failed`/five
+budget-exhaustion reasons) says whether the BOUNDED LOOP ran to its natural
+end; `ObjectiveSatisfactionResult.status` (P17, unmodified) says whether the
+underlying ENGINEERING OBJECTIVE was met. A job can `complete` with every
+candidate failing verification, and the P25 end-to-end test explicitly
+asserts both facts are reported through separate records, never merged into
+one "success" flag.
+
+**Cooperative cancellation, never a forced kill.** There is no
+process/thread-kill primitive anywhere in this repository, and P25 adds
+none (repo-boundaries-enforced: no `process.kill`/`Worker`/
+`AbortController` in any P25 file). `cancel_background_job` only REQUESTS
+cancellation — a `queued` job (never started) moves straight to `cancelled`;
+a `running`/`paused` job moves to `cancelling`. `runBackgroundJob`'s loop
+re-reads the job's LIVE status from `BackgroundJobStore` at the top of every
+iteration — the one safe boundary between candidates, since
+`executeExperimentForCandidate` is already an atomic, non-interruptible
+unit in P22's own design — and stops there once it observes `cancelling`.
+This is a documented, honest tradeoff, not a gap glossed over: a candidate
+already in flight finishes normally before the NEXT iteration's cancellation
+check takes effect, and budget enforcement carries the identical
+granularity (checked once per iteration, so a single candidate's own tool
+calls can slightly overshoot `maxToolCalls` before the next boundary stops
+the run) — subdividing further would require either forcibly interrupting a
+running operation (explicitly prohibited) or fabricating a false mid-operation
+safe point.
+
+**Concurrency policy: one mutating job per project at a time, enforced,
+not merely documented.** `BackgroundJobStore.getRunningJobForProject`
+answers "is a job already running for this project," and
+`runBackgroundJob` refuses to start a second one — a `project_job_conflict`
+`ToolError`, checked before the queued→running transition even happens
+(repo-boundaries-enforced).
+
+**Pause/resume is supported at the state-machine level only — an honest,
+scoped limitation, not a silently missing feature.** `running ↔ paused`
+are legal, validated transitions a future caller can build on, but
+`runBackgroundJob`'s own loop in this phase does not check for a
+pause-requested signal mid-run — only cancellation is checked. This is a
+deliberate scope cut the brief itself explicitly allows ("If full
+pause/resume would require unsafe infrastructure, implement only safe
+resumability at explicit checkpoints"): genuine crash-safe resumability
+would require persisting `candidateResults`/`consumption` accumulated
+so-far outside of the terminal-only `JobResult`, which this in-memory
+architecture does not do — see "What's intentionally not implemented yet"
+below.
+
+**Auditability reuses the Change Model's discipline without becoming a
+second, incompatible trail.** `JobEvent` (schemas) — `submitted` /
+`started` / `paused` / `resumed` / `candidate_started` /
+`candidate_completed` / `verification_completed` / `budget_exhausted` /
+`cancellation_requested` / `cancelled` / `failed` / `completed` — is its
+OWN append-only record kind (`JobEventStore`, core; save-only, no
+update/delete, mirroring `VerificationResultStore`'s identical shape),
+because a job lifecycle event is a process/execution fact about background
+ORCHESTRATION, not a `WorldModelTransition` — exactly the same reasoning
+`VerificationResult`/`OptimizationResult`/`MemoryRecord` already don't
+belong in Change (P2) either, while still following Change's own
+"sequential, append-only, never rewritten" discipline in spirit.
+
+**Three tools, matching the brief's own "only add tools that are actually
+necessary"; a new `ToolTarget: "job"` was added additively, the same way
+`"memory"` was in P24:**
+  - `submit_background_job` (`suggest`/`job`) defines and queues a new job.
+    `projectId`/`projectVersion` are read from LIVE `WorldModelState`, never
+    caller-supplied. Every `candidateId` is cross-checked against a REAL
+    `CandidateStore`, scoped to the current project, AND required to
+    already carry a `designSpecificationId` — rejecting an unbuildable
+    candidate at SUBMISSION time is what lets the runner treat an
+    unresolvable candidate as a genuine system anomaly later, rather than
+    an expected case it must handle gracefully. Never runs anything itself.
+  - `get_background_job` (`observe`/`job`) retrieves one job by id plus its
+    full `JobEvent` audit trail, scoped to the current project.
+  - `cancel_background_job` (`suggest`/`job`) requests cancellation (see
+    above); rejects an already-terminal or already-`cancelling` job.
+
+**Project isolation is structural, not merely tested.** Every tool reads
+`projectId` exclusively from live `WorldModelState`; every cross-project
+lookup (`get_background_job`/`cancel_background_job` fetching an existing
+job, `submit_background_job` validating each `candidateId`) explicitly
+compares `.projectId` against the current project and treats a mismatch as
+not-found — a job or candidate from Project A can never surface, be
+cancelled, or be referenced through Project B's own tool calls
+(repo-boundaries-enforced across all three tools).
+
+**AUDIT-CLASS FIXES found and fixed while building/auditing this phase:**
+`createJobBudget` (schemas) originally destructured `input.maxIterations`
+etc. directly, so a completely malformed record missing `budget` entirely
+(reachable through `deserializeBackgroundJobStore` on hand-corrupted data)
+crashed with a raw `TypeError` instead of the controlled
+`WorldModelValidationError` every other invalid-shape path produces —
+exactly the "no unvalidated deserialization" failure mode the brief calls
+out by name. Fixed with an explicit `typeof input !== "object"` guard
+before destructuring, with a regression test
+(`packages/schemas/test/background-job.test.ts`). A second, related bug
+in `cancel-background-job-tool.ts`: cancelling a `queued` job transitions
+it straight to the terminal `cancelled` status, but the original code never
+attached a `JobResult` — `assertBackgroundJob` correctly rejected the
+result, since every terminal status requires one. Fixed by building a
+`JobResult` (`stopReason: "cancelled"`, every declared candidate honestly
+`"not_attempted"`, since a queued job never started) before applying the
+transition.
+
+**A subsequent, dedicated audit pass** (mirroring every prior phase's own
+"do not trust the implementation report, re-inspect the actual repository"
+discipline) found and fixed four further issues, none caught by the
+original test suite:
+  - **CRITICAL — privilege escalation.** `submit_background_job` accepted
+    ANY caller-requested `autonomyLevel` with no check against the
+    submitting session's own current authority — a caller operating at
+    `"suggest"` (every mutation individually approved) could submit a job
+    requesting `"autonomous"` (standing `AutonomyGrant`s, no per-call
+    approval) and have it run with meaningfully LESS friction than the
+    caller itself could ever act with directly. Fixed by adding a required
+    `maxAutonomyLevel` constructor parameter — the submitting session's own
+    ceiling — and rejecting any `autonomyLevel` request ranked higher than
+    it (`AUTONOMY_LEVELS`'s index order). Tested: requests at, below, and
+    above the ceiling.
+  - **HIGH — budget/scope could be patched through a lifecycle transition.**
+    `BackgroundJobStore.transition`'s `patch` parameter was typed
+    `Partial<BackgroundJob>`, so nothing STRUCTURALLY prevented a future
+    caller from passing `{ budget: {...} }`/`{ autonomyLevel: ... }`/
+    `{ allowedTools: [...] }` through the one function meant to be a pure
+    status transition — exactly the "budgets cannot be silently increased
+    during execution" failure mode the brief names explicitly. No actual
+    caller in this repository exploited it, but the API itself was too
+    permissive. Fixed by narrowing `patch` to a dedicated
+    `BackgroundJobTransitionPatch` (`consumption`/`result`/`failureReason`
+    only) AND, in depth, by picking those three fields out by name at
+    runtime rather than spreading `patch` wholesale (defends even a
+    `TypeScript`-bypassed call). Tested with a simulated malicious patch
+    carrying `budget`/`autonomyLevel`/`allowedTools`/`projectId`/
+    `candidateIds`, asserting every one is silently ignored.
+  - **MEDIUM — missing audit-trail entries.** `background-job-runner.ts`
+    only recorded a `candidate_completed` `JobEvent` on the build-succeeded
+    path or the THROWN-error path — a candidate whose build failed WITHOUT
+    throwing (`executeExperimentForCandidate`'s own documented,
+    non-exceptional outcome) produced no event at all, a real gap in "every
+    meaningful job event should be traceable." Fixed by recording exactly
+    one `candidate_completed` event per candidate attempt regardless of
+    outcome. Tested with `failOnCreateCallNumber`, asserting the full event
+    sequence.
+  - **MEDIUM — project isolation was a submit-time convention, not a
+    run-time structural guarantee.** `submit_background_job` already
+    rejected a cross-project `candidateId` at submission, but
+    `runBackgroundJob` itself never re-checked `candidate.projectId`/
+    `design.projectId` against `job.projectId` at run time — safe only as
+    long as every job happened to be created through that one tool. Fixed
+    by adding the same check independently inside the runner (mirroring
+    `computeOptimizationResult`'s (P23) own "defend your own invariants,
+    don't just trust the caller" precedent), failing the whole job loudly
+    on a mismatch. Tested with a hand-constructed cross-project candidate
+    and a hand-constructed cross-project design.
+
+Also empirically verified (not merely reasoned about): a TRUE concurrent
+race — both `runBackgroundJob` calls fired via `Promise.all` with no manual
+pre-staging — still lets exactly one job run and rejects the other with
+`project_job_conflict`, confirmed safe by JS's synchronous-until-first-await
+execution model (there is no `await` between the concurrency check and the
+`running` transition). And `JobStatus`'s own doc comment now states plainly
+that `"paused"` is unreachable through any current P25 tool or the runner
+itself (state-machine-only, for a future caller) — enforced by a
+`repo-boundaries.test.ts` check, not just documented.
+
+**The realistic end-to-end scenario** (`packages/core/test/p25-end-to-end.test.ts`)
+mirrors P24's own: Candidates A–D, objective "minimize mass subject to
+strength ≥ 130 N," submitted as one bounded `BackgroundJob` and run through
+`runBackgroundJob` with `rollbackAfterEachCandidate: true` — each candidate
+is checkpointed, built, verified against real `Check`s/`VerificationResult`s
+(P16), and rolled back before the next one starts. Candidate A fails the
+strength constraint; B, C, D pass it. A real `OptimizationProblem`/
+`computeOptimizationResult` (P23) call over the feasible set selects C
+(lowest mass) as uniquely Pareto-optimal; `evaluateObjectiveSatisfaction`
+(P17) confirms satisfaction using C's own real `VerificationResult`; a
+`memory_add` call (P24) records the finding, grounded only in the real ids
+every prior step produced. The test asserts bounded execution (consumption
+never exceeds budget), full resource release (the environment ends exactly
+at its pre-job baseline — every candidate, including the last, was rolled
+back), every candidate's `Experiment` remains permanently auditable in
+`ChangeHistory` even after being reverted out of live state, and the
+job's own `stopReason`/`ObjectiveSatisfactionResult.status` stay two
+separate, independently-asserted facts.
+
+**Deliberately NOT implemented — crash recovery.** Every store in this
+repository (`BackgroundJobStore`, `JobEventStore`, everything else since
+P0) is in-memory only; nothing survives a process restart. `BackgroundJob`/
+`JobEvent` are fully serializable (tested: `serializeBackgroundJob`/
+`deserializeBackgroundJob`/`serializeJobEvent`/`deserializeJobEvent`
+round-trip a terminal job and its full event trail exactly), which is what
+a FUTURE real persistence layer would need — but no such layer exists here,
+and this phase does not fake one. A genuine "resume a job that was
+`running` when the process crashed" test would require either a real
+persistence layer (out of scope — "a clean local bounded executor is
+sufficient for P25") or pretending in-memory state survived a restart it
+did not; this phase documents the limitation honestly instead of writing a
+test that doesn't prove what it claims to.
+
+**Deliberately NOT implemented (P26+ territory).** An environment-independent
+generalization of the background executor (P26 — this phase's runner
+already only touches the environment through the existing `executeTool`
+boundary, so genericizing further is a P26 concern, not a P25 one); mid-run
+pause/resume (see above); a distributed job queue/worker pool (Redis/Kafka/
+Celery/Temporal/Kubernetes — the brief's own explicit "a clean local
+bounded executor is sufficient for P25"; `BackgroundJobStore`'s minimal
+`submit`/`inspect`/`transition` surface is the entire queue this phase
+needs); retry-on-failure beyond what a caller does by submitting a fresh
+job (a fresh `BackgroundJob` IS how a retry is expressed — there is no
+`completed`/`failed` → `queued` transition, deliberately, since that would
+make a terminal status non-terminal); any UI (consistent with every prior
+phase's identical deferral).
+
 ## Error model
 
 Six error classes, one per layer, so a caller can branch on `.kind`
@@ -2411,14 +2714,16 @@ every expected failure — `invalid_input` / `model_unavailable` /
 
 No real CAD MODIFICATION (create/modify/delete/checkpoint against FreeCAD
 are all structurally present but capability-gated to
-`unsupported_capability` — see the P12 section above), no full autonomous
-engineering, no approval UI, no production authentication, no cloud
-services, no persistence/database of any kind, no background jobs, no
-simulation engine, no FEA/CFD, no geometry generation. `ApprovalStore` and
-`AutonomyGrantStore` are in-memory only — nothing survives a process
-restart, and the same is true of every `EnvironmentAdapter`'s (including
-`FreeCadAdapter`'s own session tracking), `ModelProvider`'s, and
-`AgentLoopRun`'s state (no `AgentLoopRunStore` exists either — a caller
+`unsupported_capability` — see the P12 section above), no full unrestricted
+autonomy (P25's `BackgroundJob` is explicitly BOUNDED — see the P25 section
+above — never "keep working forever"), no approval UI, no production
+authentication, no cloud services, no persistence/database of any kind (P25's
+`BackgroundJobStore`/`JobEventStore` included — in-memory only, like every
+other store in this repository), no simulation engine, no FEA/CFD, no
+geometry generation. `ApprovalStore` and `AutonomyGrantStore` are in-memory
+only — nothing survives a process restart, and the same is true of every
+`EnvironmentAdapter`'s (including `FreeCadAdapter`'s own session tracking),
+`ModelProvider`'s, and `AgentLoopRun`'s state (no `AgentLoopRunStore` exists either — a caller
 holds the value `beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval`
 returns, matching `ApprovalStore`/`AutonomyGrantStore`/the absent
 `PlanStore`/`ProposalStore`'s own in-memory-only precedent). The mock

@@ -579,12 +579,13 @@ export type ToolValueSchema =
  * extend this list only when a real producer exists (an EnvironmentAdapter
  * for a new target, a verification engine, etc.), never speculatively.
  */
-/** P24: extended with `"memory"` -- the exact same additive convention this
+/** P25: extended with `"job"` -- the exact same additive convention this
  * type's own doc comment already committed to, applied literally. A
- * genuinely new functional area (long-term engineering memory is neither
- * project state, environment, verification, research, nor optimization),
- * matching how `"checkpoint"` was added in P15, `"research"` was activated
- * in P21, and `"optimization"` was added in P23. */
+ * genuinely new functional area (bounded background job scope/submission/
+ * cancellation is neither project state, environment, verification,
+ * research, optimization, nor memory), matching how `"checkpoint"` was
+ * added in P15, `"research"` was activated in P21, `"optimization"` was
+ * added in P23, and `"memory"` was added in P24. */
 export type ToolTarget =
   | "world_model"
   | "environment"
@@ -595,7 +596,8 @@ export type ToolTarget =
   | "eda"
   | "checkpoint"
   | "optimization"
-  | "memory";
+  | "memory"
+  | "job";
 
 export const TOOL_TARGETS: readonly ToolTarget[] = [
   "world_model",
@@ -607,7 +609,8 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
   "eda",
   "checkpoint",
   "optimization",
-  "memory"
+  "memory",
+  "job"
 ];
 
 /**

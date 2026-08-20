@@ -11,6 +11,7 @@ import type { Proposal } from "./proposal-types.js";
 import type { Candidate } from "./candidate-types.js";
 import type { CandidateMetricValue, OptimizationProblem, OptimizationResult } from "./optimization-types.js";
 import type { MemoryRecord } from "./memory-types.js";
+import type { BackgroundJob, JobEvent } from "./background-job-types.js";
 import type { AgentLoopRun } from "./agent-loop-types.js";
 import type { Checkpoint } from "./checkpoint-types.js";
 import type { Check, VerificationResult } from "./verification-types.js";
@@ -28,6 +29,8 @@ import {
   assertCandidate,
   assertCandidateMetricValue,
   assertMemoryRecord,
+  assertBackgroundJob,
+  assertJobEvent,
   assertOptimizationProblem,
   assertOptimizationResult,
   assertChange,
@@ -313,6 +316,30 @@ export function deserializeMemoryRecord(serialized: string): MemoryRecord {
   requireNonEmptyString(serialized, "serialized memory record is required");
   const parsed: unknown = JSON.parse(serialized);
   assertMemoryRecord(parsed);
+  return parsed;
+}
+
+export function serializeBackgroundJob(job: BackgroundJob): string {
+  assertBackgroundJob(job);
+  return JSON.stringify(job);
+}
+
+export function deserializeBackgroundJob(serialized: string): BackgroundJob {
+  requireNonEmptyString(serialized, "serialized background job is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertBackgroundJob(parsed);
+  return parsed;
+}
+
+export function serializeJobEvent(event: JobEvent): string {
+  assertJobEvent(event);
+  return JSON.stringify(event);
+}
+
+export function deserializeJobEvent(serialized: string): JobEvent {
+  requireNonEmptyString(serialized, "serialized job event is required");
+  const parsed: unknown = JSON.parse(serialized);
+  assertJobEvent(parsed);
   return parsed;
 }
 

@@ -2462,3 +2462,177 @@ describe("P24 long-term engineering memory: memory is not the World Model, no fa
     assert.match(code, /Math\.min\s*\(\s*requestedLimit,\s*MAX_MEMORY_SEARCH_RESULTS\s*\)/, "searchMemoryRecords must actually clamp the requested limit");
   });
 });
+
+describe("P25 bounded background experimentation: no unbounded execution, no second agent loop, no autonomy/authorization bypass, no P26 leakage", () => {
+  // Phase 25's central architectural rule: "P25 is NOT 'make the agent
+  // autonomous.' P25 is: BOUNDED BACKGROUND ENGINEERING WORK." Every check
+  // below proves one specific way that boundary could have silently
+  // eroded: no unbounded loop construct exists anywhere in the P25 files,
+  // budget enforcement and the one-running-job-per-project concurrency
+  // policy are real code (not merely documented), cancellation is
+  // cooperative (no forced-kill primitive), P25 consumes P4's existing
+  // authorization/P22's existing experiment executor unmodified rather
+  // than reimplementing either, and no P25 file defines a second,
+  // competing agent loop or reaches into P26 territory.
+  const p25CoreFiles = [
+    "packages/core/src/background-job-store.ts",
+    "packages/core/src/job-event-store.ts",
+    "packages/core/src/background-job-budget.ts",
+    "packages/core/src/background-job-runner.ts",
+    "packages/core/src/submit-background-job-tool.ts",
+    "packages/core/src/get-background-job-tool.ts",
+    "packages/core/src/cancel-background-job-tool.ts"
+  ];
+
+  function stripComments(raw: string): string {
+    return raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  }
+
+  it("no arbitrary code execution anywhere in the P25 files", () => {
+    const forbiddenPatterns: RegExp[] = [
+      /\beval\s*\(/,
+      /new\s+Function\s*\(/,
+      /require\s*\(\s*["'`]child_process["'`]\s*\)/,
+      /from\s+["'`]child_process["'`]/,
+      /\bexecSync\s*\(/,
+      /\bspawn\s*\(/,
+      /import\s*\(\s*[a-zA-Z_$]/
+    ];
+    for (const relativePath of p25CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
+      }
+    }
+  });
+
+  it("no P25 core file imports @naqsh/adapters -- core stays adapter-agnostic, same boundary every prior phase already enforces", () => {
+    for (const relativePath of p25CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /from\s+["'`]@naqsh\/adapters["'`]/, `${relativePath} must not import @naqsh/adapters`);
+    }
+  });
+
+  it("no P25 core file imports ModelProvider or a concrete EnvironmentAdapter -- the runner never calls a model or an environment directly, only through the existing executeTool/executeExperimentForCandidate boundary", () => {
+    for (const relativePath of p25CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, /from\s+["'`]\.\/model-provider(-contract)?\.js["'`]/, `${relativePath} must not import ModelProvider`);
+      assert.doesNotMatch(code, /from\s+["'`]\.\/environment-adapter(-contract)?\.js["'`]/, `${relativePath} must not import EnvironmentAdapter`);
+    }
+  });
+
+  it("NO UNBOUNDED EXECUTION: no P25 file contains a while(true)/for(;;) construct, or a raw setInterval/setTimeout that could drive an unbounded background loop", () => {
+    const forbiddenPatterns = [/while\s*\(\s*true\s*\)/, /for\s*\(\s*;\s*;\s*\)/, /setInterval\s*\(/, /setTimeout\s*\(/];
+    for (const relativePath of p25CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not contain ${pattern} -- P25 execution must always be bounded by a finite candidate list plus checkBudgetExhausted, never a driving timer/infinite loop`);
+      }
+    }
+  });
+
+  it("background-job-runner.ts's candidate loop is a bounded for-of over job.candidateIds (a finite array), and actually calls checkBudgetExhausted before every iteration -- budget enforcement is real code, not merely documented", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.match(code, /for\s*\(\s*const\s+candidateId\s+of\s+job\.candidateIds\s*\)/, "background-job-runner.ts must loop over the job's own finite candidateIds array");
+    assert.match(code, /checkBudgetExhausted\s*\(/, "background-job-runner.ts must actually call checkBudgetExhausted");
+  });
+
+  it("CONCURRENCY POLICY IS REAL CODE: runBackgroundJob actually consults getRunningJobForProject and rejects starting a second job for the same project, not merely documented", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.match(code, /getRunningJobForProject\s*\(/, "background-job-runner.ts must call jobStore.getRunningJobForProject");
+    assert.match(code, /project_job_conflict/, "background-job-runner.ts must reject a second concurrent job for the same project");
+  });
+
+  it("COOPERATIVE CANCELLATION, NEVER A FORCED KILL: no P25 file references process.kill, a Worker/child process termination API, or AbortController-driven forced termination -- cancellation is checked cooperatively via job status alone", () => {
+    const forbiddenPatterns = [/process\.kill/, /\.terminate\s*\(/, /new\s+Worker\s*\(/, /AbortController/];
+    for (const relativePath of p25CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not contain ${pattern} -- P25 cancellation is cooperative (checked via job.status) only`);
+      }
+    }
+    const runnerCode = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.match(runnerCode, /status\s*===\s*["'`]cancelling["'`]/, "background-job-runner.ts must cooperatively check job status for cancellation");
+  });
+
+  it("NO SECOND, COMPETING AGENT LOOP: background-job-runner.ts never imports agent-loop.ts, and never calls a ModelProvider directly to decide what to do next -- it orchestrates the EXISTING executeExperimentForCandidate (P22) over a caller-supplied candidate list, it never invents its own model-driven decision loop", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.doesNotMatch(code, /from\s+["'`]\.\/agent-loop\.js["'`]/, "background-job-runner.ts must not import agent-loop.ts -- P25 reuses P22's executor, it does not reimplement or wrap P11's agent loop");
+    assert.match(code, /executeExperimentForCandidate\s*\(/, "background-job-runner.ts must call the existing, unmodified executeExperimentForCandidate (P22)");
+  });
+
+  it("NO NEW AUTONOMY MODEL: background-job-runner.ts consumes the existing createExecuteToolAuthorizer (P4) unmodified, and never redefines AutonomyLevel/Approval/AutonomyGrant evaluation logic itself", () => {
+    const code = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.match(code, /createExecuteToolAuthorizer\s*\(/, "background-job-runner.ts must call the existing createExecuteToolAuthorizer (P4)");
+    assert.doesNotMatch(code, /function\s+evaluateToolAuthorization\b/, "background-job-runner.ts must not redefine evaluateToolAuthorization -- P4's authorization logic is reused, not duplicated");
+  });
+
+  it("NO SECOND CHECKPOINT SYSTEM: no P25 file imports checkpoint-store.ts or artifact-store.ts directly -- checkpoint/restore only ever happens through the real, registered create_checkpoint/restore_checkpoint TOOLS (via executeTool), reused from P15/P22 unmodified", () => {
+    for (const relativePath of p25CoreFiles) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /from\s+["'`]\.\/checkpoint-store\.js["'`]/, `${relativePath} must not import checkpoint-store.ts directly`);
+      assert.doesNotMatch(contents, /from\s+["'`]\.\/artifact-store\.js["'`]/, `${relativePath} must not import artifact-store.ts directly`);
+    }
+  });
+
+  it("all three P25 tools are classified into the 'job' target, with the read tool observe and the lifecycle tools suggest -- none of them ever mutate the World Model or the environment", () => {
+    const toolClassifications: Record<string, string> = {
+      "packages/core/src/submit-background-job-tool.ts": "suggest",
+      "packages/core/src/get-background-job-tool.ts": "observe",
+      "packages/core/src/cancel-background-job-tool.ts": "suggest"
+    };
+    for (const [relativePath, mutation] of Object.entries(toolClassifications)) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.match(contents, new RegExp(`mutation:\\s*["'\`]${mutation}["'\`]`), `${relativePath} must declare mutation: "${mutation}"`);
+      assert.match(contents, /target:\s*["'`]job["'`]/, `${relativePath} must declare target: "job"`);
+    }
+  });
+
+  it("background-job-types.ts references every related entity (Candidate/Experiment/Checkpoint/BuildResult/VerificationResult/OptimizationResult/ObjectiveSatisfactionResult) by id only -- it never re-declares one as a duplicated shape", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/background-job-types.ts"), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /export\s+interface\s+(Candidate|Experiment|Checkpoint|BuildResult|VerificationResult|OptimizationResult|ObjectiveSatisfactionResult)\b/,
+      "background-job-types.ts must not define a second, duplicate entity -- P25 types reference every related entity by id"
+    );
+  });
+
+  it("BackgroundJob's JobBudget has no way to express 'unlimited' -- every dimension is a required, non-optional number, never an optional/nullable field that a caller could omit to mean infinity", () => {
+    const contents = readFileSync(join(repoRoot, "packages/schemas/src/background-job-types.ts"), "utf8");
+    const budgetInterfaceMatch = contents.match(/export interface JobBudget \{[\s\S]*?\n\}/);
+    assert.ok(budgetInterfaceMatch, "expected to find the JobBudget interface in packages/schemas/src/background-job-types.ts");
+    assert.doesNotMatch(budgetInterfaceMatch![0], /\?\s*:/, "JobBudget must declare every field as required (no '?:' optional fields)");
+  });
+
+  it("PROJECT ISOLATION IS CRITICAL: every P25 tool reads projectId from live WorldModelState (never a caller-supplied field) and scopes its store access to the current project", () => {
+    const toolFiles = ["packages/core/src/submit-background-job-tool.ts", "packages/core/src/get-background-job-tool.ts", "packages/core/src/cancel-background-job-tool.ts"];
+    for (const relativePath of toolFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.match(code, /getState\s*\(\s*\)/, `${relativePath} must read live WorldModelState via getState()`);
+      assert.match(
+        code,
+        /projectId\s*!==\s*state\.project\.id|projectId:\s*state\.project\.id/,
+        `${relativePath} must scope its job access to the current project`
+      );
+    }
+  });
+
+  it("no P25 core file implements a second, environment-independent engineering agent or a UI -- that is P26, out of scope this phase", () => {
+    const forbiddenPatterns = [/class\s+\w*EnvironmentIndependentAgent\w*\b/i, /from\s+["'`]react["'`]/, /from\s+["'`]express["'`]/];
+    for (const relativePath of p25CoreFiles) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      for (const pattern of forbiddenPatterns) {
+        assert.doesNotMatch(code, pattern, `${relativePath} must not contain ${pattern} -- that would be P26 scope creep`);
+      }
+    }
+  });
+
+  it("AUDIT FIX (HONEST STATUS): background-job-runner.ts never transitions a job to 'paused' -- pause/resume exists in the state machine for a future caller, but this phase's own runner and tools must not falsely claim to implement it", () => {
+    const runnerCode = stripComments(readFileSync(join(repoRoot, "packages/core/src/background-job-runner.ts"), "utf8"));
+    assert.doesNotMatch(runnerCode, /["'`]paused["'`]/, "background-job-runner.ts must not reference the literal 'paused' status -- it never produces that transition");
+    for (const relativePath of ["packages/core/src/submit-background-job-tool.ts", "packages/core/src/get-background-job-tool.ts", "packages/core/src/cancel-background-job-tool.ts"]) {
+      const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
+      assert.doesNotMatch(code, /transition\s*\([^)]*["'`]paused["'`]/, `${relativePath} must not transition any job to 'paused'`);
+    }
+  });
+});

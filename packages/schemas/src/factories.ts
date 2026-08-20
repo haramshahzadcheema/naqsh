@@ -94,6 +94,28 @@ import type {
 } from "./optimization-types.js";
 import { assertMemoryRecord } from "./validators.js";
 import type { MemoryReferences, MemoryReferencesInput, MemoryRecord, MemoryRecordInput } from "./memory-types.js";
+import {
+  assertBackgroundJob,
+  assertJobBudget,
+  assertJobBudgetConsumption,
+  assertJobCandidateResult,
+  assertJobEvent,
+  assertJobResult
+} from "./validators.js";
+import type {
+  BackgroundJob,
+  BackgroundJobInput,
+  JobBudget,
+  JobBudgetConsumption,
+  JobBudgetConsumptionInput,
+  JobBudgetInput,
+  JobCandidateResult,
+  JobCandidateResultInput,
+  JobEvent,
+  JobEventInput,
+  JobResult,
+  JobResultInput
+} from "./background-job-types.js";
 import type { AgentLoopRun, AgentLoopRunInput, ExecutionResult, ExecutionResultInput } from "./agent-loop-types.js";
 import { assertCheckpoint, assertCheckpointArtifactRef, assertCheckpointEnvironmentSnapshot } from "./validators.js";
 import { assertCheck, assertEvidence, assertVerificationResult } from "./validators.js";
@@ -1457,6 +1479,126 @@ export function createMemoryRecord(input: MemoryRecordInput): MemoryRecord {
   };
   assertMemoryRecord(record);
   return deepFreeze(record);
+}
+
+/** Builds a `JobBudget` (P25). No field defaults -- every dimension MUST be
+ * supplied explicitly by the caller (see `JobBudget`'s own doc comment on
+ * why "no cap" is never expressible). `assertJobBudget` rejects anything
+ * that is not a positive finite integer. */
+export function createJobBudget(input: JobBudgetInput): JobBudget {
+  if (typeof input !== "object" || input === null) {
+    throw new WorldModelValidationError("invalid_shape", "jobBudget must be an object");
+  }
+  const budget: JobBudget = {
+    maxIterations: input.maxIterations,
+    maxDurationMs: input.maxDurationMs,
+    maxToolCalls: input.maxToolCalls,
+    maxModelCalls: input.maxModelCalls,
+    maxCandidates: input.maxCandidates
+  };
+  assertJobBudget(budget);
+  return deepFreeze(budget);
+}
+
+/** Builds a `JobBudgetConsumption` (P25). Every field defaults to `0` --
+ * the state every job's consumption starts at, before any bounded
+ * operation has been accounted for. */
+export function createJobBudgetConsumption(input: JobBudgetConsumptionInput = {}): JobBudgetConsumption {
+  const consumption: JobBudgetConsumption = {
+    iterationsUsed: input.iterationsUsed ?? 0,
+    durationMsUsed: input.durationMsUsed ?? 0,
+    toolCallsUsed: input.toolCallsUsed ?? 0,
+    modelCallsUsed: input.modelCallsUsed ?? 0,
+    candidatesEvaluated: input.candidatesEvaluated ?? 0
+  };
+  assertJobBudgetConsumption(consumption);
+  return deepFreeze(consumption);
+}
+
+export function createJobCandidateResult(input: JobCandidateResultInput): JobCandidateResult {
+  const result: JobCandidateResult = {
+    candidateId: input.candidateId,
+    experimentId: input.experimentId ?? null,
+    checkpointBeforeId: input.checkpointBeforeId ?? null,
+    buildResultId: input.buildResultId ?? null,
+    buildStatus: input.buildStatus ?? null,
+    verificationResultIds: safeStructuredClone(input.verificationResultIds ?? [], "jobCandidateResult.verificationResultIds"),
+    rolledBack: input.rolledBack ?? false,
+    outcome: input.outcome
+  };
+  assertJobCandidateResult(result);
+  return deepFreeze(result);
+}
+
+/** Builds a `JobResult` (P25) -- ALWAYS called from `background-job-runner.ts`
+ * (core) at the end of a bounded run, never hand-constructed elsewhere,
+ * mirroring `createOptimizationResult`'s (P23) identical "no LLM verdict,
+ * no shortcut construction" precedent. */
+export function createJobResult(input: JobResultInput): JobResult {
+  const result: JobResult = {
+    stopReason: input.stopReason,
+    candidateResults: input.candidateResults.map((candidateResult) => createJobCandidateResult(candidateResult)),
+    optimizationResultId: input.optimizationResultId ?? null,
+    objectiveSatisfactionResultId: input.objectiveSatisfactionResultId ?? null,
+    summary: input.summary
+  };
+  assertJobResult(result);
+  return deepFreeze(result);
+}
+
+/**
+ * Builds a `BackgroundJob` (P25). `status` defaults to `"queued"` -- the
+ * initial state every job starts in. `result`/`failureReason`/`startedAt`/
+ * `completedAt`/`cancelRequestedAt` are all forced to their empty state
+ * unless `status` actually calls for them, mirroring `createMemoryRecord`'s
+ * (P24) and `createClarification`'s (P19) identical "status-driven field
+ * defaulting" discipline -- a caller cannot accidentally construct a
+ * `"queued"` job that already carries a `JobResult`, or a `"failed"` job
+ * with no `failureReason`.
+ */
+export function createBackgroundJob(input: BackgroundJobInput): BackgroundJob {
+  const createdAt = input.createdAt ?? toIsoTimestamp();
+  const status = input.status ?? "queued";
+  const terminal = status === "completed" || status === "cancelled" || status === "failed";
+  const cancellationRequested = status === "cancelling" || status === "cancelled";
+
+  const job: BackgroundJob = {
+    id: input.id ?? createId("job"),
+    projectId: input.projectId,
+    projectVersion: input.projectVersion,
+    status,
+    objective: input.objective,
+    candidateIds: safeStructuredClone(input.candidateIds ?? [], "backgroundJob.candidateIds"),
+    optimizationProblemId: input.optimizationProblemId ?? null,
+    autonomyLevel: input.autonomyLevel,
+    allowedTools: safeStructuredClone(input.allowedTools, "backgroundJob.allowedTools"),
+    budget: createJobBudget(input.budget),
+    consumption: createJobBudgetConsumption(input.consumption),
+    result: terminal && input.result ? createJobResult(input.result) : null,
+    failureReason: status === "failed" ? (input.failureReason ?? null) : null,
+    source: input.source ?? "agent",
+    createdAt,
+    startedAt: status === "queued" ? null : (input.startedAt ?? createdAt),
+    completedAt: terminal ? (input.completedAt ?? createdAt) : null,
+    cancelRequestedAt: cancellationRequested ? (input.cancelRequestedAt ?? createdAt) : null,
+    metadata: safeStructuredClone(input.metadata ?? {}, "backgroundJob.metadata")
+  };
+  assertBackgroundJob(job);
+  return deepFreeze(job);
+}
+
+export function createJobEvent(input: JobEventInput): JobEvent {
+  const event: JobEvent = {
+    id: input.id ?? createId("jobevent"),
+    jobId: input.jobId,
+    projectId: input.projectId,
+    kind: input.kind,
+    message: input.message ?? "",
+    createdAt: input.createdAt ?? toIsoTimestamp(),
+    metadata: safeStructuredClone(input.metadata ?? {}, "jobEvent.metadata")
+  };
+  assertJobEvent(event);
+  return deepFreeze(event);
 }
 
 /** `toolResult` is cloned+frozen along with everything else via `deepFreeze`

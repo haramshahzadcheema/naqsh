@@ -122,9 +122,22 @@ import {
   type MemoryRecord
 } from "./memory-types.js";
 import {
+  JOB_CANDIDATE_OUTCOMES,
+  JOB_EVENT_KINDS,
+  JOB_STATUSES,
+  JOB_STOP_REASONS,
+  type BackgroundJob,
+  type JobBudget,
+  type JobBudgetConsumption,
+  type JobCandidateResult,
+  type JobEvent,
+  type JobResult
+} from "./background-job-types.js";
+import {
   APPROVAL_STATUSES,
   AUTHORIZATION_DENIAL_REASONS,
   AUTONOMY_GRANT_STATUSES,
+  AUTONOMY_LEVELS,
   CHANGE_CAUSE_KINDS,
   ENTITY_KINDS,
   EXPERIMENT_STATUSES,
@@ -2778,6 +2791,180 @@ export function assertMemoryRecord(value: unknown): asserts value is MemoryRecor
       `memoryRecord.provenanceKind "${value.provenanceKind}" requires a non-empty references.${requiredField}`
     );
   }
+}
+
+function isAutonomyLevel(value: unknown): value is (typeof AUTONOMY_LEVELS)[number] {
+  return typeof value === "string" && (AUTONOMY_LEVELS as readonly string[]).includes(value);
+}
+
+function isJobStatus(value: unknown): value is (typeof JOB_STATUSES)[number] {
+  return typeof value === "string" && (JOB_STATUSES as readonly string[]).includes(value);
+}
+
+function isJobStopReason(value: unknown): value is (typeof JOB_STOP_REASONS)[number] {
+  return typeof value === "string" && (JOB_STOP_REASONS as readonly string[]).includes(value);
+}
+
+function isJobCandidateOutcome(value: unknown): value is (typeof JOB_CANDIDATE_OUTCOMES)[number] {
+  return typeof value === "string" && (JOB_CANDIDATE_OUTCOMES as readonly string[]).includes(value);
+}
+
+function isJobEventKind(value: unknown): value is (typeof JOB_EVENT_KINDS)[number] {
+  return typeof value === "string" && (JOB_EVENT_KINDS as readonly string[]).includes(value);
+}
+
+/** Every dimension must be a finite, positive integer -- see
+ * `JobBudget`'s (schemas) own doc comment for the full reasoning. Rejects
+ * `Infinity`, `NaN`, `0`, negative numbers, and non-integers outright;
+ * there is no way for an invalid budget to be silently treated as
+ * unlimited, because no value here is ever interpreted as "no cap." */
+function isPositiveFiniteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+export function assertJobBudget(value: unknown): asserts value is JobBudget {
+  invariant(isPlainObject(value), "jobBudget must be an object");
+  invariant(isPositiveFiniteInteger(value.maxIterations), "jobBudget.maxIterations must be a positive integer");
+  invariant(isPositiveFiniteInteger(value.maxDurationMs), "jobBudget.maxDurationMs must be a positive integer");
+  invariant(isPositiveFiniteInteger(value.maxToolCalls), "jobBudget.maxToolCalls must be a positive integer");
+  invariant(isPositiveFiniteInteger(value.maxModelCalls), "jobBudget.maxModelCalls must be a positive integer");
+  invariant(isPositiveFiniteInteger(value.maxCandidates), "jobBudget.maxCandidates must be a positive integer");
+}
+
+function isNonNegativeFiniteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+export function assertJobBudgetConsumption(value: unknown): asserts value is JobBudgetConsumption {
+  invariant(isPlainObject(value), "jobBudgetConsumption must be an object");
+  invariant(isNonNegativeFiniteInteger(value.iterationsUsed), "jobBudgetConsumption.iterationsUsed must be a non-negative integer");
+  invariant(isNonNegativeFiniteInteger(value.durationMsUsed), "jobBudgetConsumption.durationMsUsed must be a non-negative integer");
+  invariant(isNonNegativeFiniteInteger(value.toolCallsUsed), "jobBudgetConsumption.toolCallsUsed must be a non-negative integer");
+  invariant(isNonNegativeFiniteInteger(value.modelCallsUsed), "jobBudgetConsumption.modelCallsUsed must be a non-negative integer");
+  invariant(isNonNegativeFiniteInteger(value.candidatesEvaluated), "jobBudgetConsumption.candidatesEvaluated must be a non-negative integer");
+}
+
+export function assertJobCandidateResult(value: unknown): asserts value is JobCandidateResult {
+  invariant(isPlainObject(value), "jobCandidateResult must be an object");
+  invariant(typeof value.candidateId === "string" && value.candidateId.length > 0, "jobCandidateResult.candidateId is required");
+  invariant(
+    value.experimentId === null || (typeof value.experimentId === "string" && value.experimentId.length > 0),
+    "jobCandidateResult.experimentId must be a non-empty string or null"
+  );
+  invariant(
+    value.checkpointBeforeId === null || (typeof value.checkpointBeforeId === "string" && value.checkpointBeforeId.length > 0),
+    "jobCandidateResult.checkpointBeforeId must be a non-empty string or null"
+  );
+  invariant(
+    value.buildResultId === null || (typeof value.buildResultId === "string" && value.buildResultId.length > 0),
+    "jobCandidateResult.buildResultId must be a non-empty string or null"
+  );
+  invariant(
+    value.buildStatus === null || value.buildStatus === "completed" || value.buildStatus === "failed",
+    'jobCandidateResult.buildStatus must be "completed", "failed", or null'
+  );
+  invariant(isStringArray(value.verificationResultIds), "jobCandidateResult.verificationResultIds must be an array of strings");
+  invariant(typeof value.rolledBack === "boolean", "jobCandidateResult.rolledBack must be a boolean");
+  invariant(isJobCandidateOutcome(value.outcome), "invalid jobCandidateResult.outcome");
+}
+
+export function assertJobResult(value: unknown): asserts value is JobResult {
+  invariant(isPlainObject(value), "jobResult must be an object");
+  invariant(isJobStopReason(value.stopReason), "invalid jobResult.stopReason");
+  invariant(Array.isArray(value.candidateResults), "jobResult.candidateResults must be an array");
+  for (const candidateResult of value.candidateResults) assertJobCandidateResult(candidateResult);
+  invariant(
+    value.optimizationResultId === null || (typeof value.optimizationResultId === "string" && value.optimizationResultId.length > 0),
+    "jobResult.optimizationResultId must be a non-empty string or null"
+  );
+  invariant(
+    value.objectiveSatisfactionResultId === null ||
+      (typeof value.objectiveSatisfactionResultId === "string" && value.objectiveSatisfactionResultId.length > 0),
+    "jobResult.objectiveSatisfactionResultId must be a non-empty string or null"
+  );
+  invariant(typeof value.summary === "string" && value.summary.trim().length > 0, "jobResult.summary is required");
+}
+
+/**
+ * `status`/`result`/`failureReason`/`startedAt`/`completedAt`/
+ * `cancelRequestedAt` consistency (mirrors `Clarification`'s (P19) and
+ * `MemoryRecord`'s (P24) identical "a shape-level rule ties lifecycle
+ * fields together" discipline):
+ *   - `result` is non-null if and only if `status` is terminal
+ *     (`completed`/`cancelled`/`failed`).
+ *   - `failureReason` is non-null if and only if `status === "failed"`.
+ *   - `startedAt` is null only while `status === "queued"`.
+ *   - `completedAt` is non-null if and only if `status` is terminal.
+ *   - `cancelRequestedAt` is non-null once `status` is `cancelling` or
+ *     `cancelled`, and null while still `queued`.
+ */
+export function assertBackgroundJob(value: unknown): asserts value is BackgroundJob {
+  invariant(isPlainObject(value), "backgroundJob must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "backgroundJob.id is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "backgroundJob.projectId is required");
+  invariant(
+    typeof value.projectVersion === "number" && Number.isInteger(value.projectVersion) && value.projectVersion >= 1,
+    "backgroundJob.projectVersion must be a positive integer"
+  );
+  invariant(isJobStatus(value.status), "invalid backgroundJob.status");
+  invariant(typeof value.objective === "string" && value.objective.trim().length > 0, "backgroundJob.objective is required");
+  invariant(isStringArray(value.candidateIds), "backgroundJob.candidateIds must be an array of strings");
+  invariant(
+    value.optimizationProblemId === null || (typeof value.optimizationProblemId === "string" && value.optimizationProblemId.length > 0),
+    "backgroundJob.optimizationProblemId must be a non-empty string or null"
+  );
+  invariant(isAutonomyLevel(value.autonomyLevel), "invalid backgroundJob.autonomyLevel");
+  invariant(
+    isStringArray(value.allowedTools) && value.allowedTools.length > 0,
+    "backgroundJob.allowedTools must be a non-empty array of strings"
+  );
+  assertJobBudget(value.budget);
+  assertJobBudgetConsumption(value.consumption);
+  invariant(value.result === null || isPlainObject(value.result), "backgroundJob.result must be an object or null");
+  if (value.result !== null) assertJobResult(value.result);
+  invariant(
+    value.failureReason === null || (typeof value.failureReason === "string" && value.failureReason.trim().length > 0),
+    "backgroundJob.failureReason must be a non-empty string or null"
+  );
+  invariant(isEntitySource(value.source), "invalid backgroundJob.source");
+  invariant(isIsoTimestamp(value.createdAt), "backgroundJob.createdAt must be an ISO timestamp");
+  invariant(value.startedAt === null || isIsoTimestamp(value.startedAt), "backgroundJob.startedAt must be an ISO timestamp or null");
+  invariant(value.completedAt === null || isIsoTimestamp(value.completedAt), "backgroundJob.completedAt must be an ISO timestamp or null");
+  invariant(
+    value.cancelRequestedAt === null || isIsoTimestamp(value.cancelRequestedAt),
+    "backgroundJob.cancelRequestedAt must be an ISO timestamp or null"
+  );
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "backgroundJob.metadata must be a JSON-serializable object");
+
+  const terminal = value.status === "completed" || value.status === "cancelled" || value.status === "failed";
+  invariant(terminal === (value.result !== null), 'backgroundJob.result must be non-null if and only if status is terminal ("completed"/"cancelled"/"failed")');
+  invariant(
+    (value.status === "failed") === (value.failureReason !== null),
+    'backgroundJob.failureReason must be non-null if and only if status is "failed"'
+  );
+  invariant(
+    (value.status === "queued") === (value.startedAt === null),
+    'backgroundJob.startedAt must be null if and only if status is "queued"'
+  );
+  invariant(terminal === (value.completedAt !== null), "backgroundJob.completedAt must be non-null if and only if status is terminal");
+  const cancellationRequested = value.status === "cancelling" || value.status === "cancelled";
+  if (cancellationRequested) {
+    invariant(value.cancelRequestedAt !== null, 'backgroundJob.cancelRequestedAt must be set once status is "cancelling" or "cancelled"');
+  }
+  if (value.status === "queued") {
+    invariant(value.cancelRequestedAt === null, 'backgroundJob.cancelRequestedAt must be null while status is "queued"');
+  }
+}
+
+export function assertJobEvent(value: unknown): asserts value is JobEvent {
+  invariant(isPlainObject(value), "jobEvent must be an object");
+  invariant(typeof value.id === "string" && value.id.length > 0, "jobEvent.id is required");
+  invariant(typeof value.jobId === "string" && value.jobId.length > 0, "jobEvent.jobId is required");
+  invariant(typeof value.projectId === "string" && value.projectId.length > 0, "jobEvent.projectId is required");
+  invariant(isJobEventKind(value.kind), "invalid jobEvent.kind");
+  invariant(typeof value.message === "string", "jobEvent.message must be a string");
+  invariant(isIsoTimestamp(value.createdAt), "jobEvent.createdAt must be an ISO timestamp");
+  invariant(isPlainObject(value.metadata) && isJsonSafeValue(value.metadata), "jobEvent.metadata must be a JSON-serializable object");
 }
 
 /**
