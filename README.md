@@ -23,6 +23,16 @@ Optional environment variables (see `apps/api/src/start.ts` / `packages/model-pr
 
 Run everything's tests: `npm test`. Typecheck everything: `npm run typecheck`. Build everything: `npm run build`.
 
+## For judges: a five-minute tour
+
+1. `npm install && npm run dev`, open http://localhost:5173. Without a `GEMINI_API_KEY`, every AI surface honestly reports Gemini is unconfigured — nothing fabricates a reply. The **Deterministic (testing)** model exercises the full mechanical loop offline.
+2. Create a project, describe an engineering goal ("a bracket that holds 2 kg, aluminum, 100×60×20 mm"), and watch requirements land as structured state under the **Requirements** tab — not chat text.
+3. Say "make the bracket lighter" (natural phrasing works — no magic commands): a real Plan and a concrete tool-level Proposal appear. **Nothing executes without your approval**, and an unapproved execution fails honestly on screen.
+4. Approve → the change runs through the one authorized tool path, gets a before/after discrepancy diff, and a **deterministic verification** (numeric comparison code, never the model grading itself).
+5. Kill the server and restart it — projects, memory, approvals, and history all survive (JSON persistence under `NAQSH_DATA_DIR`), and interrupted background jobs are honestly marked failed rather than left "running" forever.
+
+Where the trust boundaries live, if you want to read the enforcement rather than take our word: [execute-tool.ts](packages/core/src/execute-tool.ts) (schema → authorize → invoke, unbypassable), [authorization.ts](packages/core/src/authorization.ts) (never consults the model), [agent-loop.ts](packages/core/src/agent-loop.ts) (replay-protected approvals, before/after diff), [verify.ts](packages/core/src/verify.ts) (deterministic checks that return INCONCLUSIVE rather than defaulting to pass), [freecad-runtime.ts](packages/adapters/src/freecad-runtime.ts) + [runner.py](packages/adapters/freecad/runner.py) (argv-only subprocess, fixed operation table), and [http-research-provider.ts](packages/adapters/src/http-research-provider.ts) (SSRF hardening incl. per-redirect DNS re-checks). `SUBMISSION.md` has the deployment steps and demo script.
+
 ## Architecture
 
 ```
