@@ -36,11 +36,20 @@ export function writeErrorResponse(err: unknown, res: Response): void {
     return;
   }
 
-  const message = err instanceof Error ? err.message : String(err);
   // Only the genuinely unrecognized/unexpected path is logged at error
   // level -- a recognized domain error above (422) is normal, expected
   // control flow (a rejected proposal, a stale approval, an invalid
   // request), not a failure worth an operator's attention. A bare 500 is.
-  logger.error("unhandled_request_error", { requestId: (res.locals as { requestId?: string } | undefined)?.requestId, ...errorMeta(err) });
-  res.status(500).json({ error: { kind: "internal_error", message } });
+  const requestId = (res.locals as { requestId?: string } | undefined)?.requestId;
+  logger.error("unhandled_request_error", { requestId, ...errorMeta(err) });
+  // AUDIT FIX: the CLIENT response never includes `err.message` for an
+  // unrecognized exception -- only the SERVER-SIDE log line above does.
+  // An unexpected error is, by definition, one this code did not
+  // anticipate, so its message could be anything: a filesystem path, a
+  // database connection string, a stack frame -- exactly the class of
+  // information-disclosure a real production deployment must not hand to
+  // an arbitrary caller. A caller who needs to report the failure has
+  // `requestId` (also echoed on the `x-request-id` response header) to
+  // give an operator, who CAN see the real message in the structured log.
+  res.status(500).json({ error: { kind: "internal_error", message: "An unexpected error occurred.", requestId: requestId ?? null } });
 }

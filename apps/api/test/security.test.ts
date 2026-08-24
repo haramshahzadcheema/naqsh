@@ -303,4 +303,21 @@ describe("typed error mapping at the HTTP boundary (httpErrors.ts)", () => {
     assert.equal(calls.status, 500);
     assert.equal((calls.body as any).error.kind, "internal_error");
   });
+
+  it("AUDIT FIX: an unrecognized exception's raw message is NEVER sent to the client -- only a generic message, even though the real message is a genuine internal detail (a filesystem path here) that must not leak to an arbitrary caller", () => {
+    const { res, calls } = fakeResponse();
+    writeErrorResponse(new Error("ENOENT: no such file or directory, open '/app/data/runtime-state/proj_internal_secret.json'"), res);
+    assert.equal(calls.status, 500);
+    const body = calls.body as { error: { kind: string; message: string; requestId: string | null } };
+    assert.equal(body.error.message, "An unexpected error occurred.");
+    assert.doesNotMatch(body.error.message, /ENOENT|\/app\/data|proj_internal_secret/, "the response body must not contain any fragment of the real internal error message");
+  });
+
+  it("AUDIT FIX: the 500 response still carries requestId, so a caller can report the failure and an operator can correlate it with the full server-side log line", () => {
+    const { res, calls } = fakeResponse();
+    res.locals = { requestId: "req_correlation_test" };
+    writeErrorResponse(new Error("internal detail"), res);
+    const body = calls.body as { error: { requestId: string | null } };
+    assert.equal(body.error.requestId, "req_correlation_test");
+  });
 });

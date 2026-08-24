@@ -59,6 +59,45 @@ describe("apps/api HTTP server: real endpoints, real end-to-end behavior", () =>
     assert.equal(body.error.kind, "not_found");
   });
 
+  it("POST /projects/:id/observe returns a real ObservationResult built from the project's actual WorldModelState, and logs the observation to activity -- never a canned/static payload", async () => {
+    const created = await json("/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naqsh-user": "observe-tester" },
+      body: JSON.stringify({ name: "Observe Test Project", description: "A bracket that supports 50 kg.", environmentKind: "mock_cad" })
+    });
+    assert.equal(created.status, 201);
+    const project = created.body;
+
+    const observed = await json(`/projects/${project.id}/observe`, { method: "POST", headers: { "x-naqsh-user": "observe-tester" } });
+    assert.equal(observed.status, 200);
+    // Real ObservationResult shape (packages/core/src/observe-project.ts),
+    // not a stub -- objects/requirements/constraints arrays actually
+    // reflect this project's current WorldModelState.
+    assert.ok(Array.isArray(observed.body.objects));
+    assert.ok(Array.isArray(observed.body.requirements));
+    assert.ok(Array.isArray(observed.body.constraints));
+
+    // The real side effect: observeCurrentProject logs a real activity
+    // entry every time it's called, proving this is a genuine action
+    // against live state, not a read with no trace.
+    const activity = await json(`/projects/${project.id}/activity`, { headers: { "x-naqsh-user": "observe-tester" } });
+    assert.equal(activity.status, 200);
+    assert.ok(activity.body.some((entry: { kind: string }) => entry.kind === "observed"), "observing must be recorded in the project's activity log");
+  });
+
+  it("POST /projects/:id/observe is project-isolated exactly like every other route -- a different identity gets 404, never another project's state", async () => {
+    const created = await json("/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naqsh-user": "observe-owner" },
+      body: JSON.stringify({ name: "Owner's Project", environmentKind: "mock_cad" })
+    });
+    const project = created.body;
+
+    const asIntruder = await json(`/projects/${project.id}/observe`, { method: "POST", headers: { "x-naqsh-user": "observe-intruder" } });
+    assert.equal(asIntruder.status, 404);
+    assert.equal(asIntruder.body.error.kind, "not_found");
+  });
+
   it("USER ACTION -> REAL API -> REAL SERVICE -> REAL RESULT: creating a project produces a real, persisted WorldModelState", async () => {
     const created = await json("/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Mounting Bracket", description: "Supports 50 kg." }) });
     assert.equal(created.status, 201);
