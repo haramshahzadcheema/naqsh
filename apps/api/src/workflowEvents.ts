@@ -39,9 +39,36 @@ export function hasDesignIntent(text: string): boolean {
  * "correct" lighter design without comparing tradeoffs), so this pattern
  * is deliberately checked BEFORE hasDesignIntent in chatWorkflow.ts --
  * neither pattern matches the other's phrases today, but exploration is
- * the more specific ask when both could plausibly apply. */
-const EXPLORATION_INTENT_PATTERN =
-  /\b(try (several|multiple|a few|different) (alternatives|approaches|options|designs)|explore (alternatives|options|other designs)|make it (lighter|stronger|cheaper|smaller|faster)|optimi[sz]e (it|this)|find a better design|(give|show) me (?:\w+\s+){0,2}(alternatives|approaches|options|designs))\b/i;
+ * the more specific ask when both could plausibly apply.
+ *
+ * AUDIT FIX: the original version of this pattern only recognized "make
+ * IT/THIS lighter" -- a real user naming the actual part ("make the
+ * bracket lighter", "can you make the mount stronger") never matched at
+ * all, nor did other completely natural engineering phrasings ("reduce
+ * the thickness", "strengthen this bracket", "change the mounting
+ * geometry", "prepare this for manufacturing"). OBJECT_REF generalizes
+ * "it"/"this"/"that" to also accept "the <noun phrase>" (up to three
+ * words), and five more clause shapes cover the property-change/DFM
+ * phrasings a real engineer actually uses. Still 100% deterministic
+ * regex, zero extra model calls or latency -- verified against every
+ * pre-existing positive example (all still match) plus the new phrasings
+ * (workflowEvents.test.ts). */
+const OBJECT_REF = "(?:it|this|that|the \\w+(?:\\s\\w+){0,2})";
+const EXPLORATION_INTENT_PATTERN = new RegExp(
+  "\\b(" +
+    "try (several|multiple|a few|different) (alternatives|approaches|options|designs)" +
+    "|explore (alternatives|options|other designs)" +
+    `|make ${OBJECT_REF} (lighter|stronger|cheaper|smaller|faster|thinner|thicker)` +
+    `|optimi[sz]e ${OBJECT_REF}` +
+    "|find a better design" +
+    "|(give|show) me (?:\\w+\\s+){0,2}(alternatives|approaches|options|designs)" +
+    "|(reduce|increase|decrease|lower|raise|cut|improve) the (thickness|weight|mass|size|cost|strength)" +
+    `|(strengthen|reinforce|lighten|thin out|thin) ${OBJECT_REF}` +
+    "|(change|modify|adjust|update) the (mounting( geometry)?|geometry|shape|dimensions)" +
+    `|prepare ${OBJECT_REF} for manufacturing|make ${OBJECT_REF} manufacturable` +
+    ")\\b",
+  "i"
+);
 
 export function hasExplorationIntent(text: string): boolean {
   return EXPLORATION_INTENT_PATTERN.test(text);

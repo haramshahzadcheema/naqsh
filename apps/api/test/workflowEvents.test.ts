@@ -30,6 +30,42 @@ describe("hasExplorationIntent: Section 5's example phrases, deterministically m
     assert.equal(hasExplorationIntent("Thanks, that looks good."), false);
   });
 
+  // AUDIT FIX: the original pattern only recognized "make IT/THIS
+  // lighter" -- a user naming the actual part, or any of these other
+  // completely natural engineering phrasings, never matched at all. This
+  // is the "magic phrase" problem: a real engineer does not talk like a
+  // command parser.
+  const naturalLanguageVariations = [
+    "make this lighter",
+    "make the bracket lighter",
+    "can you make the mount stronger",
+    "make the bracket thinner",
+    "reduce the thickness",
+    "reduce the thickness of the bracket",
+    "increase the strength",
+    "cut the cost",
+    "strengthen this bracket",
+    "reinforce it",
+    "lighten the mounting plate",
+    "change the mounting geometry",
+    "modify the geometry",
+    "adjust the shape",
+    "prepare this for manufacturing",
+    "prepare the bracket for manufacturing",
+    "make it manufacturable"
+  ];
+
+  for (const text of naturalLanguageVariations) {
+    it(`matches (natural language, no magic phrase): "${text}"`, () => {
+      assert.equal(hasExplorationIntent(text), true);
+    });
+  }
+
+  it("still does not false-positive on unrelated uses of the same verbs", () => {
+    assert.equal(hasExplorationIntent("Change my mind about the color."), false);
+    assert.equal(hasExplorationIntent("I will prepare a summary for the meeting."), false);
+  });
+
   it("does not overlap with hasDesignIntent's own phrases (each trigger owns disjoint language)", () => {
     const designPhrases = ["Design this for me.", "Prepare a design proposal.", "Create a proposal.", "Plan it.", "Propose a change."];
     for (const phrase of designPhrases) {
