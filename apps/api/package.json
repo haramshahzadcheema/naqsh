@@ -3,15 +3,27 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test test/observation-service.test.ts test/plan-service.test.ts test/proposal-service.test.ts test/agent-loop-service.test.ts test/requirement-service.test.ts",
+    "dev": "tsx watch src/start.ts",
+    "start": "tsx src/start.ts",
+    "test": "node --import tsx --test test/repositories.test.ts test/modelProviderFactory.test.ts test/fileProcessing.test.ts test/server.test.ts test/engineeringWorkflow.test.ts test/workflowEvents.test.ts test/approvals.test.ts test/chatWorkflow.test.ts test/memoryContext.test.ts test/security.test.ts test/chatStream.test.ts test/researchWorkflow.test.ts test/jobsWorkflow.test.ts test/projectSnapshotRoutes.test.ts test/runtimeStatePersistence.test.ts test/runtimeCache.test.ts test/config.test.ts test/freecadEnvironment.integration.test.ts test/frameAnalysis.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@naqsh/adapters": "*",
     "@naqsh/core": "*",
-    "@naqsh/schemas": "*"
+    "@naqsh/model-providers": "*",
+    "@naqsh/schemas": "*",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
+    "@types/pdf-parse": "^1.1.4"
   }
 }

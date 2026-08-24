@@ -1,17 +1,88 @@
 # NAQSH
 
-NAQSH is an agentic engineering system. This repository starts with a small foundation that keeps the world model, tools, permissions, environment adapters, and model providers separated from the beginning.
+NAQSH is a human-in-the-loop AI engineering assistant. It talks with you about an engineering problem, proposes a specific change, and only ever touches your project after you approve it — every approved change is checkpointed before it executes, independently re-authorized regardless of what the model claims, and deterministically re-verified afterward (never "the model says it looks right").
+
+## Quickstart
+
+```bash
+npm install
+npm run dev
+```
+
+That's the whole thing: the root `dev` script runs the real API server (`apps/api`, Express, port 3001) and the real web frontend (`apps/web`, Vite, port 5173) together. Open **http://localhost:5173**.
+
+Optional environment variables (see `apps/api/src/start.ts` / `packages/model-providers/src/config.ts`):
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Enables real Gemini calls. Without it, every AI action honestly reports "Gemini isn't configured," never a fake reply. | unset |
+| `GEMINI_MODEL` | Overrides the default model id. | `gemini-3.5-flash` |
+| `PORT` | API server port. | `3001` |
+| `NAQSH_DATA_DIR` | Where project/file state persists as JSON on disk. | `apps/api/data` |
+| `NAQSH_FREECAD_CMD` | Path to a real `freecadcmd` binary, for the one live CAD integration. | auto-discovered |
+
+Run everything's tests: `npm test`. Typecheck everything: `npm run typecheck`. Build everything: `npm run build`.
+
+## Architecture
+
+```
+                         ┌─────────────────────┐
+                         │   apps/web (React)  │
+                         │  chat · projects ·   │
+                         │  environment · files │
+                         └──────────┬───────────┘
+                                    │ HTTP (x-naqsh-user header)
+                         ┌──────────▼───────────┐
+                         │   apps/api (Express)  │
+                         │ routes → engineering-  │
+                         │ Workflow / chatWorkflow│
+                         └─────┬────────────┬────┘
+              ┌────────────────┘            └────────────────┐
+   ┌──────────▼───────────┐                       ┌──────────▼───────────┐
+   │     packages/core      │                       │ packages/model-      │
+   │ World Model · tools ·  │◄──ModelProvider───────│ providers             │
+   │ authorization ·        │    contract           │ @google/genai →       │
+   │ checkpoints · verify    │                       │ Gemini API             │
+   └──────────┬───────────┘                       └───────────────────────┘
+              │ EnvironmentAdapter contract
+   ┌──────────▼───────────┐
+   │   packages/adapters    │
+   │ mock_cad · mock_sim ·  │
+   │ FreeCAD (real subprocess│
+   │ to a local freecadcmd) │
+   └─────────────────────────┘
+```
+
+Every arrow above is a real, typed contract (`packages/schemas`) — `apps/api` never imports `@google/genai` or a CAD adapter directly, only the `ModelProvider`/`EnvironmentAdapter` interfaces `packages/core` defines. Swapping Gemini for another provider, or FreeCAD for another CAD tool, means writing one new adapter, not touching the orchestration layer.
 
 Repository layout:
 
-- `apps/web` for the future human-facing UI
-- `apps/api` for application orchestration and API surface — as of P8, a
-  thin observation-service seam (`src/observation-service.ts`), not yet a
-  running server
-- `packages/core` for core domain and orchestration primitives
-- `packages/schemas` for shared typed contracts
-- `packages/adapters` for environment-specific integrations
-- `packages/model-providers` for LLM-provider-specific integrations (Gemini, and a deterministic mock)
+- `apps/web` — the real chat-first frontend (React + Vite)
+- `apps/api` — the real Express API server: routes, authorization enforcement, chat/engineering workflow orchestration
+- `apps/desktop` — an optional Electron shell adding real OS-level window/screen capture of a connected CAD application
+- `packages/core` — the World Model, tool execution + authorization, checkpoints, deterministic verification
+- `packages/schemas` — shared typed contracts every other package imports, never redefines
+- `packages/adapters` — concrete `EnvironmentAdapter`s (mock CAD, mock simulation, real FreeCAD)
+- `packages/model-providers` — concrete `ModelProvider`s (the real Gemini provider, and a deterministic mock used in tests/offline demos)
+
+## Deploying to Google Cloud (Cloud Run)
+
+```bash
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,_SERVICE=naqsh-api
+```
+
+Then set the runtime config once (never bake a key into the image):
+
+```bash
+gcloud run services update naqsh-api --region us-central1 \
+  --set-env-vars NAQSH_ALLOWED_ORIGIN=https://your-frontend-origin \
+  --update-secrets GEMINI_API_KEY=gemini-api-key:latest
+```
+
+**Why `cloudbuild.yaml` rather than `gcloud run deploy --source .`:** `--source` has no `--dockerfile` flag and only detects a Dockerfile at the root of the directory it's given. Naqsh's Dockerfile is at `apps/api/Dockerfile` but needs the **monorepo root** as its build context (it copies every sibling workspace package the API imports so esbuild can bundle them). Pointing `--source` at `apps/api` finds the Dockerfile but loses those packages; pointing it at the root keeps them but finds no Dockerfile and silently falls back to buildpacks. `cloudbuild.yaml` does the explicit `docker build -f apps/api/Dockerfile .` that actually expresses "this Dockerfile, that context," then deploys the resulting image pinned by commit SHA.
+
+`apps/api/Dockerfile` builds the real server (esbuild-bundled so it runs under plain `node`, no dev tooling in the image), runs as a non-root user, and honours Cloud Run's injected `PORT`. Cloud Run's default filesystem is ephemeral — `NAQSH_DATA_DIR` inside the container survives only until the instance recycles; mount a Cloud Run volume (GCS FUSE or Filestore) before relying on it past a demo. The server also **refuses to start with `NODE_ENV=production` unless `NAQSH_ALLOWED_ORIGIN` is set**, so a production deployment can never come up with CORS open to every origin.
 
 ## Dependency direction
 
@@ -36,7 +107,7 @@ packages/adapters          packages/model-providers
  (P12), a Python-runtime-    imported)
  backed subprocess boundary)
       ↑                           ↑
-apps/web, apps/api          (future UI / API surface)
+apps/web, apps/api          (the real UI / API surface)
 ```
 
 `packages/core` depends on `packages/schemas`; `packages/adapters` and
@@ -292,19 +363,26 @@ without an independent clone a caller doing
 "x"` would silently mutate the World Model itself. The same guarantee
 holds for every individual query function in `observe-project.ts`
 (`getRequirementById`, `getRelationshipsForEntity`, `getFocusedObjects`,
-...), not just for a full `ObservationResult` — several of them are
-consumed directly by `apps/api/src/observation-service.ts`, bypassing
-`observeProject` entirely. The intended flow is:
+...), not just for a full `ObservationResult`. (The original
+`apps/api/src/observation-service.ts`, which called several of these
+directly, was removed during a later consolidation pass — the live app
+now calls `observeProject` itself from `apps/api/src/engineeringWorkflow.ts`
+instead of going around it.) The intended flow is:
 
 ```
 WorldModelState -> observeProject() -> ObservationResult -> (later,
 optionally) Gemini reasons OVER the result
 ```
 
-never the reverse — nothing in `observe-project.ts` or
-`observation-tool.ts` imports `@naqsh/model-providers`, `@google/genai`,
-`@naqsh/adapters`, or an `EnvironmentAdapter` (all enforced as
-repo-boundaries checks alongside the World-Model-write-path guard above).
+never the reverse — nothing in `observe-project.ts` imports
+`@naqsh/model-providers`, `@google/genai`, `@naqsh/adapters`, or an
+`EnvironmentAdapter` (enforced as a repo-boundaries check alongside the
+World-Model-write-path guard above). (The registered-tool wrapper
+`observation-tool.ts`, once documented here as the same boundary's
+tool-facing half, was later removed as dead code — no live caller ever
+invoked `observe` through `executeTool`; `observeProject` is called
+directly instead, so the boundary this paragraph describes is enforced
+on `observe-project.ts` alone now.)
 Gemini can be handed an `ObservationResult` to reason over later; it can
 never be the thing that constructs one.
 
@@ -356,32 +434,28 @@ dangling relationship reference (the target entity no longer exists) is
 skipped gracefully during traversal, never thrown — the same "read-time
 fact to tolerate" treatment as a stale focus id.
 
-**The observation tool.** `createObservationTool(getState)`
-(`packages/core/src/observation-tool.ts`) is the first agent-facing,
-PRODUCTION `Tool` in this repository — every `Tool` before P8 existed only
-as a test fixture. Registered and executed the normal way
-(`registry.register(tool, handler)`, `executeTool`); classified
-`mutation: "observe"`, `target: "world_model"` — the same classification
-P4 authorization already gates on, with nothing special required to make
-it permission-aware. `getState: () => WorldModelState` is an explicit
-accessor, not a captured/global reference: this repository has no
-singleton "current world model," and this tool does not introduce one.
-Its `outputSchema` needed a `ToolValueSchema` feature that didn't exist
-before P8 — `nullable: true` (`packages/schemas/src/types.ts`,
-`tool-schema.ts`) — because `ObservationResult.scopeObjectId` is genuinely
-`string | null` and `ToolValueSchema` has no `oneOf`/union support; purely
-additive, every schema written before P8 is unaffected.
+**The observation tool (removed).** `createObservationTool(getState)`
+originally lived at `packages/core/src/observation-tool.ts` as the first
+agent-facing, PRODUCTION `Tool` in this repository — every `Tool` before
+P8 existed only as a test fixture. It was registered and executed the
+normal way (`registry.register(tool, handler)`, `executeTool`); classified
+`mutation: "observe"`, `target: "world_model"`. It was removed as dead
+code during a later consolidation pass: the live app never routes
+observation through `executeTool` — `apps/api/src/engineeringWorkflow.ts`
+calls `observeProject` directly instead. The `nullable: true`
+`ToolValueSchema` feature it needed (`packages/schemas/src/types.ts`,
+`tool-schema.ts`, for `ObservationResult.scopeObjectId`'s genuine
+`string | null`) remains, since other schemas depend on it now too.
 
-**API seam.** `apps/api/src/observation-service.ts` is the "expose the
-necessary API/service boundary" seam the P8 brief asks for — four thin,
-literal pass-throughs to `observeProject`/`getRelationshipsForEntity`/
-`getRelatedEntityRefs` (whole-project, focused, single-object, and
-relationship/context observation). Deliberately NOT a running HTTP
-server: no route table, no framework choice, no port binding — standing
-one up is not a P8 concern, and no later-numbered phase has claimed that
-work yet either. What it IS: the exact functions a future HTTP handler
-would call directly, already typed against `@naqsh/core`'s real
-observation API, so wiring an actual server later is pure plumbing.
+**API seam (removed).** `apps/api/src/observation-service.ts` was the
+"expose the necessary API/service boundary" seam the P8 brief asked for —
+four thin, literal pass-throughs to `observeProject`/
+`getRelationshipsForEntity`/`getRelatedEntityRefs`. It was removed in the
+same consolidation pass as `observation-tool.ts`, once
+`apps/api/src/server.ts`'s real HTTP routes and `engineeringWorkflow.ts`
+made it an unreachable extra layer rather than the seam a future server
+would grow from — the server exists now, and calls `observeProject`
+directly.
 
 ## Planning (P9)
 
@@ -474,19 +548,14 @@ model output" the P9 brief forbids; left unresolved, it correctly fails
 `validatePlanSemantics`'s `unknown_dependency`/`unknown_assumption_reference`
 check instead.
 
-**The planning tool.** `createPlanningTool(getState, provider)`
-(`packages/core/src/plan-tool.ts`) is the second agent-facing, PRODUCTION
-`Tool` in this repository (after P8's `observe_project`). Registered and
-executed the normal way; classified `mutation: "suggest"` — the tier
-`AutonomyLevel`'s own doc comment defines as "may also reason/propose
-(still zero mutation)" — `target: "world_model"`, matching
-`observe_project`'s target since planning reasons about World Model data.
-Its handler calls `observeProject` (read) then `generatePlanProposal`
-(pure orchestration over the injected `ModelProvider`) — nothing else. A
-`PlanGenerationResult` error is mapped onto `ToolError`
-(`invalid_input`/`unavailable`/`execution_failure`, by kind), the same
-"never let an internal error class leak past the tool boundary" discipline
-`observation-tool.ts` established for `ObservationError`.
+**The planning tool (removed).** `createPlanningTool(getState, provider)`
+originally lived at `packages/core/src/plan-tool.ts` as the second
+agent-facing, PRODUCTION `Tool` in this repository (after P8's
+`observe_project`); classified `mutation: "suggest"`, `target:
+"world_model"`. It was removed as dead code in the same consolidation
+pass as `observation-tool.ts` — the live app never routes planning
+through `executeTool` either; `apps/api/src/engineeringWorkflow.ts` calls
+`observeProject` then `generatePlanProposal` directly.
 
 **Inspection.** `packages/core/src/plan-query.ts` provides deterministic,
 read-only query helpers over an already-generated `Plan` —
@@ -496,13 +565,14 @@ of these need a defensive clone-and-freeze step: `createPlan` already
 deep-freezes every `Plan` it returns, so there is no live, World-Model-style
 mutable reference to guard against here.
 
-**API seam.** `apps/api/src/plan-service.ts` mirrors
+**API seam (removed).** `apps/api/src/plan-service.ts` mirrored
 `observation-service.ts`'s exact shape: `generateWholeProjectPlan`/
 `generateFocusedPlan`/`generateObjectPlan` (thin pass-throughs composing
 `observeProject` + `generatePlanProposal`) and
 `inspectPlanSummary`/`inspectPlanStep`/`inspectStepDependencies` (thin
-pass-throughs to `plan-query.ts`). Deliberately NOT a running HTTP server,
-for the same reason P8's service isn't one.
+pass-throughs to `plan-query.ts`). Removed alongside `observation-service.ts`
+once `apps/api/src/server.ts` and `engineeringWorkflow.ts` made it an
+unreachable extra layer rather than a seam anything still grew from.
 
 **Empty and existing-model projects both work.** Planning does not require
 any `EngineeringObject` to already exist — a from-scratch project
@@ -589,26 +659,25 @@ never trusted from the model — it is DERIVED from the real registered
 the model to restate what the application already knows authoritatively"
 discipline applied one field further than P9 needed to.
 
-**The proposal tool.** `createProposalTool(registry, provider)`
-(`packages/core/src/proposal-tool.ts`) is the third agent-facing,
-PRODUCTION `Tool` (after P8's `observe_project` and P9's `create_plan`),
-classified `mutation: "suggest"` — the identical tier `create_plan` uses,
-verified end-to-end against the real P4 authorization engine (not just a
-static assertion) in `proposal-tool.test.ts`: allowed at autonomy level
-`"suggest"` or above with no `Approval`/`AutonomyGrant` needed, denied at
-`"observe"`. Unlike `create_plan`, this tool takes no `getState` — a
-`Proposal` is realized from an already-generated `Plan` VALUE the caller
-supplies directly (there is still no `PlanStore`; see P9's own note on
-this deferral), not from live `WorldModelState`. Its handler calls only
+**The proposal tool (removed).** `createProposalTool(registry, provider)`
+originally lived at `packages/core/src/proposal-tool.ts` as the third
+agent-facing, PRODUCTION `Tool` (after P8's `observe_project` and P9's
+`create_plan`), classified `mutation: "suggest"`. Its handler called only
 `generateProposal` — never `executeTool`, never `invokeRegisteredTool` —
-confirmed by a dedicated regression test that registers a real
-`modify_object` tool with a call-tracking handler and asserts it is NEVER
-invoked by creating a proposal that names it.
+a distinction that mattered because it proved proposal generation could
+never itself trigger the tool it was proposing. It was removed as dead
+code in the same consolidation pass as `observation-tool.ts`/
+`plan-tool.ts`: the live app calls `generateProposal` directly from
+`apps/api/src/engineeringWorkflow.ts` rather than through `executeTool`,
+so the "never invokes the named tool" guarantee this file existed to
+prove now holds trivially — nothing in that call path can invoke a tool
+at all until the separate, later EXECUTE step (P11's agent loop).
 
-**API seam.** `apps/api/src/proposal-service.ts` mirrors
+**API seam (removed).** `apps/api/src/proposal-service.ts` mirrored
 `plan-service.ts`'s exact shape: one thin pass-through,
 `generatePlanStepProposal`, composing nothing beyond `generateProposal`
-itself.
+itself. Removed alongside `plan-service.ts`/`observation-service.ts` for
+the same reason.
 
 ## Controlled Agent Loop (P11)
 
@@ -720,10 +789,22 @@ could never be genuinely reachable, and adding it would be exactly the
 kind of fabricated, unreachable status `ObservationResult.
 missingInformation`'s own precedent forbids).
 
-**API seam.** `apps/api/src/agent-loop-service.ts` mirrors every prior
-phase's service file exactly: two thin pass-throughs
-(`startAgentLoopRun`/`continueAgentLoopRun`), composing nothing beyond
-`beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval` themselves.
+**API seam.** The original `apps/api/src/agent-loop-service.ts` (two thin
+pass-throughs, `startAgentLoopRun`/`continueAgentLoopRun`) was removed
+during a later consolidation pass and never replaced with an equivalent —
+for a long stretch, `resumeAgentLoopRunAfterApproval` had ZERO callers
+anywhere in `apps/api`, meaning this whole file was real, tested, and
+completely unreachable from any live request path. That gap is now closed
+differently than the removed file did it: `executeProposal`
+(`apps/api/src/engineeringWorkflow.ts`) assembles the `AgentLoopRun` seed
+from the Plan/Proposal/Approval its own OBSERVE→PLAN→PROPOSE→APPROVE
+sequence already produced, then hands EXECUTE→OBSERVE entirely to
+`resumeAgentLoopRunAfterApproval` — never a second, hand-rolled
+`executeTool` call. Every execution now produces a real, persisted
+`AgentLoopRun` (see `AgentLoopRunStore` below) with genuine before/after
+`LoopDiscrepancy` detection, surfaced in the execution report and in the
+frontend's `ExecutionStatus` component as "Consistency check passed" /
+"Discrepancy detected" — not merely computed and discarded.
 
 ## FreeCAD Adapter (P12)
 
@@ -1376,15 +1457,22 @@ approval just because it "only" produced words. It rejects:
 
 **Gemini boundary.** Gemini → structured candidate → deterministic
 validation → `add_requirement`'s own acceptance logic → World Model. Gemini
-never has a path to `state.project.requirements` directly; `interpret_requirement`
-is `mutation: "suggest"` and performs no World Model write at all — it only
-returns a candidate for a caller (human or agent loop) to accept or discard.
+never has a path to `state.project.requirements` directly;
+`interpretRequirementFromText` performs no World Model write at all — it
+only returns a candidate for a caller (human or agent loop) to accept or
+discard. (A registered-tool wrapper around it, `interpret-requirement-tool.ts`,
+classified `mutation: "suggest"`, once existed for this purpose too; it
+was removed as dead code once it became clear no live caller invoked
+`interpret_requirement` through `executeTool` — `apps/api` calls
+`interpretRequirementFromText` directly, same as the observation/plan/
+proposal functions above.)
 
-**API surface.** `apps/api/src/requirement-service.ts` (`interpretUserRequirement`)
-is a thin pass-through to `interpretRequirementFromText`, mirroring
-`proposal-service.ts`/`plan-service.ts`. There is deliberately no bespoke
-`acceptRequirement` API — `add_requirement` already has a generic,
-approval-gated execution surface via the agent loop (P11).
+**API surface (removed).** `apps/api/src/requirement-service.ts`
+(`interpretUserRequirement`) was a thin pass-through to
+`interpretRequirementFromText`, mirroring `proposal-service.ts`/
+`plan-service.ts`. Removed for the same reason. There is deliberately no
+bespoke `acceptRequirement` API — `add_requirement` already has a
+generic, approval-gated execution surface via the agent loop (P11).
 
 **Deliberately NOT implemented (P20+ territory).** From-scratch design
 generation; requirement-to-check wiring beyond what P16/P17 already support;
@@ -2908,17 +2996,40 @@ No real CAD MODIFICATION (create/modify/delete/checkpoint against FreeCAD
 are all structurally present but capability-gated to
 `unsupported_capability` — see the P12 section above), no full unrestricted
 autonomy (P25's `BackgroundJob` is explicitly BOUNDED — see the P25 section
-above — never "keep working forever"), no approval UI, no production
-authentication, no cloud services, no persistence/database of any kind (P25's
-`BackgroundJobStore`/`JobEventStore` included — in-memory only, like every
-other store in this repository), no simulation engine, no FEA/CFD, no
-geometry generation. `ApprovalStore` and `AutonomyGrantStore` are in-memory
-only — nothing survives a process restart, and the same is true of every
-`EnvironmentAdapter`'s (including `FreeCadAdapter`'s own session tracking),
-`ModelProvider`'s, and `AgentLoopRun`'s state (no `AgentLoopRunStore` exists either — a caller
-holds the value `beginAgentLoopRun`/`resumeAgentLoopRunAfterApproval`
-returns, matching `ApprovalStore`/`AutonomyGrantStore`/the absent
-`PlanStore`/`ProposalStore`'s own in-memory-only precedent). The mock
+above — never "keep working forever"), no production authentication (the
+`x-naqsh-user` header is an unsigned, client-supplied local-dev identity
+stand-in — see `apps/api/src/auth.ts`'s own doc comment — never real auth),
+no simulation engine, no FEA/CFD, no geometry generation.
+**This paragraph is otherwise stale** and predates a later hardening pass:
+a real approval UI exists today (`ProposalCard` for single proposals,
+`ExplorationCard` for a background job's multi-tool approval checklist —
+both wired to the real generic `/proposals/:id/approve|reject` and
+`/projects/:id/approvals/:id/approve|reject` routes); real, disk-backed
+persistence exists for everything a `ProjectRuntime` holds (approvals,
+checkpoints, plans, proposals, background jobs, agent loop runs, etc. — see
+`RuntimeStateRecord`/`JsonCollectionStore`, `apps/api/src/db/`), a deliberate
+choice of a plain JSON-file store over a real SQL database (documented in
+that file's own doc comment), not "no persistence" outright; and a real
+Cloud Run deployment path exists (`apps/api/Dockerfile`, a documented
+`gcloud run deploy` command in this repo's own top-level README) — though it
+has never actually been deployed to a live GCP project from this sandbox
+(no credentials here to do so). `ApprovalStore` and `AutonomyGrantStore`
+ARE genuinely in-memory-only *within one process* (nothing about them is a
+database), but that in-memory state is itself serialized into
+`RuntimeStateRecord` and restored on restart — "in-memory only" and "never
+survives a restart" are not the same claim, and only the first is still
+true. The same is true of every `EnvironmentAdapter`'s (including
+`FreeCadAdapter`'s own session tracking),
+`ModelProvider`'s state. `AgentLoopRun` is the one exception to this
+section's own "in-memory only" framing: a real `AgentLoopRunStore`
+(`packages/core/src/agent-loop-run-store.ts`) now exists, is registered per
+project in `ProjectRuntime`, and is persisted through the same
+`RuntimeStateRecord` JSON-file mechanism every other per-project store
+(`ApprovalStore`, `CheckpointStore`, etc.) already uses — added once
+`executeProposal` began genuinely calling `resumeAgentLoopRunAfterApproval`
+per execution (see the P11 section above) and needed somewhere real to keep
+the resulting audit record, rather than constructing one and immediately
+discarding it. The mock
 adapters in `packages/adapters` remain the primary environment for unit
 tests/CI/deterministic evaluation — P12 does not replace or weaken them;
 they stay deliberately simplistic (no geometry kernel, no FEA/CFD, no real

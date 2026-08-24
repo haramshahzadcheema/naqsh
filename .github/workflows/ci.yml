@@ -1,0 +1,58 @@
+name: CI
+
+# Runs the exact same checks a developer runs locally (`npm run typecheck`,
+# `npm test`, `npm run build`), on every push and PR, so a regression is
+# caught by the repository rather than by whoever next pulls it.
+#
+# Deliberately does NOT need a GEMINI_API_KEY: every model-dependent code
+# path is covered through the deterministic mock ModelProvider, and the
+# real Gemini provider's own tests assert on request/response SHAPE rather
+# than on live network calls. A missing key must never turn CI red, and it
+# must never silently skip a test either -- see
+# packages/model-providers/test for how that boundary is drawn.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # `npm ci` (not `npm install`): fails loudly if package-lock.json and
+      # package.json have drifted, rather than quietly resolving a
+      # different dependency tree than the one that was committed.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Test
+        run: npm run test --workspaces --if-present
+
+      - name: Build
+        run: npm run build --workspaces --if-present
+
+  # Proves the deployable artifact still builds -- the Dockerfile is the
+  # thing Cloud Run actually runs, so a change that breaks it should fail
+  # here rather than at deploy time. Build only (no push, no credentials).
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API container image
+        run: docker build -f apps/api/Dockerfile -t naqsh-api:ci .

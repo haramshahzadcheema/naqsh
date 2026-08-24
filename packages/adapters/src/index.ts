@@ -12,6 +12,7 @@ export {
   type MockResearchSearchOutcome,
   type MockResearchSearchResponder
 } from "./mock-research-provider.js";
+export { createHttpResearchProvider, type HttpResearchProviderOptions } from "./http-research-provider.js";
 export {
   createEnvironmentRegistry,
   createDefaultEnvironmentRegistry,

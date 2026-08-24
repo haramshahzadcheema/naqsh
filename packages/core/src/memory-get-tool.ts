@@ -73,8 +73,8 @@ export function createMemoryGetTool(memoryStore: MemoryStore, getState: () => Wo
   const handler: ToolHandler = (rawInput) => {
     const { memoryId } = toMemoryGetToolInput(rawInput);
     const state = getState();
-    const memory = memoryStore.getById(memoryId);
-    if (!memory || memory.projectId !== state.project.id) {
+    const memory = memoryStore.getForProject(memoryId, state.project.id);
+    if (!memory) {
       throw new ToolError("invalid_input", `memory_not_found: no memory record "${memoryId}" exists in the current project`);
     }
     const projectRecords = memoryStore.listForProject(state.project.id);

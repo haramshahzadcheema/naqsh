@@ -742,6 +742,48 @@ describe("runBackgroundJob: verification integration (P16)", () => {
     const stored = harness.verificationResultStore.getById(candidateResult.verificationResultIds[0]!);
     assert.ok(stored);
     assert.equal(stored!.status, "pass");
+
+    // AUDIT FIX: the real Experiment record itself (not just this job's own
+    // JobCandidateResult bookkeeping) must carry the same verificationResultIds
+    // -- compareCandidates (P22) reads verification data exclusively off
+    // Experiment.verificationResultIds, so a caller comparing candidates
+    // after a background job ran must see the same results this job just
+    // produced, not an empty list.
+    const experiment = harness.getState().project.experiments.find((e) => e.candidateId === candidate.id);
+    assert.ok(experiment, "an Experiment must have been recorded for this candidate");
+    assert.deepEqual(experiment!.verificationResultIds, candidateResult.verificationResultIds);
+  });
+
+  it("a verifyCandidate hook producing ZERO results leaves the Experiment's verificationResultIds untouched (no pointless update_experiment call)", async () => {
+    const harness = buildHarness();
+    const candidate = harness.makeCandidate("A", "H-A");
+    const job = createBackgroundJob({
+      projectId: harness.getState().project.id,
+      projectVersion: harness.getState().project.version,
+      objective: "Empty verification test.",
+      candidateIds: [candidate.id],
+      autonomyLevel: "autonomous",
+      allowedTools: FULL_ALLOWLIST,
+      budget: validBudget()
+    });
+    harness.jobStore.save(job);
+
+    await runBackgroundJob({
+      registry: harness.registry,
+      jobStore: harness.jobStore,
+      eventStore: harness.eventStore,
+      candidateStore: harness.candidateStore,
+      designSpecificationStore: harness.designSpecificationStore,
+      buildResultStore: harness.buildResultStore,
+      approvals: harness.approvals,
+      autonomyGrants: harness.autonomyGrants,
+      jobId: job.id,
+      verifyCandidate: async () => []
+    });
+
+    const experiment = harness.getState().project.experiments.find((e) => e.candidateId === candidate.id);
+    assert.ok(experiment);
+    assert.deepEqual(experiment!.verificationResultIds, []);
   });
 });
 

@@ -49,4 +49,22 @@ export interface ModelProvider {
    * context/tools the model needs must already be data on `request` (see
    * core's `buildModelContext`/`toModelToolDeclarations`). */
   generate(request: ModelRequest): Promise<ModelInvocationResult>;
+
+  /** OPTIONAL incremental delivery: calls `onChunk` with each new slice of
+   * text as it arrives, still resolving to the exact SAME
+   * `ModelInvocationResult` shape `generate()` would produce once
+   * complete — never a different result shape for the streaming path, and
+   * never a SECOND source of truth for what the model actually said (the
+   * resolved value is always authoritative; `onChunk` is a progressive
+   * preview of it).
+   *
+   * A provider that cannot genuinely stream (the deterministic mock —
+   * its whole response is already fully known synchronously, so there is
+   * nothing to progressively reveal) simply omits this method entirely.
+   * Callers MUST feature-detect (`typeof provider.generateStream ===
+   * "function"`) rather than assume every provider has it, and must never
+   * fabricate incremental delivery themselves by slicing an
+   * already-complete string and drip-feeding it on a timer — that is
+   * exactly the "simulated streaming" this contract exists to rule out. */
+  generateStream?(request: ModelRequest, onChunk: (deltaText: string) => void): Promise<ModelInvocationResult>;
 }

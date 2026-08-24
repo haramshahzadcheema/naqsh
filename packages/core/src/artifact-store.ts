@@ -23,11 +23,15 @@ export interface ArtifactStore {
   put(artifactId: string, content: string): void;
   get(artifactId: string): string | undefined;
   has(artifactId: string): boolean;
+  /** Every `[artifactId, content]` pair currently held -- the enumeration
+   * `serialize()` needs. Safe to expose despite `put`'s "immutable once
+   * written" contract: this returns a snapshot array, not the live `Map`,
+   * so a caller can never mutate stored content through it. */
+  entries(): ReadonlyArray<readonly [string, string]>;
+  serialize(): string;
 }
 
-export function createArtifactStore(): ArtifactStore {
-  const artifacts = new Map<string, string>();
-
+function buildStore(artifacts: Map<string, string>): ArtifactStore {
   return {
     put(artifactId, content) {
       if (typeof artifactId !== "string" || artifactId.length === 0) {
@@ -39,8 +43,38 @@ export function createArtifactStore(): ArtifactStore {
       artifacts.set(artifactId, content);
     },
     get: (artifactId) => artifacts.get(artifactId),
-    has: (artifactId) => artifacts.has(artifactId)
+    has: (artifactId) => artifacts.has(artifactId),
+    entries: () => Array.from(artifacts.entries()),
+    serialize: () => JSON.stringify(Array.from(artifacts.entries()))
   };
+}
+
+export function createArtifactStore(): ArtifactStore {
+  return buildStore(new Map());
+}
+
+/** Rebuilds an `ArtifactStore` from `serialize()`'s output. Populates the
+ * map directly (not via `put`, which would reject re-inserting an id that
+ * already exists in the very array being restored) -- matching
+ * `deserializeBackgroundJobStore`'s identical "bypass the mutation-time
+ * guard when trusted, already-validated bytes are being restored"
+ * precedent. */
+export function deserializeArtifactStore(serialized: string): ArtifactStore {
+  if (typeof serialized !== "string" || serialized.trim().length === 0) {
+    throw new WorldModelValidationError("invalid_shape", "serialized artifact store is required");
+  }
+  const parsed: unknown = JSON.parse(serialized);
+  if (!Array.isArray(parsed)) {
+    throw new WorldModelValidationError("invalid_shape", "serialized artifact store must be an array");
+  }
+  const artifacts = new Map<string, string>();
+  for (const entry of parsed as Array<[string, string]>) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") {
+      throw new WorldModelValidationError("invalid_shape", "each serialized artifact entry must be a [id, content] string pair");
+    }
+    artifacts.set(entry[0], entry[1]);
+  }
+  return buildStore(artifacts);
 }
 
 /**

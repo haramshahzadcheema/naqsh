@@ -1,0 +1,316 @@
+/*
+  Naqsh design tokens — monochrome, technical, semantic-color-only-where-
+  necessary. Light is the default (:root); dark redefines the same token
+  names under :root[data-theme="dark"] (explicit choice) and
+  prefers-color-scheme (system default), never inverting ad hoc.
+*/
+
+:root {
+  color-scheme: light;
+
+  --font-sans:
+    -apple-system, "Segoe UI", "Inter", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+
+  /* Surfaces */
+  --bg-canvas: #f4f4f2;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-inset: #ececea;
+  --bg-hover: rgba(0, 0, 0, 0.045);
+  --bg-active: rgba(0, 0, 0, 0.075);
+  --bg-overlay: rgba(20, 20, 18, 0.4);
+
+  /* Borders */
+  --border-subtle: #e4e3e0;
+  --border-default: #d4d3cf;
+  --border-strong: #b3b2ac;
+
+  /* Text */
+  --text-primary: #171715;
+  --text-secondary: #55544f;
+  --text-tertiary: #85847d;
+  --text-disabled: #b3b2ac;
+  --text-on-ink: #f4f4f2;
+
+  /* Ink = the one "accent," used for primary actions / focus / selection */
+  --ink: #171715;
+  --ink-hover: #000000;
+
+  /* Semantic — restrained, desaturated */
+  --status-success: #2f6b46;
+  --status-success-bg: #e7f1ea;
+  --status-warning: #93650f;
+  --status-warning-bg: #f6ecd9;
+  --status-danger: #a13c33;
+  --status-danger-bg: #f7e6e3;
+  --status-info: #2f5a80;
+  --status-info-bg: #e6edf3;
+  --status-pending: #6b6a63;
+  --status-pending-bg: #eceae5;
+
+  --focus-ring: #2f5a80;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /*
+    Typography scale — a real hierarchy, replacing the organic drift of
+    hand-picked fractional pixel values (9.5px, 10.5px, 11.5px, 13.5px…)
+    that had accumulated across the codebase with no shared vocabulary.
+    Every NEW component styled from this pass reads from these; existing
+    call sites migrate onto them incrementally as each area is touched,
+    never in one risky blanket find/replace.
+      2xs   — fine print: counts, tiny badges, timestamps in dense rows
+      xs    — metadata, captions, form labels, eyebrow text
+      sm    — secondary body text, compact controls, table cells
+      base  — primary body text (matches body{}'s own size)
+      md    — emphasized body, section sub-headings
+      lg    — panel/card headings
+      xl    — page headings
+      2xl   — rare display moments (the opening, empty-state headlines)
+  */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.6;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --shadow-sm: 0 1px 2px rgba(20, 20, 18, 0.06);
+  --shadow-md: 0 4px 16px rgba(20, 20, 18, 0.1);
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+
+  /* Layering — one shared vocabulary for what stacks above what, so a
+     dropdown, a modal, and a toast never fight over an arbitrary
+     hand-picked z-index again. */
+  --z-dropdown: 30;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg-canvas: #0e0e0d;
+    --bg-surface: #161615;
+    --bg-surface-raised: #1c1c1a;
+    --bg-inset: #101010;
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.1);
+    --bg-overlay: rgba(0, 0, 0, 0.55);
+
+    --border-subtle: #292825;
+    --border-default: #37362f;
+    --border-strong: #4d4b42;
+
+    --text-primary: #f2f2ef;
+    --text-secondary: #b8b6ac;
+    --text-tertiary: #85847a;
+    --text-disabled: #55544d;
+    --text-on-ink: #0e0e0d;
+
+    --ink: #f2f2ef;
+    --ink-hover: #ffffff;
+
+    --status-success: #6fbf8b;
+    --status-success-bg: #16261b;
+    --status-warning: #d9a441;
+    --status-warning-bg: #2b2211;
+    --status-danger: #e08277;
+    --status-danger-bg: #2c1815;
+    --status-info: #7fa8cc;
+    --status-info-bg: #16212b;
+    --status-pending: #9b9a90;
+    --status-pending-bg: #201f1c;
+
+    --focus-ring: #7fa8cc;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0e0e0d;
+  --bg-surface: #161615;
+  --bg-surface-raised: #1c1c1a;
+  --bg-inset: #101010;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-overlay: rgba(0, 0, 0, 0.55);
+
+  --border-subtle: #292825;
+  --border-default: #37362f;
+  --border-strong: #4d4b42;
+
+  --text-primary: #f2f2ef;
+  --text-secondary: #b8b6ac;
+  --text-tertiary: #85847a;
+  --text-disabled: #55544d;
+  --text-on-ink: #0e0e0d;
+
+  --ink: #f2f2ef;
+  --ink-hover: #ffffff;
+
+  --status-success: #6fbf8b;
+  --status-success-bg: #16261b;
+  --status-warning: #d9a441;
+  --status-warning-bg: #2b2211;
+  --status-danger: #e08277;
+  --status-danger-bg: #2c1815;
+  --status-info: #7fa8cc;
+  --status-info-bg: #16212b;
+  --status-pending: #9b9a90;
+  --status-pending-bg: #201f1c;
+
+  --focus-ring: #7fa8cc;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--ink);
+  color: var(--text-on-ink);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+.app-crash {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-canvas);
+  padding: var(--space-6);
+}
+.app-crash__card {
+  max-width: 420px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+.app-crash__eyebrow {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+.app-crash__message {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  word-break: break-word;
+}

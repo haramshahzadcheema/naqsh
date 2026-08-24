@@ -21,7 +21,7 @@ import type { GeminiProviderConfig } from "../src/config.js";
 
 const fakeConfig: GeminiProviderConfig = {
   apiKey: "fake-key-for-construction-tests-only",
-  modelId: "gemini-2.5-flash",
+  modelId: "gemini-3.5-flash",
   timeoutMs: 30000,
   maxRetries: 2
 };
@@ -35,7 +35,7 @@ describe("createGeminiModelProvider: construction only, never calls the network"
     const provider = createGeminiModelProvider(fakeConfig);
     const descriptor = provider.describe();
     assert.equal(descriptor.providerId, "gemini");
-    assert.equal(descriptor.modelId, "gemini-2.5-flash");
+    assert.equal(descriptor.modelId, "gemini-3.5-flash");
     assert.equal(descriptor.supportsToolCalling, true);
   });
 });
@@ -67,10 +67,10 @@ describe("mapModelRequestToGeminiParams: pure request mapping", () => {
     const request = createModelRequest({
       context: { projectName: "Bracket Study" },
       instruction: "Reduce mass by 20%.",
-      config: { modelId: "gemini-2.5-flash", temperature: 0.2, maxOutputTokens: 512 }
+      config: { modelId: "gemini-3.5-flash", temperature: 0.2, maxOutputTokens: 512 }
     });
     const params = mapModelRequestToGeminiParams(request, fakeConfig);
-    assert.equal(params.model, "gemini-2.5-flash");
+    assert.equal(params.model, "gemini-3.5-flash");
     assert.match(params.contents as string, /Reduce mass by 20%/);
     assert.equal(params.config?.temperature, 0.2);
     assert.equal(params.config?.maxOutputTokens, 512);
@@ -89,12 +89,12 @@ describe("mapModelRequestToGeminiParams: pure request mapping", () => {
           target: "world_model"
         }
       ],
-      config: { modelId: "gemini-2.5-flash" }
+      config: { modelId: "gemini-3.5-flash" }
     });
     const paramsWithTools = mapModelRequestToGeminiParams(withTools, fakeConfig);
     assert.equal(paramsWithTools.config?.tools?.length, 1);
 
-    const withoutTools = createModelRequest({ context: {}, instruction: "x", config: { modelId: "gemini-2.5-flash" } });
+    const withoutTools = createModelRequest({ context: {}, instruction: "x", config: { modelId: "gemini-3.5-flash" } });
     const paramsWithoutTools = mapModelRequestToGeminiParams(withoutTools, fakeConfig);
     assert.equal(paramsWithoutTools.config?.tools, undefined);
   });
@@ -104,11 +104,57 @@ describe("mapModelRequestToGeminiParams: pure request mapping", () => {
       context: {},
       instruction: "x",
       outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
-      config: { modelId: "gemini-2.5-flash" }
+      config: { modelId: "gemini-3.5-flash" }
     });
     const params = mapModelRequestToGeminiParams(request, fakeConfig);
     assert.equal(params.config?.responseMimeType, "application/json");
     assert.deepEqual(params.config?.responseJsonSchema, request.outputSchema);
+  });
+
+  it("keeps contents a plain string when there are no attachments (unchanged pre-P22 shape)", () => {
+    const request = createModelRequest({ context: {}, instruction: "x", config: { modelId: "gemini-3.5-flash" } });
+    const params = mapModelRequestToGeminiParams(request, fakeConfig);
+    assert.equal(typeof params.contents, "string");
+  });
+
+  it("switches contents to a Content[] with an inlineData part per attachment", () => {
+    const request = createModelRequest({
+      context: { projectName: "Bracket Study" },
+      instruction: "What do you see in this view?",
+      attachments: [{ kind: "image", mimeType: "image/png", dataBase64: "aGVsbG8=" }],
+      config: { modelId: "gemini-3.5-flash" }
+    });
+    const params = mapModelRequestToGeminiParams(request, fakeConfig);
+    assert.ok(Array.isArray(params.contents));
+    const content = (params.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>)[0];
+    assert.ok(content);
+    assert.equal(content.role, "user");
+    assert.ok(content.parts.some((part) => typeof part.text === "string" && /What do you see/.test(part.text as string)));
+    assert.deepEqual(
+      content.parts.find((part) => "inlineData" in part)?.inlineData,
+      { mimeType: "image/png", data: "aGVsbG8=" }
+    );
+  });
+
+  it("maps multiple attachments to multiple inlineData parts, in order", () => {
+    const request = createModelRequest({
+      context: {},
+      instruction: "x",
+      attachments: [
+        { kind: "image", mimeType: "image/png", dataBase64: "aGVsbG8=" },
+        { kind: "image", mimeType: "image/jpeg", dataBase64: "d29ybGQ=" }
+      ],
+      config: { modelId: "gemini-3.5-flash" }
+    });
+    const params = mapModelRequestToGeminiParams(request, fakeConfig);
+    const content = (params.contents as Array<{ parts: Array<Record<string, unknown>> }>)[0];
+    assert.ok(content);
+    const inlineDataParts = content.parts.filter((part) => "inlineData" in part);
+    assert.equal(inlineDataParts.length, 2);
+    assert.ok(inlineDataParts[0]);
+    assert.ok(inlineDataParts[1]);
+    assert.deepEqual((inlineDataParts[0] as { inlineData: unknown }).inlineData, { mimeType: "image/png", data: "aGVsbG8=" });
+    assert.deepEqual((inlineDataParts[1] as { inlineData: unknown }).inlineData, { mimeType: "image/jpeg", data: "d29ybGQ=" });
   });
 });
 
@@ -119,7 +165,7 @@ describe("mapGeminiResponseToModelResponseInput: pure response mapping, no netwo
       context: {},
       instruction: "x",
       outputSchema,
-      config: { modelId: "gemini-2.5-flash" }
+      config: { modelId: "gemini-3.5-flash" }
     });
   }
 
@@ -270,7 +316,7 @@ describe("createGeminiModelProvider: generate() control flow with an injected fa
   // construction-only / pure-mapping-only tests above: before this, the
   // retry logic had zero test coverage.
   function textOnlyRequest(): ReturnType<typeof createModelRequest> {
-    return createModelRequest({ context: {}, instruction: "hi", config: { modelId: "gemini-2.5-flash" } });
+    return createModelRequest({ context: {}, instruction: "hi", config: { modelId: "gemini-3.5-flash" } });
   }
 
   it("succeeds on the first attempt when generateContent succeeds -- attempts recorded as 1", async () => {
@@ -388,7 +434,7 @@ describe("createGeminiModelProvider: generate() control flow with an injected fa
       context: {},
       instruction: "status",
       outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
-      config: { modelId: "gemini-2.5-flash" }
+      config: { modelId: "gemini-3.5-flash" }
     });
     const result = await provider.generate(request);
     assert.equal(result.status, "success");
@@ -410,7 +456,7 @@ describe("createGeminiModelProvider: generate() control flow with an injected fa
       context: {},
       instruction: "status",
       outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
-      config: { modelId: "gemini-2.5-flash" }
+      config: { modelId: "gemini-3.5-flash" }
     });
     const result = await provider.generate(request);
     assert.equal(result.status, "error");
@@ -426,10 +472,74 @@ describe("createGeminiModelProvider: generate() control flow with an injected fa
         return { text: "hello there" };
       }
     });
-    const request = createModelRequest({ context: {}, instruction: "status", config: { modelId: "gemini-2.5-flash" } });
+    const request = createModelRequest({ context: {}, instruction: "status", config: { modelId: "gemini-3.5-flash" } });
     const result = await provider.generate(request);
     assert.equal(result.status, "success");
     assert.equal(result.response?.kind, "text");
     assert.equal(calls, 1);
+  });
+});
+
+describe("createGeminiModelProvider: generateStream() with an injected fake async-iterable", () => {
+  // Same no-network discipline as the generate() control-flow suite above:
+  // `generateContentStream` is injected as a fake async generator, never a
+  // live call.
+  function textOnlyRequest(): ReturnType<typeof createModelRequest> {
+    return createModelRequest({ context: {}, instruction: "hi", config: { modelId: "gemini-3.5-flash" } });
+  }
+
+  async function* fakeChunks(...texts: string[]): AsyncGenerator<RawGeminiResponseLike> {
+    for (const text of texts) yield { text };
+  }
+
+  it("declares generateStream as a real function on the provider (feature-detectable by callers)", () => {
+    const provider = createGeminiModelProvider(fakeConfig);
+    assert.equal(typeof provider.generateStream, "function");
+  });
+
+  it("delivers each chunk to onChunk as it arrives, and resolves to the SAME final result shape generate() would produce", async () => {
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContentStream: async () => fakeChunks("Hello", ", ", "world.")
+    });
+    const received: string[] = [];
+    const result = await provider.generateStream!(textOnlyRequest(), (delta) => received.push(delta));
+    assert.deepEqual(received, ["Hello", ", ", "world."]);
+    assert.equal(result.status, "success");
+    assert.equal(result.response?.kind, "text");
+    assert.equal(result.response?.text, "Hello, world.");
+  });
+
+  it("a mid-stream network failure resolves to a real error result -- onChunk received whatever arrived before the failure, but nothing is silently retried", async () => {
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContentStream: async () => {
+        // eslint-disable-next-line require-yield
+        async function* failing(): AsyncGenerator<RawGeminiResponseLike> {
+          yield { text: "partial" };
+          throw new ApiError({ message: "connection reset", status: 500 });
+        }
+        return failing();
+      }
+    });
+    const received: string[] = [];
+    const result = await provider.generateStream!(textOnlyRequest(), (delta) => received.push(delta));
+    assert.deepEqual(received, ["partial"]);
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "api_unavailable");
+  });
+
+  it("structured-output validation still applies to the ACCUMULATED streamed text, exactly like generate()", async () => {
+    const provider = createGeminiModelProvider(fakeConfig, {
+      generateContentStream: async () => fakeChunks('{"ok":', " true}")
+    });
+    const request = createModelRequest({
+      context: {},
+      instruction: "status",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      config: { modelId: "gemini-3.5-flash" }
+    });
+    const result = await provider.generateStream!(request, () => {});
+    assert.equal(result.status, "success");
+    assert.equal(result.response?.kind, "structured_result");
+    assert.deepEqual(result.response?.structuredResult, { ok: true });
   });
 });

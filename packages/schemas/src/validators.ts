@@ -24,8 +24,11 @@ import {
   type EnvironmentVector3
 } from "./environment-types.js";
 import {
+  MODEL_ATTACHMENT_IMAGE_MIME_TYPES,
+  MODEL_ATTACHMENT_KINDS,
   MODEL_ERROR_KINDS,
   MODEL_RESPONSE_KINDS,
+  type ModelAttachment,
   type ModelContext,
   type ModelInvocationError,
   type ModelInvocationResult,
@@ -1324,6 +1327,31 @@ export function assertModelContext(value: unknown): asserts value is ModelContex
   );
 }
 
+const MODEL_ATTACHMENT_MAX_BASE64_LENGTH = 8_000_000; // ~6MB decoded
+const MODEL_ATTACHMENT_MAX_COUNT = 4;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+=*$/;
+
+export function assertModelAttachment(value: unknown): asserts value is ModelAttachment {
+  invariant(isPlainObject(value), "model attachment must be an object");
+  invariant(
+    (MODEL_ATTACHMENT_KINDS as readonly string[]).includes(value.kind as string),
+    "invalid model attachment kind"
+  );
+  invariant(
+    typeof value.mimeType === "string" && MODEL_ATTACHMENT_IMAGE_MIME_TYPES.includes(value.mimeType),
+    `modelAttachment.mimeType must be one of ${MODEL_ATTACHMENT_IMAGE_MIME_TYPES.join(", ")}`
+  );
+  invariant(
+    typeof value.dataBase64 === "string" && value.dataBase64.length > 0,
+    "modelAttachment.dataBase64 is required"
+  );
+  invariant(
+    value.dataBase64.length <= MODEL_ATTACHMENT_MAX_BASE64_LENGTH,
+    `modelAttachment.dataBase64 exceeds the ${MODEL_ATTACHMENT_MAX_BASE64_LENGTH}-character bound`
+  );
+  invariant(BASE64_PATTERN.test(value.dataBase64), "modelAttachment.dataBase64 must be valid base64");
+}
+
 export function assertModelRequest(value: unknown): asserts value is ModelRequest {
   invariant(isPlainObject(value), "model request must be an object");
   invariant(typeof value.id === "string" && value.id.length > 0, "modelRequest.id is required");
@@ -1339,6 +1367,12 @@ export function assertModelRequest(value: unknown): asserts value is ModelReques
   if (value.outputSchema !== null) {
     assertValidToolValueSchema(value.outputSchema, "modelRequest.outputSchema");
   }
+  invariant(Array.isArray(value.attachments), "modelRequest.attachments must be an array");
+  invariant(
+    value.attachments.length <= MODEL_ATTACHMENT_MAX_COUNT,
+    `modelRequest.attachments must not exceed ${MODEL_ATTACHMENT_MAX_COUNT} entries`
+  );
+  for (const attachment of value.attachments) assertModelAttachment(attachment);
   assertModelRequestConfig(value.config);
   assertNullableString(value.sessionId, "modelRequest.sessionId must be a string or null");
   invariant(isIsoTimestamp(value.createdAt), "modelRequest.createdAt must be an ISO timestamp");

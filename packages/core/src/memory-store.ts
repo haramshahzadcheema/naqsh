@@ -18,24 +18,35 @@ import { createMemoryRecord, toIsoTimestamp, WorldModelValidationError, type Mem
  * remains `WorldModelState`; this store no more competes with it than
  * `ClarificationStore`/`CandidateStore`/`OptimizationResultStore` do.
  *
- * Every read is scoped by `projectId` at the CALLER's discretion
- * (`listForProject`) -- PROJECT ISOLATION is enforced by every tool built
- * on top of this store always calling `listForProject`/`getById` with the
- * live `WorldModelState.project.id`, never a caller-supplied one (see
- * `memory-search-tool.ts`/`memory-get-tool.ts`). `getById` itself does NOT
- * filter by project (mirrors every other store's `getById` in this repo --
- * `VerificationResultStore`, `CandidateStore`, etc. -- none of which are
- * project-scoped at the storage layer); a caller that needs project
- * isolation on a single-record lookup must additionally compare
- * `.projectId` itself, exactly like `record-candidate-metric-value-tool.ts`
- * (P23 audit) already established for `VerificationResultStore`.
+ * PROJECT ISOLATION. `listForProject` and `getForProject` are the
+ * project-scoped reads, and they are the ones every caller serving a
+ * request should use. `getById` deliberately does NOT filter by project
+ * (mirroring every other store's `getById` in this repo --
+ * `VerificationResultStore`, `CandidateStore`, etc.), which made isolation
+ * on single-record lookups a CONVENTION every call site had to remember:
+ * fetch by id, then separately compare `.projectId`. Every current caller
+ * does do that correctly, but "correct because each author remembered" is
+ * one forgotten line away from a cross-project read, so `getForProject`
+ * now exists to make the safe operation a single call that cannot be
+ * half-performed. `getById` is retained for genuinely project-agnostic
+ * internal work -- notably `supersede`'s own reachability walk, which
+ * traverses a chain already proven to be within one project.
  */
 export interface MemoryStore {
   /** Always starts "active" -- rejects an input that already claims a
    * different status (use `archive`/`supersede` for those transitions
    * instead of constructing a pre-resolved record). Rejects a duplicate id. */
   save(record: MemoryRecord): void;
+  /** Project-agnostic lookup. Prefer `getForProject` anywhere a request's
+   * own project scope applies -- see this file's PROJECT ISOLATION note. */
   getById(id: string): MemoryRecord | undefined;
+  /** The isolation-safe single-record read: returns the record ONLY when it
+   * actually belongs to `projectId`, so a caller cannot accidentally act on
+   * another project's memory by forgetting a follow-up comparison.
+   * Indistinguishable (`undefined`) between "no such record" and "exists,
+   * but in a different project" -- deliberately, so a caller cannot use it
+   * to probe for the existence of ids outside its own project. */
+  getForProject(id: string, projectId: string): MemoryRecord | undefined;
   list(): readonly MemoryRecord[];
   listForProject(projectId: string): readonly MemoryRecord[];
   /** Throws `WorldModelValidationError` for a missing id or a memory that
@@ -158,6 +169,10 @@ function buildStore(records: Map<string, MemoryRecord>): MemoryStore {
       records.set(record.id, record);
     },
     getById: (id) => records.get(id),
+    getForProject: (id, projectId) => {
+      const record = records.get(id);
+      return record && record.projectId === projectId ? record : undefined;
+    },
     list: () => Array.from(records.values()),
     listForProject: (projectId) => Array.from(records.values()).filter((record) => record.projectId === projectId),
     archive(id, options) {

@@ -1,0 +1,94 @@
+# Cloud Build pipeline for deploying @naqsh/api to Cloud Run.
+#
+# WHY THIS FILE EXISTS rather than a one-line `gcloud run deploy --source .`:
+# `gcloud run deploy --source` has no `--dockerfile` flag and only detects a
+# Dockerfile at the ROOT of the source directory it is given. Naqsh's
+# Dockerfile lives at `apps/api/Dockerfile` but genuinely needs the
+# MONOREPO ROOT as its build context (it copies every sibling workspace
+# package the API imports -- @naqsh/core, @naqsh/schemas, @naqsh/adapters,
+# @naqsh/model-providers -- so esbuild can bundle them). Those two facts
+# are irreconcilable with `--source`: pointing it at `apps/api` finds the
+# Dockerfile but loses the sibling packages; pointing it at the repo root
+# keeps the packages but finds no Dockerfile and silently falls back to
+# buildpacks. An explicit `docker build -f <path> <context>` is the only
+# correct way to express "this Dockerfile, that context," which is exactly
+# what this pipeline does.
+#
+# Run it with:
+#
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_SERVICE=naqsh-api
+#
+# Then set the secret ONCE (never bake a key into the image or this file):
+#
+#   gcloud run services update naqsh-api --region us-central1 \
+#     --set-env-vars NAQSH_ALLOWED_ORIGIN=https://your-frontend-origin \
+#     --update-secrets GEMINI_API_KEY=gemini-api-key:latest
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: naqsh-api
+  _REPO: naqsh
+
+steps:
+  # Artifact Registry repo, created on first run and a harmless no-op
+  # afterwards -- so this pipeline works against a brand-new project
+  # without a separate manual bootstrap step.
+  - id: ensure-artifact-registry
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud artifacts repositories describe "${_REPO}" \
+          --location="${_REGION}" >/dev/null 2>&1 ||
+        gcloud artifacts repositories create "${_REPO}" \
+          --repository-format=docker \
+          --location="${_REGION}" \
+          --description="Naqsh container images"
+
+  # The real build: apps/api/Dockerfile, monorepo root as context.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/api/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+
+  # Deploy the image that was just built, pinned by commit SHA rather than
+  # `:latest`, so a revision always names the exact artifact it runs.
+  # NAQSH_ALLOWED_ORIGIN is intentionally NOT set here: the server refuses
+  # to start in production without it (see config.ts's resolveCorsConfig),
+  # and it belongs to the deployment, not the build.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+      - --set-env-vars=NODE_ENV=production
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

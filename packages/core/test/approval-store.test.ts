@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { AuthorizationError } from "@naqsh/schemas";
-import { createApprovalStore } from "../src/approval-store.js";
+import { createApprovalStore, deserializeApprovalStore } from "../src/approval-store.js";
 
 describe("ApprovalStore: creation", () => {
   it("creates a pending approval", () => {
@@ -102,5 +102,29 @@ describe("ApprovalStore: consumption (single-use)", () => {
     const store = createApprovalStore();
     const approval = store.create({ toolName: "x" });
     assert.throws(() => store.consume(approval.id), AuthorizationError);
+  });
+});
+
+describe("ApprovalStore: serialize/deserializeApprovalStore", () => {
+  it("round-trips through serialize/deserialize with full fidelity, including a consumed approval's status", () => {
+    const store = createApprovalStore();
+    const pending = store.create({ toolName: "a" });
+    const approved = store.create({ toolName: "b" });
+    store.approve(approved.id, "human");
+    store.consume(approved.id);
+
+    const restored = deserializeApprovalStore(store.serialize());
+    assert.deepEqual(restored.getById(pending.id), store.getById(pending.id));
+    const restoredApproved = restored.getById(approved.id);
+    assert.equal(restoredApproved?.status, "approved");
+    assert.notEqual(restoredApproved?.consumedAt, null);
+  });
+
+  it("rejects a non-array serialized payload", () => {
+    assert.throws(() => deserializeApprovalStore(JSON.stringify({ not: "an array" })), /must be an array/);
+  });
+
+  it("rejects an empty string", () => {
+    assert.throws(() => deserializeApprovalStore(""), /is required/);
   });
 });

@@ -31,7 +31,7 @@ export function loadGeminiConfigFromEnv(env: NodeJS.ProcessEnv = process.env): G
   }
   return {
     apiKey,
-    modelId: env.GEMINI_MODEL && env.GEMINI_MODEL.length > 0 ? env.GEMINI_MODEL : "gemini-2.5-flash",
+    modelId: env.GEMINI_MODEL && env.GEMINI_MODEL.length > 0 ? env.GEMINI_MODEL : "gemini-3.5-flash",
     timeoutMs: parsePositiveInt(env.GEMINI_TIMEOUT_MS, 30000),
     maxRetries: parsePositiveInt(env.GEMINI_MAX_RETRIES, 2)
   };

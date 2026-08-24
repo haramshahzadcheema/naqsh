@@ -1,4 +1,4 @@
-import { AuthorizationError, createApproval, type Approval, type ApprovalInput, type EntitySource } from "@naqsh/schemas";
+import { AuthorizationError, WorldModelValidationError, createApproval, type Approval, type ApprovalInput, type EntitySource } from "@naqsh/schemas";
 
 export type CreateApprovalInput = Pick<
   ApprovalInput,
@@ -30,6 +30,7 @@ export interface ApprovalStore {
    * evaluateToolAuthorization calls this (via the caller, after a
    * successful execution) — see authorization.ts. */
   consume(id: string): Approval;
+  serialize(): string;
 }
 
 function requireApproval(approvals: Map<string, Approval>, id: string): Approval {
@@ -40,9 +41,12 @@ function requireApproval(approvals: Map<string, Approval>, id: string): Approval
   return approval;
 }
 
-export function createApprovalStore(): ApprovalStore {
-  const approvals = new Map<string, Approval>();
-
+/** Builds an `ApprovalStore` around an already-populated `Map` -- the one
+ * implementation both `createApprovalStore` (starts empty) and
+ * `deserializeApprovalStore` (starts pre-populated from validated JSON)
+ * share, matching `background-job-store.ts`'s identical `buildStore`
+ * precedent. */
+function buildStore(approvals: Map<string, Approval>): ApprovalStore {
   return {
     create(input) {
       const approval = createApproval({ ...input, status: "pending" });
@@ -108,6 +112,31 @@ export function createApprovalStore(): ApprovalStore {
       const updated = createApproval({ ...current, consumedAt: new Date().toISOString() });
       approvals.set(id, updated);
       return updated;
-    }
+    },
+    serialize: () => JSON.stringify(Array.from(approvals.values()))
   };
+}
+
+export function createApprovalStore(): ApprovalStore {
+  return buildStore(new Map());
+}
+
+/** Rebuilds an `ApprovalStore` from `serialize()`'s output, matching
+ * `deserializeBackgroundJobStore`'s identical "never silently trust a
+ * hand-edited/corrupted log" precedent -- each entry is re-validated
+ * through `createApproval` before being trusted. */
+export function deserializeApprovalStore(serialized: string): ApprovalStore {
+  if (typeof serialized !== "string" || serialized.trim().length === 0) {
+    throw new WorldModelValidationError("invalid_shape", "serialized approval store is required");
+  }
+  const parsed: unknown = JSON.parse(serialized);
+  if (!Array.isArray(parsed)) {
+    throw new WorldModelValidationError("invalid_shape", "serialized approval store must be an array");
+  }
+  const approvals = new Map<string, Approval>();
+  for (const entry of parsed as Approval[]) {
+    const validated = createApproval(entry);
+    approvals.set(validated.id, validated);
+  }
+  return buildStore(approvals);
 }

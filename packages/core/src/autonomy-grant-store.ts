@@ -1,6 +1,7 @@
 import {
   AuthorizationError,
   createAutonomyGrant,
+  WorldModelValidationError,
   type AutonomyGrant,
   type AutonomyGrantInput,
   type EntitySource
@@ -38,6 +39,7 @@ export interface AutonomyGrantStore {
    * evaluateToolAuthorization has already confirmed the grant covers the
    * call, but this guards against a stale reference being reused anyway. */
   recordUse(id: string): AutonomyGrant;
+  serialize(): string;
 }
 
 function requireGrant(grants: Map<string, AutonomyGrant>, id: string): AutonomyGrant {
@@ -52,9 +54,12 @@ function isExpired(grant: AutonomyGrant, now: Date): boolean {
   return grant.expiresAt !== null && new Date(grant.expiresAt).getTime() <= now.getTime();
 }
 
-export function createAutonomyGrantStore(): AutonomyGrantStore {
-  const grants = new Map<string, AutonomyGrant>();
-
+/** Builds an `AutonomyGrantStore` around an already-populated `Map` -- the
+ * one implementation both `createAutonomyGrantStore` (starts empty) and
+ * `deserializeAutonomyGrantStore` (starts pre-populated from validated
+ * JSON) share, matching `background-job-store.ts`'s identical
+ * `buildStore` precedent. */
+function buildStore(grants: Map<string, AutonomyGrant>): AutonomyGrantStore {
   return {
     create(input) {
       const grant = createAutonomyGrant({ ...input, status: "active" });
@@ -93,6 +98,31 @@ export function createAutonomyGrantStore(): AutonomyGrantStore {
       const updated = createAutonomyGrant({ ...current, useCount: current.useCount + 1 });
       grants.set(id, updated);
       return updated;
-    }
+    },
+    serialize: () => JSON.stringify(Array.from(grants.values()))
   };
+}
+
+export function createAutonomyGrantStore(): AutonomyGrantStore {
+  return buildStore(new Map());
+}
+
+/** Rebuilds an `AutonomyGrantStore` from `serialize()`'s output, matching
+ * `deserializeBackgroundJobStore`'s identical "never silently trust a
+ * hand-edited/corrupted log" precedent -- each entry is re-validated
+ * through `createAutonomyGrant` before being trusted. */
+export function deserializeAutonomyGrantStore(serialized: string): AutonomyGrantStore {
+  if (typeof serialized !== "string" || serialized.trim().length === 0) {
+    throw new WorldModelValidationError("invalid_shape", "serialized autonomy grant store is required");
+  }
+  const parsed: unknown = JSON.parse(serialized);
+  if (!Array.isArray(parsed)) {
+    throw new WorldModelValidationError("invalid_shape", "serialized autonomy grant store must be an array");
+  }
+  const grants = new Map<string, AutonomyGrant>();
+  for (const entry of parsed as AutonomyGrant[]) {
+    const validated = createAutonomyGrant(entry);
+    grants.set(validated.id, validated);
+  }
+  return buildStore(grants);
 }

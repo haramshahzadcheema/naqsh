@@ -1005,6 +1005,7 @@ export function createModelRequest(input: ModelRequestInput): ModelRequest {
     instruction: input.instruction,
     tools: (input.tools ?? []).map((tool) => createModelToolDeclaration(tool)),
     outputSchema: input.outputSchema ?? null,
+    attachments: [...(input.attachments ?? [])],
     config: createModelRequestConfig(input.config),
     sessionId: input.sessionId ?? null,
     createdAt: input.createdAt ?? toIsoTimestamp(),

@@ -42,12 +42,28 @@ export interface MockModelProviderOptions {
  * requests, structured results, simulated errors) should supply an
  * explicit `respond` instead of relying on this default.
  */
+/** Bounds how much of `request.instruction` a plain-text mock reply
+ * echoes. `instruction` is the CALLER's fully-assembled prompt (system
+ * framing, conversation transcript, meta-instructions like "Reply as
+ * Naqsh..."), not a message meant for display -- echoing it whole (as
+ * this function used to) makes a live chat's "Deterministic (testing)"
+ * model look broken (dumping its own prompt back at the user, and
+ * compounding turn over turn as each reply feeds the next transcript).
+ * A short, visibly-truncated preview keeps the "deterministic, inspectable"
+ * property this mock exists for without pretending to be a real reply. */
+const INSTRUCTION_PREVIEW_LIMIT = 120;
+
+function previewInstruction(instruction: string): string {
+  const firstLine = instruction.split("\n").find((line) => line.trim().length > 0) ?? instruction;
+  return firstLine.length > INSTRUCTION_PREVIEW_LIMIT ? `${firstLine.slice(0, INSTRUCTION_PREVIEW_LIMIT)}…` : firstLine;
+}
+
 function defaultMockResponder(request: ModelRequest): MockModelOutcome {
   const mentioned = request.tools.find((tool) => request.instruction.toLowerCase().includes(tool.name.toLowerCase()));
   if (mentioned) {
     return { response: { kind: "tool_call", toolCall: { toolName: mentioned.name, arguments: {} } } };
   }
-  return { response: { kind: "text", text: `Acknowledged: ${request.instruction}` } };
+  return { response: { kind: "text", text: `[Deterministic test model] Acknowledged: ${previewInstruction(request.instruction)}` } };
 }
 
 /**

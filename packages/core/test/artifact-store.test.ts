@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createArtifactStore, computeContentHash, byteSizeOf } from "../src/artifact-store.js";
+import { createArtifactStore, computeContentHash, byteSizeOf, deserializeArtifactStore } from "../src/artifact-store.js";
 
 describe("ArtifactStore: put/get/has", () => {
   it("stores and retrieves content by id", () => {
@@ -34,6 +34,40 @@ describe("ArtifactStore: put/get/has", () => {
     const b = createArtifactStore();
     a.put("shared_id", "from a");
     assert.equal(b.has("shared_id"), false);
+  });
+
+  it("entries() lists every stored [id, content] pair", () => {
+    const store = createArtifactStore();
+    store.put("a", "content a");
+    store.put("b", "content b");
+    assert.deepEqual(new Map(store.entries()), new Map([["a", "content a"], ["b", "content b"]]));
+  });
+});
+
+describe("ArtifactStore: serialize/deserializeArtifactStore", () => {
+  it("round-trips through serialize/deserialize with full fidelity", () => {
+    const store = createArtifactStore();
+    store.put("artifact_1", "some snapshot bytes");
+    store.put("artifact_2", "more snapshot bytes");
+
+    const restored = deserializeArtifactStore(store.serialize());
+    assert.equal(restored.get("artifact_1"), "some snapshot bytes");
+    assert.equal(restored.get("artifact_2"), "more snapshot bytes");
+    // The restored store still enforces immutability -- it's a real,
+    // fully-functional store, not a read-only snapshot view.
+    assert.throws(() => restored.put("artifact_1", "tampered"), /already exists/);
+  });
+
+  it("rejects a non-array serialized payload", () => {
+    assert.throws(() => deserializeArtifactStore(JSON.stringify({ not: "an array" })), /must be an array/);
+  });
+
+  it("rejects an empty string", () => {
+    assert.throws(() => deserializeArtifactStore(""), /is required/);
+  });
+
+  it("rejects a malformed entry that isn't a [string, string] pair", () => {
+    assert.throws(() => deserializeArtifactStore(JSON.stringify([["only-one-element"]])), /\[id, content\] string pair/);
   });
 });
 

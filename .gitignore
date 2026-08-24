@@ -7,3 +7,6 @@ coverage
 *.log
 __pycache__
 *.pyc
+apps/api/data
+apps/desktop/resources
+apps/desktop/release*

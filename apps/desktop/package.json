@@ -1,0 +1,44 @@
+{
+  "name": "@naqsh/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/bridgeLogic.test.ts",
+    "build:resources": "node scripts/build-resources.mjs",
+    "package": "npm run build && npm run build:resources && electron-builder --win portable --publish=never"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  },
+  "build": {
+    "appId": "com.naqsh.desktop",
+    "productName": "NAQSH",
+    "electronVersion": "43.4.1",
+    "asar": true,
+    "files": [
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "."
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": "portable"
+    }
+  }
+}

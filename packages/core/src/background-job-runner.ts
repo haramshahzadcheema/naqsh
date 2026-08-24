@@ -338,6 +338,30 @@ export async function runBackgroundJob(input: RunBackgroundJobInput): Promise<Ba
             candidateId,
             verificationResultIds
           });
+
+          // AUDIT FIX: verificationResultIds was previously recorded ONLY on
+          // this job's own JobCandidateResult bookkeeping, never on the real
+          // Experiment (World Model) record `experimentId` names -- meaning
+          // `compareCandidates` (which reads verification data exclusively
+          // from `state.project.experiments[].verificationResultIds`, see
+          // that file's own doc comment) could never see a background job's
+          // verification results, no matter how many real VerificationResults
+          // this hook produced. Persisted here through the registered,
+          // authorized update_experiment tool -- the same boundary every
+          // other Experiment write in this file already goes through.
+          // Best-effort: if the caller's allowedTools doesn't include
+          // update_experiment, or authorization denies it, this candidate's
+          // OWN JobCandidateResult.verificationResultIds (set above) is
+          // unaffected -- only the World-Model-level copy is missing.
+          if (experimentId && verificationResultIds.length > 0) {
+            await executeTool(registry, {
+              toolName: "update_experiment",
+              input: { experimentId, verificationResultIds },
+              source,
+              target: { entityType: "experiment", entityId: experimentId },
+              authorize
+            });
+          }
         } catch (error) {
           recordEvent(eventStore, job, "verification_completed", `Candidate "${candidateId}" verification failed: ${error instanceof Error ? error.message : String(error)}`, {
             candidateId,

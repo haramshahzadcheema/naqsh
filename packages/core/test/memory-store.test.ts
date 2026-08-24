@@ -301,6 +301,46 @@ describe("MemoryStore: serialization", () => {
     assert.throws(() => deserializeMemoryStore(JSON.stringify([corruptedA, corruptedB])), WorldModelValidationError);
   });
 
+  it("getForProject returns a record only for its OWN project -- isolation is the lookup itself, not a separate step a caller can forget", () => {
+    // The risk this closes: `getById` is project-agnostic, so isolation on
+    // a single-record read used to be a convention (fetch, then separately
+    // compare `.projectId`). Every call site did it correctly, but one
+    // forgotten comparison is a cross-project read. `getForProject` makes
+    // the safe operation atomic.
+    const store = createMemoryStore();
+    const mine = createMemoryRecord(memoryInput({ projectId: "proj_mine", title: "Mine" }));
+    const theirs = createMemoryRecord(memoryInput({ projectId: "proj_theirs", title: "Theirs" }));
+    store.save(mine);
+    store.save(theirs);
+
+    assert.deepEqual(store.getForProject(mine.id, "proj_mine"), mine);
+
+    // The whole point: another project's record is invisible even with a
+    // correct, known id.
+    assert.equal(store.getForProject(theirs.id, "proj_mine"), undefined);
+
+    // ...and it is indistinguishable from a record that does not exist at
+    // all, so this cannot be used to probe for foreign ids.
+    assert.equal(store.getForProject("memory_does_not_exist", "proj_mine"), undefined);
+
+    // The unscoped read still sees it -- proving the record really is
+    // present, and that the isolation above came from getForProject
+    // rather than from the record simply being absent.
+    assert.deepEqual(store.getById(theirs.id), theirs);
+  });
+
+  it("getForProject survives a serialize/deserialize round trip (the restored store is not a downgraded object literal missing the safe read)", () => {
+    const store = createMemoryStore();
+    const mine = createMemoryRecord(memoryInput({ projectId: "proj_mine", title: "Mine" }));
+    const theirs = createMemoryRecord(memoryInput({ projectId: "proj_theirs", title: "Theirs" }));
+    store.save(mine);
+    store.save(theirs);
+
+    const restored = deserializeMemoryStore(store.serialize());
+    assert.deepEqual(restored.getForProject(mine.id, "proj_mine"), mine);
+    assert.equal(restored.getForProject(theirs.id, "proj_mine"), undefined);
+  });
+
   it("AUDIT FIX: a genuine, non-cyclic A -> B -> C chain still deserializes cleanly (the graph-integrity check does not false-positive on a real, valid history)", () => {
     const store = createMemoryStore();
     const a = createMemoryRecord(memoryInput({ title: "A" }));

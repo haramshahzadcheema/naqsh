@@ -171,6 +171,56 @@ describe("ModelRequest: creation, validation, and round-trip", () => {
     const request = createModelRequest(buildRequestInput());
     assert.deepEqual(deserializeModelRequest(serializeModelRequest(request)), request);
   });
+
+  it("defaults attachments to an empty array", () => {
+    const request = createModelRequest(buildRequestInput());
+    assert.deepEqual(request.attachments, []);
+  });
+
+  it("accepts a valid image attachment", () => {
+    const request = createModelRequest(
+      buildRequestInput({ attachments: [{ kind: "image", mimeType: "image/png", dataBase64: "aGVsbG8=" }] })
+    );
+    assert.equal(request.attachments.length, 1);
+    assert.equal(request.attachments[0]?.mimeType, "image/png");
+  });
+
+  it("rejects an attachment with a disallowed mime type", () => {
+    assert.throws(
+      () => createModelRequest(buildRequestInput({ attachments: [{ kind: "image", mimeType: "image/gif", dataBase64: "aGVsbG8=" } as never] })),
+      /modelAttachment.mimeType must be one of/
+    );
+  });
+
+  it("rejects an attachment with non-base64 data", () => {
+    assert.throws(
+      () => createModelRequest(buildRequestInput({ attachments: [{ kind: "image", mimeType: "image/png", dataBase64: "not base64!!" }] })),
+      /modelAttachment.dataBase64 must be valid base64/
+    );
+  });
+
+  it("rejects an attachment exceeding the size bound", () => {
+    const oversized = "A".repeat(8_000_001);
+    assert.throws(
+      () => createModelRequest(buildRequestInput({ attachments: [{ kind: "image", mimeType: "image/png", dataBase64: oversized }] })),
+      /exceeds the .*-character bound/
+    );
+  });
+
+  it("rejects more than 4 attachments", () => {
+    const attachment = { kind: "image" as const, mimeType: "image/png", dataBase64: "aGVsbG8=" };
+    assert.throws(
+      () => createModelRequest(buildRequestInput({ attachments: [attachment, attachment, attachment, attachment, attachment] })),
+      /modelRequest.attachments must not exceed 4 entries/
+    );
+  });
+
+  it("round-trips attachments through JSON with full fidelity", () => {
+    const request = createModelRequest(
+      buildRequestInput({ attachments: [{ kind: "image", mimeType: "image/jpeg", dataBase64: "aGVsbG8=" }] })
+    );
+    assert.deepEqual(deserializeModelRequest(serializeModelRequest(request)), request);
+  });
 });
 
 describe("ModelToolCallIntent: creation and validation", () => {

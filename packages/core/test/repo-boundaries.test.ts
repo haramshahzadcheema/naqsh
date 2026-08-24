@@ -58,6 +58,28 @@ describe("repository layout", () => {
   it("does not declare a conflicting package manager config", () => {
     assert.equal(existsSync(join(repoRoot, "pnpm-workspace.yaml")), false);
   });
+
+  it("AUDIT FIX (P26 UI): no file under packages/schemas/src imports a Node-only built-in module -- schemas must be usable from a browser bundle (apps/web), not just Node", () => {
+    // Regression guard for the exact bug found wiring up apps/web:
+    // ids.ts imported `randomUUID` from `node:crypto`, which a bundler
+    // externalizes for the browser, crashing at runtime the moment any
+    // @naqsh/schemas factory (i.e. almost all of them) ran in the UI.
+    // Fixed by using the global Web Crypto API instead. This test proves
+    // the fix is durable: schemas is the one package apps/web is meant to
+    // import directly (its own "shared contract layer" role), so it must
+    // stay free of Node-only imports, unlike core/adapters which are
+    // allowed to use Node built-ins (they never run in the browser).
+    // Matches an actual import/require statement naming a node: built-in,
+    // not a doc comment that merely MENTIONS one while explaining why it
+    // was removed (this file's own ids.ts doc comment does exactly that)
+    // -- the same precision-regex lesson every other "no X leakage" check
+    // in this file already applies.
+    const forbiddenPattern = /^\s*import\s[^;]*from\s+["'`]node:[a-z_]+["'`]|require\s*\(\s*["'`]node:[a-z_]+["'`]\s*\)/m;
+    for (const relativePath of listTsFiles("packages/schemas/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import a Node-only built-in module (found a "node:" import) -- packages/schemas must remain usable from a browser bundle`);
+    }
+  });
 });
 
 describe("dependency direction: core depends on schemas, never the reverse", () => {
@@ -428,7 +450,12 @@ describe("P7 model provider: dependency direction, vendor SDK isolation, and aut
 });
 
 describe("P8 observation: read-only, environment-independent, and provider-independent", () => {
-  const observationFiles = ["packages/core/src/observe-project.ts", "packages/core/src/observation-tool.ts"];
+  // observation-tool.ts (the registered-tool wrapper around observeProject)
+  // was removed as dead code -- nothing in apps/api ever registered it or
+  // called it through executeTool; the live app calls observeProject
+  // directly (engineeringWorkflow.ts's observeCurrentProject). The
+  // invariant below still applies fully to the surviving file.
+  const observationFiles = ["packages/core/src/observe-project.ts"];
 
   it("observation files never import the World Model WRITE path -- observation cannot mutate WorldModelState", () => {
     // The single most important P8 invariant: "An observation operation
@@ -518,16 +545,14 @@ describe("P9 planning: non-mutating, environment-independent, and provider-imple
   // Mirrors P8's identical guard block above -- planning must be exactly as
   // structurally incapable of mutating the World Model, touching a concrete
   // environment, or depending on a concrete model-provider SDK as
-  // observation already is. `planner.ts`/`plan-tool.ts` import the
-  // `ModelProvider` INTERFACE (packages/core/src/model-provider.ts) -- a
-  // provider-agnostic contract this package already owns -- never a
-  // concrete implementation.
-  const planningFiles = [
-    "packages/core/src/planner.ts",
-    "packages/core/src/plan-tool.ts",
-    "packages/core/src/plan-semantics.ts",
-    "packages/core/src/plan-query.ts"
-  ];
+  // observation already is. `planner.ts` imports the `ModelProvider`
+  // INTERFACE (packages/core/src/model-provider.ts) -- a provider-agnostic
+  // contract this package already owns -- never a concrete implementation.
+  // plan-tool.ts (the registered-tool wrapper around generatePlanProposal)
+  // was removed as dead code -- apps/api calls generatePlanProposal
+  // directly (engineeringWorkflow.ts's generateProjectPlan), never through
+  // executeTool.
+  const planningFiles = ["packages/core/src/planner.ts", "packages/core/src/plan-semantics.ts", "packages/core/src/plan-query.ts"];
 
   it("planning files never import the World Model WRITE path -- generating a plan cannot mutate WorldModelState", () => {
     const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
@@ -621,8 +646,11 @@ describe("P10 proposals: non-mutating, non-executing, and environment-independen
   // INTENT, never REALITY. Generating one must be exactly as structurally
   // incapable of mutating the World Model, executing a tool, touching a
   // concrete environment, or depending on a concrete model-provider SDK as
-  // observation/planning already are.
-  const proposalFiles = ["packages/core/src/proposal-generator.ts", "packages/core/src/proposal-tool.ts", "packages/core/src/proposal-semantics.ts"];
+  // observation/planning already are. proposal-tool.ts (the registered-tool
+  // wrapper around generateProposal) was removed as dead code -- apps/api
+  // calls generateProposal directly (engineeringWorkflow.ts's
+  // generateProjectProposal), never through executeTool.
+  const proposalFiles = ["packages/core/src/proposal-generator.ts", "packages/core/src/proposal-semantics.ts"];
 
   it("proposal files never import the World Model WRITE path -- generating a proposal cannot mutate WorldModelState", () => {
     const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
@@ -989,12 +1017,16 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
   // that could have happened, structurally -- not by re-reading the code
   // and trusting it.
 
-  const inspectionToolFiles = [
-    "packages/core/src/inspect-environment-document-tool.ts",
-    "packages/core/src/inspect-environment-objects-tool.ts",
-    "packages/core/src/inspect-environment-object-tool.ts",
-    "packages/core/src/inspect-environment-relationships-tool.ts"
-  ];
+  // The four Phase 13 inspection TOOL WRAPPERS (inspect-environment-
+  // document/objects/object/relationships-tool.ts) were removed as dead
+  // code: nothing in apps/api ever registered them, so they were never
+  // reachable through executeTool. The live app calls
+  // `runtime.environmentAdapter.listObjects(session)` directly
+  // (engineeringWorkflow.ts's describeEnvironmentForModel) instead. The
+  // checks below that specifically inspected those four files' own source
+  // were removed with them; every check that applies more broadly (naming,
+  // the Python runner's dispatch table, EnvironmentAdapter's own method
+  // set) stays, unchanged.
 
   it("no source file under packages/core/src or packages/schemas/src names a FreeCAD-specific method/type (getFreeCADFeatureTree, getPartDesignBody, getSketchObject, ...) -- the inspection contract stays generic", () => {
     const forbiddenNames = ["getFreeCADFeatureTree", "getPartDesignBody", "getSketchObject", "runFreeCADPython", "runFreecadPython"];
@@ -1003,46 +1035,6 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
       for (const name of forbiddenNames) {
         assert.doesNotMatch(contents, new RegExp(name), `${relativePath} must not define/reference "${name}" -- FreeCAD-specific naming belongs only inside the adapter implementation, never in core/schemas`);
       }
-    }
-  });
-
-  it("no Phase 13 inspection tool file imports the World Model WRITE path -- inspection stays entirely within the EnvironmentAdapter boundary, never reconciling into the World Model (Step 17: FreeCAD document != World Model)", () => {
-    // Precision import-specifier match, not a bare word-match regex (the
-    // same fix applied to the P14 guard below after it was caught
-    // false-flagging a legitimate doc-comment mention) -- a file is free
-    // to DISCUSS WorldModelState in prose while never importing the write
-    // path that could actually mutate it.
-    const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
-    for (const relativePath of inspectionToolFiles) {
-      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-      for (const forbidden of forbiddenImports) {
-        assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
-      }
-    }
-  });
-
-  it("every Phase 13 inspection tool file imports only the generic EnvironmentAdapter interface, never a concrete adapter package", () => {
-    const forbiddenPattern = /from\s+["'`]@naqsh\/adapters["'`]|from\s+["'`][^"'`]*freecad[^"'`]*["'`]/i;
-    for (const relativePath of inspectionToolFiles) {
-      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must depend only on the EnvironmentAdapter interface (./environment-adapter.js), never a concrete adapter package`);
-      assert.match(contents, /from\s+["'`]\.\/environment-adapter\.js["'`]/, `${relativePath} must import the EnvironmentAdapter interface`);
-    }
-  });
-
-  it("every Phase 13 inspection tool is classified mutation:'observe' -- inspection can never smuggle in a mutation", () => {
-    for (const relativePath of inspectionToolFiles) {
-      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-      assert.match(contents, /mutation:\s*["'`]observe["'`]/, `${relativePath} must declare mutation: "observe"`);
-      assert.doesNotMatch(contents, /mutation:\s*["'`]mutate["'`]/, `${relativePath} must never declare mutation: "mutate"`);
-    }
-  });
-
-  it("no Phase 13 inspection tool file calls modifyObject/createObject/deleteObject -- inspection tools never write to the environment", () => {
-    const forbiddenPattern = /\.(modifyObject|createObject|deleteObject)\s*\(/;
-    for (const relativePath of inspectionToolFiles) {
-      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must never call a mutating EnvironmentAdapter method`);
     }
   });
 
@@ -1467,19 +1459,22 @@ describe("P17 objective satisfaction: pure aggregation engine, no re-verificatio
 describe("P18 natural language -> structured requirement: bounded interpretation, deterministic validation, no LLM authority", () => {
   // Phase 18's central architectural rule: "Natural language may propose
   // meaning. Structured state records meaning. Deterministic systems
-  // validate what can be validated." interpret-requirement-tool.ts is the
+  // validate what can be validated." requirement-interpreter.ts is the
   // bounded Gemini-facing half (never touches WorldModelState);
   // add-requirement-tool.ts is the approval-gated mutation half (never
   // trusts a candidate's shape without re-validating it). Every check
   // below proves one specific way that boundary could have silently
-  // eroded.
+  // eroded. interpret-requirement-tool.ts (the registered-tool wrapper
+  // around interpretRequirementFromText) was removed as dead code --
+  // apps/api calls interpretRequirementFromText directly
+  // (projectRuntime.ts), never through executeTool; the underlying
+  // function's own guarantees are still fully covered below.
   const interpreterFiles = ["packages/core/src/requirement-interpreter.ts"];
-  const interpretToolFiles = ["packages/core/src/interpret-requirement-tool.ts"];
   const addToolFiles = ["packages/core/src/add-requirement-tool.ts"];
 
-  it("requirement-interpreter.ts and interpret-requirement-tool.ts never import the World Model WRITE path -- interpreting text cannot mutate anything", () => {
+  it("requirement-interpreter.ts never imports the World Model WRITE path -- interpreting text cannot mutate anything", () => {
     const forbiddenImports = ["./transitions.js", "./change-history.js", "./record-transition.js", "./bootstrap.js"];
-    for (const relativePath of [...interpreterFiles, ...interpretToolFiles]) {
+    for (const relativePath of interpreterFiles) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
       for (const forbidden of forbiddenImports) {
         assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- interpretation must never be able to mutate the World Model`);
@@ -1502,11 +1497,7 @@ describe("P18 natural language -> structured requirement: bounded interpretation
     }
   });
 
-  it("interpret_requirement is classified mutation:'suggest'; add_requirement is classified mutation:'mutate' -- interpreting text is never itself a World Model write", () => {
-    const interpretContents = readFileSync(join(repoRoot, "packages/core/src/interpret-requirement-tool.ts"), "utf8");
-    assert.match(interpretContents, /mutation:\s*["'`]suggest["'`]/, "interpret-requirement-tool.ts must declare mutation: \"suggest\"");
-    assert.doesNotMatch(interpretContents, /mutation:\s*["'`]mutate["'`]/, "interpret-requirement-tool.ts must never declare mutation: \"mutate\"");
-
+  it("add_requirement is classified mutation:'mutate' -- adding a requirement is a real World Model write, gated the same as any other", () => {
     const addContents = readFileSync(join(repoRoot, "packages/core/src/add-requirement-tool.ts"), "utf8");
     assert.match(addContents, /mutation:\s*["'`]mutate["'`]/, "add-requirement-tool.ts must declare mutation: \"mutate\" -- adding a requirement is a real World Model mutation, gated the same as any other");
   });
@@ -1563,7 +1554,7 @@ describe("P18 natural language -> structured requirement: bounded interpretation
       /\bspawn\s*\(/,
       /import\s*\(\s*[a-zA-Z_$]/
     ];
-    for (const relativePath of [...interpreterFiles, ...interpretToolFiles, ...addToolFiles]) {
+    for (const relativePath of [...interpreterFiles, ...addToolFiles]) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
       for (const pattern of forbiddenPatterns) {
         assert.doesNotMatch(contents, pattern, `${relativePath} must not contain ${pattern}`);
@@ -1618,7 +1609,7 @@ describe("P18 natural language -> structured requirement: bounded interpretation
       "./objective-satisfaction-store.js",
       "./evaluate-objective-satisfaction-tool.js"
     ];
-    for (const relativePath of [...interpreterFiles, ...interpretToolFiles, ...addToolFiles]) {
+    for (const relativePath of [...interpreterFiles, ...addToolFiles]) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
       for (const forbidden of forbiddenImports) {
         assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden} -- P18 never performs verification or objective satisfaction`);
@@ -1915,18 +1906,22 @@ describe("P21 traceable engineering research: bounded provider boundary, no arbi
   // research content is proven, structurally, to remain inert data (no
   // eval, no dynamic tool invocation, no permission bypass). Every check
   // below proves one specific way that boundary could have silently eroded.
+  // create-research-request-tool.ts and research-request-store.ts (the
+  // registered-tool wrapper and its backing store) were removed as dead
+  // code -- no live caller ever invoked create_research_request through
+  // executeTool. research_search/research_fetch/add_source/add_evidence
+  // remain the real, wired-in P21 surface and are still fully covered
+  // below.
   const researchProviderFiles = ["packages/core/src/research-provider.ts", "packages/core/src/research-provider-contract.ts"];
   const researchToolFiles = [
     "packages/core/src/research-search-tool.ts",
     "packages/core/src/research-fetch-tool.ts",
     "packages/core/src/add-source-tool.ts",
-    "packages/core/src/add-evidence-tool.ts",
-    "packages/core/src/create-research-request-tool.ts"
+    "packages/core/src/add-evidence-tool.ts"
   ];
-  const researchStoreFiles = ["packages/core/src/research-request-store.ts"];
   const researchCacheFiles = ["packages/core/src/research-cache.ts"];
   const mockResearchProviderFiles = ["packages/adapters/src/mock-research-provider.ts"];
-  const allP21CoreFiles = [...researchProviderFiles, ...researchToolFiles, ...researchStoreFiles, ...researchCacheFiles];
+  const allP21CoreFiles = [...researchProviderFiles, ...researchToolFiles, ...researchCacheFiles];
 
   /** Strips block comments (`/** ... *​/`) and line comments (`// ...`) so a
    * source-scan checks only actual CODE, not doc prose explaining a
@@ -1974,8 +1969,7 @@ describe("P21 traceable engineering research: bounded provider boundary, no arbi
   it("research_search/research_fetch are classified suggest/research; add_source/add_evidence are classified mutate/world_model -- the external-retrieval vs World-Model-write distinction (brief Section 15) is a real, checkable fact, not merely documented", () => {
     const suggestTargets: Record<string, string> = {
       "packages/core/src/research-search-tool.ts": "research_search",
-      "packages/core/src/research-fetch-tool.ts": "research_fetch",
-      "packages/core/src/create-research-request-tool.ts": "create_research_request"
+      "packages/core/src/research-fetch-tool.ts": "research_fetch"
     };
     for (const relativePath of Object.keys(suggestTargets)) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
@@ -2016,12 +2010,6 @@ describe("P21 traceable engineering research: bounded provider boundary, no arbi
         assert.equal(contents.includes(forbidden), false, `${relativePath} must not import ${forbidden}`);
       }
     }
-  });
-
-  it("ResearchRequestStore is immutable-once-saved -- no update/delete method exists", () => {
-    const contents = readFileSync(join(repoRoot, "packages/core/src/research-request-store.ts"), "utf8");
-    assert.doesNotMatch(contents, /^\s*update\s*\(/m, "research-request-store.ts must not expose an update() method");
-    assert.doesNotMatch(contents, /^\s*delete\s*\(/m, "research-request-store.ts must not expose a delete() method");
   });
 
   it("the mock research provider's CODE (outside doc comments) performs no real network I/O -- deterministic, in-process only, matching the P6/P7 mock precedent. 'fetch(' itself is deliberately NOT scanned here -- it is the provider's own legitimately-named interface method (ResearchProvider.fetch), not a network call.", () => {
@@ -2335,14 +2323,16 @@ describe("P24 long-term engineering memory: memory is not the World Model, no fa
   // only ever exist with a real reference into the store/entity it claims,
   // search/ranking never depends on a model call, and project isolation is
   // enforced by every read/write tool, not merely documented.
+  // memory-search-tool.ts, memory-archive-tool.ts, and
+  // memory-supersede-tool.ts (registered-tool wrappers around
+  // searchMemoryRecords/archive/supersede) were removed as dead code --
+  // no live caller ever invoked them through executeTool. memory-add-tool.ts
+  // and memory-get-tool.ts remain the real, wired-in P24 tool surface.
   const p24CoreFiles = [
     "packages/core/src/memory-store.ts",
     "packages/core/src/memory-semantics.ts",
     "packages/core/src/memory-add-tool.ts",
-    "packages/core/src/memory-search-tool.ts",
-    "packages/core/src/memory-get-tool.ts",
-    "packages/core/src/memory-archive-tool.ts",
-    "packages/core/src/memory-supersede-tool.ts"
+    "packages/core/src/memory-get-tool.ts"
   ];
 
   function stripComments(raw: string): string {
@@ -2400,13 +2390,10 @@ describe("P24 long-term engineering memory: memory is not the World Model, no fa
     );
   });
 
-  it("all five P24 tools are classified into the 'memory' target, with read tools observe and write/lifecycle tools suggest -- none of them ever mutate the World Model or the environment", () => {
+  it("both real P24 tools are classified into the 'memory' target, with the read tool observe and the write tool suggest -- neither ever mutates the World Model or the environment", () => {
     const toolClassifications: Record<string, string> = {
       "packages/core/src/memory-add-tool.ts": "suggest",
-      "packages/core/src/memory-search-tool.ts": "observe",
-      "packages/core/src/memory-get-tool.ts": "observe",
-      "packages/core/src/memory-archive-tool.ts": "suggest",
-      "packages/core/src/memory-supersede-tool.ts": "suggest"
+      "packages/core/src/memory-get-tool.ts": "observe"
     };
     for (const [relativePath, mutation] of Object.entries(toolClassifications)) {
       const contents = readFileSync(join(repoRoot, relativePath), "utf8");
@@ -2430,10 +2417,7 @@ describe("P24 long-term engineering memory: memory is not the World Model, no fa
   it("PROJECT ISOLATION IS CRITICAL: every P24 tool reads projectId from live WorldModelState (never a caller-supplied field) and scopes its store access to the current project", () => {
     const toolFiles = [
       "packages/core/src/memory-add-tool.ts",
-      "packages/core/src/memory-search-tool.ts",
-      "packages/core/src/memory-get-tool.ts",
-      "packages/core/src/memory-archive-tool.ts",
-      "packages/core/src/memory-supersede-tool.ts"
+      "packages/core/src/memory-get-tool.ts"
     ];
     for (const relativePath of toolFiles) {
       const code = stripComments(readFileSync(join(repoRoot, relativePath), "utf8"));
@@ -2711,5 +2695,58 @@ describe("P26 environment-independent engineering agent: no vendor concepts in c
   it("no P26 test file fabricates FreeCAD test results -- freecad-adapter.integration.test.ts must genuinely skip (not fake-pass) when FreeCAD is unavailable", () => {
     const code = stripComments(readFileSync(join(repoRoot, "packages/adapters/test/freecad-adapter.integration.test.ts"), "utf8"));
     assert.match(code, /skip/i, "freecad-adapter.integration.test.ts must genuinely skip when a real FreeCAD installation is unavailable, never fake a pass");
+  });
+});
+
+describe("real engineering agent execution phase: the browser reaches the architecture ONLY through HTTP", () => {
+  /** `listTsFiles` (top of this file) only matches `.ts`, so it silently
+   * misses every `.tsx` file under apps/web/src -- which is most of it.
+   * A local walker that also matches `.tsx` so this guard actually
+   * covers the UI, not just the handful of plain `.ts` files there. */
+  function listWebSourceFiles(relativeDir: string): string[] {
+    const results: string[] = [];
+    const walk = (currentRelativeDir: string): void => {
+      const absoluteDir = join(repoRoot, currentRelativeDir);
+      for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
+        const entryRelativePath = `${currentRelativeDir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          walk(entryRelativePath);
+        } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+          results.push(entryRelativePath);
+        }
+      }
+    };
+    walk(relativeDir);
+    return results;
+  }
+
+  it("no file under apps/web/src imports @naqsh/core, @naqsh/adapters, @naqsh/model-providers, or @google/genai -- the browser must reach the architecture only through apps/api's HTTP server, never a direct package import", () => {
+    // The brief's explicit boundary for the real-engineering-agent-execution
+    // phase: apps/web talks to the real Plan -> Proposal -> Approve ->
+    // Execute -> Verify workflow exclusively via `apps/web/src/api/client.ts`
+    // (fetch calls to apps/api), never by importing the packages that
+    // implement it directly. `.test.tsx` files are exempt -- they mock the
+    // HTTP transport (`api/client.ts`) and are free to import real
+    // `@naqsh/schemas` factories to build fixtures, but even test files
+    // must not reach past the HTTP boundary into core/adapters/model-providers.
+    const forbiddenPattern = /from\s+["'`](@naqsh\/core|@naqsh\/adapters|@naqsh\/model-providers|@google\/genai)["'`]/;
+    for (const relativePath of listWebSourceFiles("apps/web/src")) {
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, forbiddenPattern, `${relativePath} must not import @naqsh/core, @naqsh/adapters, @naqsh/model-providers, or @google/genai -- apps/web must reach the architecture only through apps/api's HTTP server`);
+    }
+  });
+
+  it("apps/web/src/api/client.ts is the only file that talks HTTP to apps/api -- every engineering-workflow action (approve/reject/execute/rollback) goes through it, not an inline fetch elsewhere", () => {
+    const clientPath = "apps/web/src/api/client.ts";
+    const clientCode = readFileSync(join(repoRoot, clientPath), "utf8");
+    for (const exportName of ["apiApproveProposal", "apiRejectProposal", "apiExecuteProposal", "apiRollback"]) {
+      assert.match(clientCode, new RegExp(`export function ${exportName}\\(`), `${clientPath} must export ${exportName}`);
+    }
+    for (const relativePath of listWebSourceFiles("apps/web/src")) {
+      if (relativePath === clientPath) continue;
+      if (relativePath.includes("/test/")) continue;
+      const contents = readFileSync(join(repoRoot, relativePath), "utf8");
+      assert.doesNotMatch(contents, /fetch\s*\(/, `${relativePath} must not call fetch() directly -- route HTTP calls through api/client.ts`);
+    }
   });
 });

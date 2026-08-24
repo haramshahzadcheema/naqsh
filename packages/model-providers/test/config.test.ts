@@ -15,7 +15,7 @@ describe("loadGeminiConfigFromEnv", () => {
     const config = loadGeminiConfigFromEnv({ GEMINI_API_KEY: "test-key-123" });
     assert.ok(config);
     assert.equal(config.apiKey, "test-key-123");
-    assert.equal(config.modelId, "gemini-2.5-flash");
+    assert.equal(config.modelId, "gemini-3.5-flash");
     assert.equal(config.timeoutMs, 30000);
     assert.equal(config.maxRetries, 2);
   });
@@ -23,12 +23,12 @@ describe("loadGeminiConfigFromEnv", () => {
   it("honors overrides for model/timeout/retries", () => {
     const config = loadGeminiConfigFromEnv({
       GEMINI_API_KEY: "test-key-123",
-      GEMINI_MODEL: "gemini-2.5-pro",
+      GEMINI_MODEL: "gemini-3.5-flash-lite",
       GEMINI_TIMEOUT_MS: "5000",
       GEMINI_MAX_RETRIES: "5"
     });
     assert.ok(config);
-    assert.equal(config.modelId, "gemini-2.5-pro");
+    assert.equal(config.modelId, "gemini-3.5-flash-lite");
     assert.equal(config.timeoutMs, 5000);
     assert.equal(config.maxRetries, 5);
   });

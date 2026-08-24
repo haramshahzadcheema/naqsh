@@ -105,6 +105,35 @@ export interface ModelContextInput {
 }
 
 // ---------------------------------------------------------------------------
+// Attachments (bounded binary content attached to a request — currently
+// only a captured live-view frame, P22's frame-analysis feature)
+// ---------------------------------------------------------------------------
+
+export type ModelAttachmentKind = "image";
+
+export const MODEL_ATTACHMENT_KINDS: readonly ModelAttachmentKind[] = ["image"];
+
+/** The mime types a provider is asked to accept inline — deliberately an
+ * allowlist of the formats a browser `<canvas>.toDataURL()` capture
+ * (LiveViewPanel's frame grab) actually produces, not "whatever the
+ * caller sends". */
+export const MODEL_ATTACHMENT_IMAGE_MIME_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/webp"];
+
+/** A bounded, JSON-safe binary attachment — base64, never a raw Buffer/
+ * Blob, so `ModelRequest` stays serializable the same way every other P7
+ * type is (`serializeModelRequest`/`deserializeModelRequest`). Size is
+ * capped at construction (`assertModelAttachment`) at a few MB decoded —
+ * comfortably over a live-view frame capture, nowhere near "accept
+ * arbitrary large uploads through the model-request path". */
+export interface ModelAttachment {
+  kind: ModelAttachmentKind;
+  mimeType: string;
+  dataBase64: string;
+}
+
+export type ModelAttachmentInput = ModelAttachment;
+
+// ---------------------------------------------------------------------------
 // Model request
 // ---------------------------------------------------------------------------
 
@@ -114,7 +143,9 @@ export interface ModelContextInput {
  * context builder (core's `buildModelContext`). `outputSchema`, when
  * present, is a `ToolValueSchema` a provider should ask the model to
  * conform its structured output to (Gemini's `responseSchema` feature) —
- * the SAME schema type as tool input, not a separate one. */
+ * the SAME schema type as tool input, not a separate one. `attachments` is
+ * bounded (see `assertModelRequest`) and empty for every P7-P21 caller;
+ * only P22's frame-analysis endpoint populates it. */
 export interface ModelRequest {
   id: string;
   systemInstruction: string | null;
@@ -122,6 +153,7 @@ export interface ModelRequest {
   instruction: string;
   tools: ModelToolDeclaration[];
   outputSchema: ToolValueSchema | null;
+  attachments: ModelAttachment[];
   config: ModelRequestConfig;
   sessionId: string | null;
   createdAt: string;
@@ -135,6 +167,7 @@ export interface ModelRequestInput {
   instruction: string;
   tools?: ModelToolDeclarationInput[];
   outputSchema?: ToolValueSchema | null;
+  attachments?: ModelAttachmentInput[];
   config: ModelRequestConfigInput;
   sessionId?: string | null;
   createdAt?: string;

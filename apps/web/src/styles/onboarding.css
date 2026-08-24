@@ -1,0 +1,176 @@
+/*
+  Onboarding: the cinematic-but-restrained "grand opening" that leads into
+  the chat-first workspace. Reuses the same design tokens as the rest of
+  the app (index.css) — monochrome, no gradients, no glow.
+*/
+
+.onboarding-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  padding: var(--space-6);
+  overflow-y: auto;
+}
+
+/* ---- Opening letter-fall ------------------------------------------- */
+
+.naqsh-opening {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  cursor: pointer;
+  border: none;
+  background: none;
+  outline: none;
+}
+
+.naqsh-opening__word {
+  display: inline-block;
+  font-family: var(--font-sans);
+  /* Bounded by BOTH viewport width and height, so a short/landscape
+     viewport (mobile landscape, a small desktop window) never forces the
+     word + tagline + prompt to exceed the viewport and scroll. */
+  font-size: clamp(40px, min(9vw, 13vh), 96px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.3;
+  padding: 0 0.14em 0 0; /* balances the trailing letter-spacing so the word optically centers */
+}
+
+.naqsh-opening__word--static {
+  opacity: 1;
+}
+
+.naqsh-opening__word--settle {
+  opacity: 0;
+  filter: blur(4px);
+  transform: scale(0.97) translateY(6px);
+  animation: naqsh-word-settle 760ms cubic-bezier(0.16, 0.7, 0.2, 1) forwards;
+}
+
+@keyframes naqsh-word-settle {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+    transform: scale(0.97) translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1) translateY(0);
+  }
+}
+
+.naqsh-opening__tagline {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: clamp(13px, 1.3vw, 15px);
+  letter-spacing: 0.01em;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity 480ms var(--ease-standard);
+}
+
+.naqsh-opening__tagline--visible {
+  opacity: 1;
+}
+
+.naqsh-opening__prompt {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: clamp(11px, 1vw, 12.5px);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity 480ms var(--ease-standard);
+}
+
+.naqsh-opening__prompt--visible {
+  opacity: 0.7;
+}
+
+/* ---- Returning-user veil --------------------------------------------- */
+
+.returning-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--bg-canvas);
+  animation: naqsh-veil-fade 320ms var(--ease-standard) forwards;
+  pointer-events: none;
+}
+
+@keyframes naqsh-veil-fade {
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---- Understanding card (rendered inline in chat) ---------------------- */
+
+.understanding-card {
+  width: 100%;
+  max-width: 560px;
+  text-align: left;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-2) 0;
+}
+
+.understanding-card__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.understanding-card__section h3 {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.understanding-card__section p,
+.understanding-card__section ul {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.understanding-card__section ul {
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.understanding-card__section--unclear h3 {
+  color: var(--status-warning);
+}
+
+.understanding-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}

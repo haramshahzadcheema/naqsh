@@ -1,0 +1,1087 @@
+/*
+  The primary, chat-first workspace shell: a persistent left sidebar
+  (projects/threads) + a main panel that is either the active chat or one
+  of a project's deterministic views (Overview/Requirements/Design/...).
+  Same monochrome token system as the rest of the app.
+*/
+
+.chat-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ---- Sidebar ------------------------------------------------------- */
+
+.chat-sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.chat-sidebar__header {
+  padding: var(--space-4) var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.chat-sidebar__wordmark {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 13px;
+  padding: 0 var(--space-2);
+}
+
+.chat-sidebar__new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  padding: 8px var(--space-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.chat-sidebar__new:hover {
+  background: var(--bg-hover);
+}
+
+.chat-sidebar__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 var(--space-3) var(--space-2);
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-md);
+  padding: 6px var(--space-2);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.chat-sidebar__search:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.chat-sidebar__search-kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  color: var(--text-tertiary);
+}
+
+/* ---- Global search ------------------------------------------------- */
+
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh var(--space-5) var(--space-5);
+}
+
+.search-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.search-panel__input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  padding: var(--space-4);
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.search-panel__input:focus {
+  outline: none;
+}
+
+.search-panel__hint,
+.search-panel__empty {
+  padding: var(--space-4);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+.search-panel__results {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2);
+  overflow-y: auto;
+}
+
+.search-panel__result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.search-panel__result.is-active {
+  background: var(--bg-hover);
+}
+
+.search-panel__result-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  width: 76px;
+}
+
+.search-panel__result-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-panel__result-sublabel {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.chat-sidebar__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-2) var(--space-3);
+}
+
+.chat-sidebar__group + .chat-sidebar__group {
+  margin-top: var(--space-3);
+}
+
+.chat-sidebar__group-label {
+  margin: var(--space-2) var(--space-2) 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.chat-sidebar__group-label--toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.chat-sidebar__group-label--toggle:hover {
+  color: var(--text-secondary);
+}
+
+.chat-sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chat-sidebar__item-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.chat-sidebar__item-row:hover .chat-sidebar__item-actions,
+.chat-sidebar__item-row:has(.chat-sidebar__icon-btn.is-active) .chat-sidebar__item-actions {
+  opacity: 1;
+}
+
+.chat-sidebar__item-actions {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  background: var(--bg-canvas);
+}
+
+.chat-sidebar__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  color: var(--text-tertiary);
+}
+.chat-sidebar__icon-btn:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.chat-sidebar__icon-btn.is-active {
+  color: var(--ink);
+}
+
+.chat-sidebar__rename-form input {
+  width: 100%;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-sm);
+  padding: 6px var(--space-2);
+  font-size: 12.5px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.chat-sidebar__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 7px var(--space-2);
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+.chat-sidebar__item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.chat-sidebar__item.is-active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chat-sidebar__item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-sidebar__item-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+
+.chat-sidebar__footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2);
+}
+
+.chat-sidebar__settings {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 7px var(--space-2);
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+.chat-sidebar__settings:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ---- Main panel + tab bar ------------------------------------------- */
+
+.chat-shell__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  height: 44px;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.tab-bar__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  /* Only THIS region scrolls when the project nav tabs don't fit --
+     `.tab-bar__right`'s controls (status, environment, export, settings)
+     stay put and never get pushed off-screen by a long tab list, unlike
+     the previous single `overflow-x: auto` on the whole bar. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-bar__left::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-bar__link {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.tab-bar__link:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tab-bar__link.is-active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.tab-bar__pending-count {
+  display: inline-block;
+  margin-left: 5px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--status-warning);
+  color: var(--bg-canvas);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 15px;
+}
+
+.tab-bar__link--chat {
+  font-weight: 600;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-bar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.tab-bar__env {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.export-menu {
+  position: relative;
+}
+
+.export-menu__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 200px;
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+}
+
+.export-menu__item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 8px var(--space-2);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.export-menu__item:hover {
+  background: var(--bg-hover);
+}
+
+.chat-shell__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Route pages (Overview / Requirements / ... within a project) ---- */
+
+.route-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.route-page__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+/* ---- Chat main view --------------------------------------------------- */
+
+.chat-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-main__messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6) max(var(--space-6), calc(50% - 380px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.chat-main__intro-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.conversation-message {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.conversation-message--naqsh {
+  align-self: flex-start;
+}
+
+.conversation-message--user {
+  align-self: flex-end;
+  align-items: flex-end;
+  max-width: 80%;
+}
+
+.conversation-message--user .conversation-message__text {
+  background: var(--bg-inset);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
+}
+
+.conversation-message__sender {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.conversation-message__text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.conversation-message__text--thinking {
+  color: var(--text-tertiary);
+  font-style: italic;
+  animation: naqsh-thinking-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes naqsh-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.message-text__inline-code {
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-size: 12.5px;
+}
+
+.message-text__code-block {
+  position: relative;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  overflow-x: auto;
+}
+
+.message-text__code-block pre {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.message-text__copy {
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 10.5px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-secondary);
+}
+.message-text__copy:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.conversation-message__regenerate {
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 10.5px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-secondary);
+}
+.conversation-message__regenerate:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.conversation-message__regenerate:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- Attachments -------------------------------------------------------- */
+
+.attachment-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  padding: 6px var(--space-2);
+  font-size: 11.5px;
+}
+
+.attachment-chip__icon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.attachment-chip__name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip__size {
+  color: var(--text-tertiary);
+}
+
+.attachment-chip--pending {
+  background: var(--bg-inset);
+}
+
+.attachment-chip__remove {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.attachment-chip__remove:hover {
+  color: var(--status-danger);
+}
+
+.attachment-chip-row--pending {
+  padding: var(--space-2) var(--space-2) 0;
+}
+
+.extraction-chip {
+  align-self: flex-start;
+  max-width: 420px;
+  border: 1px solid var(--status-info);
+  background: var(--status-info-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.extraction-chip__title {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--status-info);
+  margin-bottom: 4px;
+}
+
+.extraction-chip__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.extraction-chip__list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.extraction-chip__label {
+  color: var(--text-secondary);
+}
+
+.extraction-chip__value {
+  font-weight: 600;
+}
+
+/* ---- Engineering workflow cards, inline in the chat flow ---------------- */
+
+.workflow-events {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 480px;
+  margin-top: var(--space-2);
+}
+
+.workflow-events__proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.chat-main__composer {
+  position: relative;
+  margin: 0 max(var(--space-6), calc(50% - 380px)) var(--space-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--duration-fast) var(--ease-standard);
+}
+.chat-main__composer.is-dragging-files {
+  border-color: var(--ink);
+  border-style: dashed;
+}
+
+.chat-main__drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  pointer-events: none;
+}
+
+.chat-main__composer-row {
+  padding: var(--space-3) var(--space-3) 0;
+}
+
+.chat-main__composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+}
+
+.chat-main__composer-toolbar-left,
+.chat-main__composer-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chat-main__attach-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+}
+.chat-main__attach-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chat-main__composer textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  padding: var(--space-1) 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.chat-main__composer textarea:focus {
+  outline: none;
+}
+
+/* The composer's two pickers read as quieter, more compact controls than
+   a page's primary model picker (e.g. Settings) -- the message you're
+   about to send is the point of this row, not which model will answer
+   it. `--quiet` (style) recedes further than the plain composer variant
+   (model), matching "not everything deserves equal visual attention." */
+.picker__trigger--composer {
+  border-color: transparent;
+  background: transparent;
+  max-width: 160px;
+}
+.picker__trigger--composer:hover {
+  background: var(--bg-hover);
+}
+.picker__trigger--quiet {
+  color: var(--text-tertiary);
+  max-width: 120px;
+}
+
+/* ---- Settings ---------------------------------------------------------- */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+
+.settings-panel {
+  width: 100%;
+  max-width: 640px;
+  max-height: 84vh;
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.settings-panel__header h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-panel__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-panel__categories {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+  width: 160px;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+}
+
+.settings-panel__category {
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+.settings-panel__category:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-panel__category.is-active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.settings-panel__content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.settings-section h3 {
+  margin: 0 0 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.settings-section__hint {
+  margin: 0 0 var(--space-3);
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.settings-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  padding: var(--space-3);
+}
+.settings-option:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.settings-option.is-selected {
+  border-color: var(--ink);
+  border-width: 2px;
+  padding: calc(var(--space-3) - 1px);
+}
+.settings-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-option__name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.settings-option__description {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.settings-option__status {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--status-info);
+}
+.settings-option__status--muted {
+  color: var(--text-disabled);
+}
+
+@media (max-width: 900px) {
+  .chat-sidebar {
+    width: 200px;
+  }
+  .chat-main__messages {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+  .chat-main__composer {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+}
+
+/* ---- Mobile: the sidebar becomes an off-canvas drawer --------------- */
+
+.tab-bar__sidebar-toggle {
+  display: none;
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+.tab-bar__sidebar-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+@media (max-width: 640px) {
+  .tab-bar__sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .chat-sidebar__wrap {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 100;
+    width: 280px;
+    max-width: 84vw;
+    transform: translateX(-100%);
+    /* `visibility` staggered behind `transform` (delayed only on the way
+       OUT) removes the closed drawer from the tab order and the
+       accessibility tree entirely -- `transform` alone would leave every
+       link/button inside it still keyboard-focusable and screen-reader-
+       reachable while sitting invisibly off-screen, a real trap for
+       anyone not using a mouse. */
+    visibility: hidden;
+    transition: transform var(--duration-base) var(--ease-standard), visibility 0s linear var(--duration-base);
+    box-shadow: var(--shadow-md);
+  }
+  .chat-sidebar__wrap.is-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform var(--duration-base) var(--ease-standard), visibility 0s linear;
+  }
+  .chat-sidebar__wrap .chat-sidebar {
+    width: 100%;
+    height: 100%;
+  }
+
+  .chat-sidebar__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: var(--bg-overlay);
+  }
+
+  .chat-shell__main {
+    width: 100%;
+  }
+
+  /* `.tab-bar__left`'s desktop `min-width: 0` (chat.css, "Main panel + tab
+     bar" section) lets it shrink flexibly when there's room to spare --
+     but combined with `.tab-bar`'s own `overflow-x: auto` and
+     `.tab-bar__right`'s un-shrinkable badges/buttons, the flex algorithm
+     was squeezing `.tab-bar__left` all the way to a genuine ZERO-width
+     box on a narrow viewport (confirmed via getBoundingClientRect while
+     testing this fix) -- the hamburger button and every nav link were
+     still in the DOM and reachable by screen reader/keyboard, but
+     invisible and unscrollable-into-view for a sighted mouse/touch user.
+     Pinning both halves to their natural content width and letting the
+     WHOLE bar scroll (already `overflow-x: auto`) keeps the hamburger +
+     current-thread title visible first (DOM/flex order), with the
+     status badges a deliberate horizontal scroll away -- a real
+     accessible layout, not a collapsed one. */
+  .tab-bar__left {
+    flex-shrink: 0;
+    min-width: max-content;
+  }
+  .tab-bar__right {
+    flex-shrink: 0;
+    gap: var(--space-1);
+  }
+  .tab-bar__select {
+    display: none;
+  }
+}
+
+@media (min-width: 641px) {
+  /* Never let a stale `sidebarOpen` state (or a keyboard focus reaching
+     the visually-hidden toggle) show a backdrop above this breakpoint --
+     the sidebar is already a permanent column here, so there is nothing
+     for a backdrop to sit behind. */
+  .chat-sidebar__backdrop {
+    display: none;
+  }
+}

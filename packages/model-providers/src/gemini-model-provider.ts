@@ -1,4 +1,4 @@
-import { ApiError, GoogleGenAI, type FunctionCall, type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
+import { ApiError, GoogleGenAI, type FunctionCall, type GenerateContentConfig, type GenerateContentParameters, type Part } from "@google/genai";
 import {
   createId,
   createModelInvocationResult,
@@ -6,9 +6,11 @@ import {
   createModelResponse,
   ModelError,
   toIsoTimestamp,
+  type ModelAttachment,
   type ModelContext,
   type ModelErrorKind,
   type ModelInvocationResult,
+  type ModelProviderDescriptor,
   type ModelRequest,
   type ModelResponseInput
 } from "@naqsh/schemas";
@@ -73,13 +75,28 @@ export function mapModelRequestToGeminiParams(
   }
 
   const contextText = summarizeContextForPrompt(request.context);
-  const contents = [contextText, request.instruction].filter((part) => part.length > 0).join("\n\n");
+  const promptText = [contextText, request.instruction].filter((part) => part.length > 0).join("\n\n");
+
+  // Plain string when there's nothing to attach (unchanged from before
+  // P22's frame-analysis feature -- every existing caller/test still sees
+  // exactly the same `contents` shape). Only switches to the SDK's
+  // `Content[]` shape -- text part + one `inlineData` part per attachment
+  // -- when a request actually carries an image (LiveViewPanel's captured
+  // frame, via the frame-analysis endpoint).
+  const contents: GenerateContentParameters["contents"] =
+    request.attachments.length > 0
+      ? [{ role: "user", parts: [{ text: promptText }, ...request.attachments.map(toGeminiInlineDataPart)] }]
+      : promptText;
 
   return {
     model: request.config.modelId || config.modelId,
     contents,
     config: generationConfig
   };
+}
+
+function toGeminiInlineDataPart(attachment: ModelAttachment): Part {
+  return { inlineData: { mimeType: attachment.mimeType, data: attachment.dataBase64 } };
 }
 
 /** The minimal shape this provider actually reads off a raw SDK response —
@@ -201,6 +218,12 @@ export function classifyGeminiError(error: unknown): { kind: ModelErrorKind; mes
  * real `@google/genai` client — production code never needs to pass this. */
 export interface GeminiModelProviderDependencies {
   generateContent?: (params: GenerateContentParameters) => Promise<RawGeminiResponseLike>;
+  /** Same injectable-seam discipline as `generateContent`, for the
+   * streaming path — a test supplies a fake async-iterable of chunks
+   * rather than exercising a live network call. Matches the real SDK's
+   * own shape: `generateContentStream` itself resolves to an async
+   * iterator, rather than being one. */
+  generateContentStream?: (params: GenerateContentParameters) => Promise<AsyncIterable<RawGeminiResponseLike>>;
 }
 
 function defaultGenerateContent(config: GeminiProviderConfig): (params: GenerateContentParameters) => Promise<RawGeminiResponseLike> {
@@ -208,11 +231,76 @@ function defaultGenerateContent(config: GeminiProviderConfig): (params: Generate
   return (params) => client.models.generateContent(params);
 }
 
+function defaultGenerateContentStream(config: GeminiProviderConfig): (params: GenerateContentParameters) => Promise<AsyncIterable<RawGeminiResponseLike>> {
+  const client = new GoogleGenAI({ apiKey: config.apiKey });
+  return (params) => client.models.generateContentStream(params);
+}
+
+/** Shared by `generate()` and `generateStream()`: raw Gemini output (once
+ * fully known, whether obtained in one call or accumulated chunk by
+ * chunk) -> the final `ModelInvocationResult`. Kept as ONE function so the
+ * schema-validation/error-mapping discipline is never duplicated (and
+ * never allowed to drift) between the two call paths. */
+function finalizeResult(
+  raw: RawGeminiResponseLike,
+  request: ModelRequest,
+  descriptor: ModelProviderDescriptor,
+  config: GeminiProviderConfig,
+  startedAt: string,
+  attempts: number
+): ModelInvocationResult {
+  try {
+    const response = createModelResponse(mapGeminiResponseToModelResponseInput(raw, request));
+    const schemaErrors = validateStructuredResult(response, request);
+    if (schemaErrors.length > 0) {
+      return createModelInvocationResult({
+        id: createId("modelinv"),
+        requestId: request.id,
+        providerId: descriptor.providerId,
+        modelId: config.modelId,
+        sessionId: request.sessionId,
+        status: "error",
+        error: { kind: "schema_validation_failed", message: schemaErrors.join("; ") },
+        startedAt,
+        completedAt: toIsoTimestamp(),
+        metadata: { attempts }
+      });
+    }
+    return createModelInvocationResult({
+      id: createId("modelinv"),
+      requestId: request.id,
+      providerId: descriptor.providerId,
+      modelId: config.modelId,
+      sessionId: request.sessionId,
+      status: "success",
+      response,
+      startedAt,
+      completedAt: toIsoTimestamp(),
+      metadata: { attempts }
+    });
+  } catch (error) {
+    const kind = error instanceof ModelError ? error.kind : "malformed_response";
+    return createModelInvocationResult({
+      id: createId("modelinv"),
+      requestId: request.id,
+      providerId: descriptor.providerId,
+      modelId: config.modelId,
+      sessionId: request.sessionId,
+      status: "error",
+      error: { kind, message: error instanceof Error ? error.message : String(error) },
+      startedAt,
+      completedAt: toIsoTimestamp(),
+      metadata: { attempts }
+    });
+  }
+}
+
 export function createGeminiModelProvider(
   config: GeminiProviderConfig,
   dependencies: GeminiModelProviderDependencies = {}
 ): ModelProvider {
   const generateContent = dependencies.generateContent ?? defaultGenerateContent(config);
+  const generateContentStream = dependencies.generateContentStream ?? defaultGenerateContentStream(config);
   const descriptor = createModelProviderDescriptor({
     providerId: "gemini",
     modelId: config.modelId,
@@ -261,39 +349,36 @@ export function createGeminiModelProvider(
         });
       }
 
+      // `raw` is guaranteed defined here: the loop only exits without
+      // `classified` set after a successful `generateContent` call.
+      return finalizeResult(raw!, request, descriptor, config, startedAt, attempts);
+    },
+
+    /**
+     * No retry loop here (unlike `generate()`): once a chunk has already
+     * been delivered to `onChunk`, silently retrying the whole call over
+     * would mean the caller saw text from a first, discarded attempt
+     * mixed with a second, real one -- worse than just surfacing the
+     * failure. A transient network error mid-stream is reported as a real
+     * `status: "error"` result, exactly like a non-retryable `generate()`
+     * failure; the caller (chatReply.ts) already handles that uniformly.
+     */
+    async generateStream(request: ModelRequest, onChunk: (deltaText: string) => void): Promise<ModelInvocationResult> {
+      const startedAt = toIsoTimestamp();
+      const params = mapModelRequestToGeminiParams(request, config);
+
+      let accumulatedText = "";
+      const functionCalls: FunctionCall[] = [];
       try {
-        // `raw` is guaranteed defined here: the loop only exits without
-        // `classified` set after a successful `generateContent` call.
-        const response = createModelResponse(mapGeminiResponseToModelResponseInput(raw!, request));
-        const schemaErrors = validateStructuredResult(response, request);
-        if (schemaErrors.length > 0) {
-          return createModelInvocationResult({
-            id: createId("modelinv"),
-            requestId: request.id,
-            providerId: descriptor.providerId,
-            modelId: config.modelId,
-            sessionId: request.sessionId,
-            status: "error",
-            error: { kind: "schema_validation_failed", message: schemaErrors.join("; ") },
-            startedAt,
-            completedAt: toIsoTimestamp(),
-            metadata: { attempts }
-          });
+        for await (const chunk of await generateContentStream(params)) {
+          if (chunk.text) {
+            accumulatedText += chunk.text;
+            onChunk(chunk.text);
+          }
+          if (chunk.functionCalls && chunk.functionCalls.length > 0) functionCalls.push(...chunk.functionCalls);
         }
-        return createModelInvocationResult({
-          id: createId("modelinv"),
-          requestId: request.id,
-          providerId: descriptor.providerId,
-          modelId: config.modelId,
-          sessionId: request.sessionId,
-          status: "success",
-          response,
-          startedAt,
-          completedAt: toIsoTimestamp(),
-          metadata: { attempts }
-        });
       } catch (error) {
-        const kind = error instanceof ModelError ? error.kind : "malformed_response";
+        const classified = classifyGeminiError(error);
         return createModelInvocationResult({
           id: createId("modelinv"),
           requestId: request.id,
@@ -301,15 +386,15 @@ export function createGeminiModelProvider(
           modelId: config.modelId,
           sessionId: request.sessionId,
           status: "error",
-          error: {
-            kind,
-            message: error instanceof Error ? error.message : String(error)
-          },
+          error: classified,
           startedAt,
           completedAt: toIsoTimestamp(),
-          metadata: { attempts }
+          metadata: { attempts: 1, streamed: true }
         });
       }
+
+      const raw: RawGeminiResponseLike = { text: accumulatedText || undefined, functionCalls: functionCalls.length > 0 ? functionCalls : undefined };
+      return finalizeResult(raw, request, descriptor, config, startedAt, 1);
     }
   };
 }

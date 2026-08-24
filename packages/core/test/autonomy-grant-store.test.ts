@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { AuthorizationError } from "@naqsh/schemas";
-import { createAutonomyGrantStore } from "../src/autonomy-grant-store.js";
+import { createAutonomyGrantStore, deserializeAutonomyGrantStore } from "../src/autonomy-grant-store.js";
 
 describe("AutonomyGrantStore: creation and listing", () => {
   it("creates an active grant", () => {
@@ -84,5 +84,29 @@ describe("AutonomyGrantStore: recordUse (bounded consumption)", () => {
     const store = createAutonomyGrantStore();
     const grant = store.create({ toolNames: ["a"], expiresAt: new Date(Date.now() - 1000).toISOString() });
     assert.throws(() => store.recordUse(grant.id), AuthorizationError);
+  });
+});
+
+describe("AutonomyGrantStore: serialize/deserializeAutonomyGrantStore", () => {
+  it("round-trips through serialize/deserialize with full fidelity, including useCount and revocation", () => {
+    const store = createAutonomyGrantStore();
+    const active = store.create({ toolNames: ["a"] });
+    store.recordUse(active.id);
+    store.recordUse(active.id);
+    const revoked = store.create({ toolNames: ["b"] });
+    store.revoke(revoked.id, "human", "no longer needed");
+
+    const restored = deserializeAutonomyGrantStore(store.serialize());
+    assert.equal(restored.getById(active.id)?.useCount, 2);
+    assert.equal(restored.getById(revoked.id)?.status, "revoked");
+    assert.equal(restored.list().length, 2);
+  });
+
+  it("rejects a non-array serialized payload", () => {
+    assert.throws(() => deserializeAutonomyGrantStore(JSON.stringify({ not: "an array" })), /must be an array/);
+  });
+
+  it("rejects an empty string", () => {
+    assert.throws(() => deserializeAutonomyGrantStore(""), /is required/);
   });
 });

@@ -11,8 +11,6 @@ import { createResearchSearchTool } from "../src/research-search-tool.js";
 import { createResearchFetchTool } from "../src/research-fetch-tool.js";
 import { createAddSourceTool } from "../src/add-source-tool.js";
 import { createAddEvidenceTool } from "../src/add-evidence-tool.js";
-import { createCreateResearchRequestTool } from "../src/create-research-request-tool.js";
-import { createResearchRequestStore } from "../src/research-request-store.js";
 import { createChangeHistory } from "../src/change-history.js";
 import { createApprovalStore } from "../src/approval-store.js";
 import { createAutonomyGrantStore } from "../src/autonomy-grant-store.js";
@@ -70,100 +68,12 @@ function buildHarness(providerOptions: FakeResearchProviderOptions = {}) {
   const fetch = createResearchFetchTool(provider);
   const addSource = createAddSourceTool(() => state, (next) => { state = next; }, history);
   const addEvidence = createAddEvidenceTool(() => state, (next) => { state = next; }, history);
-  const researchRequestStore = createResearchRequestStore();
-  const createRequest = createCreateResearchRequestTool(researchRequestStore, () => state);
   registry.register(search.tool, search.handler);
   registry.register(fetch.tool, fetch.handler);
   registry.register(addSource.tool, addSource.handler);
   registry.register(addEvidence.tool, addEvidence.handler);
-  registry.register(createRequest.tool, createRequest.handler);
-  return { registry, history, getState: () => state, researchRequestStore };
+  return { registry, history, getState: () => state };
 }
-
-describe("create_research_request: identity, classification, and successful creation", () => {
-  it("is classified suggest/research -- a new independent record, never a World Model write", () => {
-    const { registry } = buildHarness();
-    const tool = registry.getByName("create_research_request")!;
-    assert.equal(tool.mutation, "suggest");
-    assert.equal(tool.target, "research");
-  });
-
-  it("Test 1: creates a research request explaining WHY (purpose), independent of the World Model", async () => {
-    const { registry, getState, researchRequestStore } = buildHarness();
-    const before = getState();
-    const { result } = await executeTool(registry, {
-      toolName: "create_research_request",
-      input: { query: "6061-T6 aluminum yield strength", purpose: "Evaluate whether the material satisfies the 500 N load requirement." }
-    });
-    assert.equal(result.status, "success");
-    const output = result.output as { request: { id: string; query: string; purpose: string } };
-    assert.equal(output.request.query, "6061-T6 aluminum yield strength");
-    assert.equal(researchRequestStore.getById(output.request.id)!.purpose, output.request.purpose);
-    assert.deepEqual(getState(), before);
-  });
-
-  it("Test 1: rejects a request with no purpose -- research must explain why, not just what", async () => {
-    const { registry } = buildHarness();
-    const { result } = await executeTool(registry, { toolName: "create_research_request", input: { query: "x" } });
-    assert.equal(result.status, "error");
-    assert.equal(result.error?.kind, "invalid_input");
-  });
-
-  it("rejects a request with no query", async () => {
-    const { registry } = buildHarness();
-    const { result } = await executeTool(registry, { toolName: "create_research_request", input: { purpose: "x" } });
-    assert.equal(result.status, "error");
-    assert.equal(result.error?.kind, "invalid_input");
-  });
-
-  it("defaults provenance to 'agent'", async () => {
-    const { registry, researchRequestStore } = buildHarness();
-    const { result } = await executeTool(registry, { toolName: "create_research_request", input: { query: "x", purpose: "x" } });
-    const output = result.output as { request: { id: string } };
-    assert.equal(researchRequestStore.getById(output.request.id)!.source, "agent");
-  });
-
-  it("REGRESSION: a human-initiated research request is recorded with provenance:'human', not silently attributed to the agent", async () => {
-    const { registry, researchRequestStore } = buildHarness();
-    const { result } = await executeTool(registry, { toolName: "create_research_request", input: { query: "x", purpose: "x", provenance: "human" } });
-    const output = result.output as { request: { id: string } };
-    assert.equal(researchRequestStore.getById(output.request.id)!.source, "human");
-  });
-
-  it("rejects an invalid provenance value", async () => {
-    const { registry } = buildHarness();
-    const { result } = await executeTool(registry, { toolName: "create_research_request", input: { query: "x", purpose: "x", provenance: "not_a_real_source" } });
-    assert.equal(result.status, "error");
-    assert.equal(result.error?.kind, "invalid_input");
-  });
-
-  it("links to real requirements when supplied, rejecting a hallucinated one", async () => {
-    const { getState } = buildHarness();
-    const { updateWorldModel } = await import("../src/index.js");
-    const withRequirement = updateWorldModel(getState(), {
-      kind: "add_requirement",
-      requirement: { description: "Must support 500 N", category: "load", value: 500, unit: "N" }
-    });
-    const requirement = withRequirement.project.requirements.at(-1)!;
-
-    const linkedRegistry = createToolRegistry();
-    const createRequest = createCreateResearchRequestTool(createResearchRequestStore(), () => withRequirement);
-    linkedRegistry.register(createRequest.tool, createRequest.handler);
-
-    const ok = await executeTool(linkedRegistry, {
-      toolName: "create_research_request",
-      input: { query: "x", purpose: "x", relatedRequirementIds: [requirement.id] }
-    });
-    assert.equal(ok.result.status, "success");
-
-    const bad = await executeTool(linkedRegistry, {
-      toolName: "create_research_request",
-      input: { query: "x", purpose: "x", relatedRequirementIds: ["req_does_not_exist"] }
-    });
-    assert.equal(bad.result.status, "error");
-    assert.match(bad.result.error!.message, /unknown_requirement/);
-  });
-});
 
 describe("research_search / research_fetch: identity and classification", () => {
   it("both are classified suggest/research -- an external side effect, but never a World Model write", () => {
