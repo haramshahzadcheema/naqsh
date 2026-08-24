@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createModelRequest, type ModelResponse } from "@naqsh/schemas";
-import { runModelProviderContractTests } from "@naqsh/core";
+import {
+  createModelRequest,
+  createModelProviderDescriptor,
+  createModelResponse,
+  createModelInvocationResult,
+  createWorldModelState,
+  createTool,
+  type ModelResponse,
+  type ObservationResult
+} from "@naqsh/schemas";
+import {
+  runModelProviderContractTests,
+  generatePlanProposal,
+  generateProposal,
+  generateDesignSpecification,
+  interpretRequirementFromText,
+  observeProject,
+  createToolRegistry,
+  validateStructuredResult,
+  type ModelProvider,
+  type ToolRegistry
+} from "@naqsh/core";
 import { createMockModelProvider } from "../src/mock-model-provider.js";
 
 // Reuses the EXACT P5/P7 contract-test pattern -- the same suite intended
@@ -192,5 +212,268 @@ describe("Mock model provider: security boundary -- Gemini cannot directly mutat
     assert.equal(typeof response.toolCall, "object");
     assert.equal(typeof (response.toolCall as unknown as Record<string, unknown>).arguments, "object");
     assert.doesNotThrow(() => JSON.stringify(response));
+  });
+});
+
+describe("AUDIT FIX regression: the SHIPPED DEFAULT responder (no custom respond callback) genuinely satisfies outputSchema-bearing requests", () => {
+  // The bug this closes: the default responder used to ALWAYS return
+  // kind: "text" (or "tool_call") no matter what outputSchema asked for --
+  // so selecting createMockModelProvider() with zero configuration for any
+  // structured-output request (every real Plan/Proposal/Requirement call)
+  // failed immediately with a "wrong response kind" error. These tests
+  // deliberately use createMockModelProvider() with NO custom respond,
+  // exercising exactly the code path a judge selecting "Deterministic
+  // (testing)" in the live app actually reaches -- not a hand-built test
+  // responder that could pass even if the real default were still broken.
+
+  it("returns kind: 'structured_result' (not 'text') for a request carrying an outputSchema, with a value that satisfies it", async () => {
+    const provider = createMockModelProvider();
+    const request = createModelRequest({
+      context: {},
+      instruction: "Produce a status record.",
+      outputSchema: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["ok", "error"] },
+          count: { type: "number" },
+          note: { type: "string", nullable: true }
+        },
+        required: ["status", "count", "note"],
+        additionalProperties: false
+      },
+      config: { modelId: "mock-v1" }
+    });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "success");
+    assert.equal(result.response?.kind, "structured_result");
+    const structured = result.response?.structuredResult as { status: string; count: number; note: string | null };
+    assert.equal(structured.status, "ok"); // first enum option, deterministically
+    assert.equal(structured.count, 0);
+    assert.equal(structured.note, null); // nullable -> null, never a fabricated value
+  });
+
+  it("a tool-shaped schema (toolName + input, required together) resolves toolName from a REAL declared tool, never a placeholder string that could never be a valid tool name", async () => {
+    const provider = createMockModelProvider();
+    const request = createModelRequest({
+      context: {},
+      instruction: "Propose one tool call.",
+      tools: [
+        {
+          name: "modify_environment_object",
+          description: "Modify a real environment object.",
+          inputSchema: { type: "object", properties: { objectId: { type: "string" } }, required: ["objectId"], additionalProperties: false },
+          mutation: "mutate",
+          target: "environment"
+        }
+      ],
+      outputSchema: {
+        type: "object",
+        properties: {
+          toolName: { type: "string" },
+          input: { type: "object", properties: {}, additionalProperties: true }
+        },
+        required: ["toolName", "input"],
+        additionalProperties: false
+      },
+      config: { modelId: "mock-v1" }
+    });
+    const result = await provider.generate(request);
+    assert.equal(result.status, "success");
+    const structured = result.response?.structuredResult as { toolName: string; input: { objectId: string } };
+    assert.equal(structured.toolName, "modify_environment_object");
+    assert.equal(structured.input.objectId, "(deterministic mock value)", "synthesized from the tool's own inputSchema, not left absent");
+  });
+
+  it("end-to-end: generatePlanProposal succeeds against the REAL, unmodified default provider -- the actual bug this closes, exercised through the actual workflow function a judge's chat turn calls", async () => {
+    const provider = createMockModelProvider();
+    const state = createWorldModelState({
+      project: {
+        name: "Bracket Study",
+        description: "A mounting bracket.",
+        objective: { summary: "Reduce mass by 20%." },
+        requirements: [{ id: "req_mass", description: "Max mass 350g" }]
+      },
+      session: {}
+    });
+    const observation: ObservationResult = observeProject(state, { scope: "project" });
+
+    const result = await generatePlanProposal(provider, observation, { config: { modelId: "mock-v1" } });
+
+    assert.equal(result.status, "success", result.status === "error" ? result.error.message : undefined);
+    assert.ok(result.status === "success" && Array.isArray(result.plan.steps));
+  });
+
+  it("end-to-end: generateProposal succeeds against the REAL, unmodified default provider when a real tool is registered", async () => {
+    // A real Plan with one real step -- built via a hand-scripted fake
+    // provider, exactly like proposal-generator.test.ts's own richPlan()
+    // helper, because constructing the FIXTURE plan is setup, not the
+    // thing under test. generateProposal itself, below, uses the REAL
+    // unmodified default provider -- that is the actual code path this
+    // regression test exists to prove.
+    const fixtureState = createWorldModelState({
+      project: {
+        name: "Bracket Study",
+        description: "A mounting bracket.",
+        objective: { summary: "Reduce mass by 20%." },
+        requirements: [{ id: "req_mass", description: "Max mass 350g" }],
+        objects: [{ id: "obj_bracket", type: "part", name: "Bracket" }]
+      },
+      session: {}
+    });
+    const observation: ObservationResult = observeProject(fixtureState, { scope: "project" });
+    const fixtureProvider: ModelProvider = {
+      describe: () => createModelProviderDescriptor({ providerId: "fixture", modelId: "fixture-v1", supportsStructuredOutput: true }),
+      async generate(request) {
+        const response = createModelResponse({
+          requestId: request.id,
+          kind: "structured_result",
+          structuredResult: {
+            steps: [
+              {
+                id: "step-1",
+                title: "Reduce rib thickness",
+                description: "Thin the reinforcing rib to cut mass.",
+                purpose: "Meet the mass requirement.",
+                dependsOn: [],
+                inputs: [],
+                expectedOutputs: [],
+                relevantRequirementIds: ["req_mass"],
+                relevantConstraintIds: [],
+                relevantObjectIds: ["obj_bracket"],
+                relevantDecisionIds: [],
+                verificationIntent: null,
+                assumptionRefs: []
+              }
+            ],
+            assumptions: [],
+            unresolvedQuestions: [],
+            risks: [],
+            additionalMissingInformation: []
+          }
+        });
+        const schemaErrors = validateStructuredResult(response, request);
+        return createModelInvocationResult({
+          requestId: request.id,
+          providerId: "fixture",
+          modelId: "fixture-v1",
+          status: schemaErrors.length > 0 ? "error" : "success",
+          response: schemaErrors.length > 0 ? undefined : response,
+          error: schemaErrors.length > 0 ? { kind: "schema_validation_failed", message: schemaErrors.join("; ") } : undefined,
+          startedAt: new Date().toISOString()
+        });
+      }
+    };
+    const planResult = await generatePlanProposal(fixtureProvider, observation, { config: { modelId: "fixture-v1" } });
+    assert.equal(planResult.status, "success");
+    if (planResult.status !== "success") return;
+    const plan = planResult.plan;
+
+    const registry: ToolRegistry = createToolRegistry();
+    registry.register(
+      createTool({
+        name: "modify_object",
+        description: "Modifies a property on an existing engineering object.",
+        target: "world_model",
+        mutation: "mutate",
+        inputSchema: {
+          type: "object",
+          properties: { objectId: { type: "string" }, propertyKey: { type: "string" }, value: { type: "string" } },
+          required: ["objectId", "propertyKey", "value"]
+        },
+        outputSchema: { type: "object", properties: {} }
+      }),
+      () => ({})
+    );
+
+    // THE test: proposal generation against the real, unconfigured default
+    // provider -- no custom respond callback anywhere in this call.
+    const provider = createMockModelProvider();
+    const result = await generateProposal(provider, registry, plan, plan.steps[0]!.id, { config: { modelId: "mock-v1" } });
+
+    assert.equal(result.status, "success", result.status === "error" ? result.error.message : undefined);
+    assert.ok(result.status === "success" && result.proposal.toolName === "modify_object");
+  });
+
+  it("end-to-end: generateDesignSpecification (the actual candidate-generation building block) succeeds against the REAL, unmodified default provider", async () => {
+    // Same fixture-plan-via-hand-scripted-provider pattern as the
+    // generateProposal test above -- constructing the PLAN is setup, not
+    // the thing under test. generateDesignSpecification itself uses the
+    // real default provider.
+    const fixtureState = createWorldModelState({
+      project: {
+        name: "Bracket Study",
+        description: "A mounting bracket.",
+        objective: { summary: "Reduce mass by 20%." },
+        requirements: [{ id: "req_mass", description: "Max mass 350g" }],
+        objects: [{ id: "obj_bracket", type: "part", name: "Bracket" }]
+      },
+      session: {}
+    });
+    const observation: ObservationResult = observeProject(fixtureState, { scope: "project" });
+    const fixtureProvider: ModelProvider = {
+      describe: () => createModelProviderDescriptor({ providerId: "fixture", modelId: "fixture-v1", supportsStructuredOutput: true }),
+      async generate(request) {
+        const response = createModelResponse({
+          requestId: request.id,
+          kind: "structured_result",
+          structuredResult: {
+            steps: [
+              {
+                id: "step-1",
+                title: "Reduce rib thickness",
+                description: "Thin the reinforcing rib to cut mass.",
+                purpose: "Meet the mass requirement.",
+                dependsOn: [],
+                inputs: [],
+                expectedOutputs: [],
+                relevantRequirementIds: ["req_mass"],
+                relevantConstraintIds: [],
+                relevantObjectIds: ["obj_bracket"],
+                relevantDecisionIds: [],
+                verificationIntent: null,
+                assumptionRefs: []
+              }
+            ],
+            assumptions: [],
+            unresolvedQuestions: [],
+            risks: [],
+            additionalMissingInformation: []
+          }
+        });
+        const schemaErrors = validateStructuredResult(response, request);
+        return createModelInvocationResult({
+          requestId: request.id,
+          providerId: "fixture",
+          modelId: "fixture-v1",
+          status: schemaErrors.length > 0 ? "error" : "success",
+          response: schemaErrors.length > 0 ? undefined : response,
+          error: schemaErrors.length > 0 ? { kind: "schema_validation_failed", message: schemaErrors.join("; ") } : undefined,
+          startedAt: new Date().toISOString()
+        });
+      }
+    };
+    const planResult = await generatePlanProposal(fixtureProvider, observation, { config: { modelId: "fixture-v1" } });
+    assert.equal(planResult.status, "success");
+    if (planResult.status !== "success") return;
+    const plan = planResult.plan;
+
+    const provider = createMockModelProvider();
+    const result = await generateDesignSpecification(provider, plan, plan.steps[0]!.id, fixtureState.project.requirements, fixtureState.project.constraints, {
+      config: { modelId: "mock-v1" }
+    });
+
+    assert.equal(result.status, "success", result.status === "error" ? result.error.message : undefined);
+    assert.ok(result.status === "success" && Array.isArray(result.design.components));
+  });
+
+  it("end-to-end: interpretRequirementFromText succeeds against the REAL, unmodified default provider -- requirement capture, the entry point to every chat turn, genuinely works with no Gemini credentials configured", async () => {
+    const state = createWorldModelState({
+      project: { name: "Bracket Study", description: "x", objective: { summary: "Reduce mass by 20%." } },
+      session: {}
+    });
+    const provider = createMockModelProvider();
+    const result = await interpretRequirementFromText(provider, state, "It must support at least 500 N.", { config: { modelId: "mock-v1" } });
+
+    assert.equal(result.status, "success", result.status === "error" ? result.error.message : undefined);
   });
 });

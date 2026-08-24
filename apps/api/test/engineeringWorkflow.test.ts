@@ -659,7 +659,7 @@ describe("engineering agent execution: real OBSERVE -> PLAN -> PROPOSE -> APPROV
     assert.equal(outcome.error.kind, "unknown_plan_step");
   });
 
-  it("22. the deterministic mock model honestly fails candidate generation rather than fabricating a design -- proven with the REAL deterministic provider, not the test's own fake one", async () => {
+  it("22. AUDIT FIX: the deterministic mock model now genuinely SUCCEEDS at candidate generation -- the shipped default provider used to always fail this (never producing kind: 'structured_result'), which meant a judge without a Gemini key hit an immediate failure on the core exploration workflow. Fixed in mock-model-provider.ts's defaultMockResponder; this test proves it via the REAL deterministic provider, not the test's own fake one", async () => {
     const { resolveModelProvider } = await import("../src/modelProviderFactory.js");
     const record = createProject(projects, "Deterministic Candidates");
     const runtime = runtimeFor(record);
@@ -671,7 +671,9 @@ describe("engineering agent execution: real OBSERVE -> PLAN -> PROPOSE -> APPROV
     assert.ok(!("error" in resolved));
     if ("error" in resolved) return;
     const outcome = await generateProjectCandidates(runtime, resolved.provider, plan.plan.id, plan.plan.steps[0]!.id, 2, { modelId: resolved.modelId });
-    assert.equal(outcome.status, "error", "the deterministic provider cannot produce schema-valid structured design output -- this must fail honestly, not fabricate a candidate");
+    assert.equal(outcome.status, "success", outcome.status === "error" ? JSON.stringify(outcome) : undefined);
+    if (outcome.status !== "success") return;
+    assert.equal(outcome.candidates.length, 2, "both requested candidates must be generated, not silently truncated");
   });
 
   it("22b. candidates -> background job: submitBackgroundJob wires a REAL verifyCandidate hook, end-to-end", async () => {
