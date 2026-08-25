@@ -121,6 +121,8 @@ import {
   type WorldModelState
 } from "@naqsh/schemas";
 import { DEFAULT_ENVIRONMENT_KIND, type EnvironmentKind, type ProjectRepository, type RuntimeStateRecord, type RuntimeStateRepository } from "./db/repositories.js";
+import { existsSync } from "node:fs";
+import { candidateCommandPaths } from "./environmentDiscovery.js";
 
 export type { EnvironmentKind };
 
@@ -317,8 +319,24 @@ export function findProjectIdForProposal(proposalId: string): string | undefined
   return proposalProjectIndex.get(proposalId);
 }
 
+/** AUDIT FIX: `createFreeCadAdapter` with no `freecadCmdPath` falls back to
+ * a bare "freecadcmd" (PATH-only) lookup -- reproduced live: a real
+ * install existed at a real, standard path (`C:\Program Files\FreeCAD
+ * 1.1\bin\freecadcmd.exe`), `environmentDiscovery.ts`'s own discovery
+ * correctly found and reported it, and the ACTUAL connect attempt still
+ * failed with "command not found at 'freecadcmd'" because it never
+ * consulted that same resolution. Reuses `candidateCommandPaths()` (the
+ * identical env-var-then-standard-install-dir search discovery already
+ * performs) and picks the first candidate that genuinely exists on disk
+ * -- the bare "freecadcmd" PATH fallback is always the last candidate in
+ * that list, so this never removes it as a final resort, it just stops
+ * skipping the better answers that come before it. */
+function resolveFreecadCmdPath(): string | undefined {
+  return candidateCommandPaths().find((candidate) => !/[\\/]/.test(candidate) || existsSync(candidate));
+}
+
 function createEnvironmentAdapterFor(kind: EnvironmentKind, documentPath?: string): EnvironmentAdapter {
-  if (kind === "freecad") return createFreeCadAdapter({ defaultDocumentPath: documentPath });
+  if (kind === "freecad") return createFreeCadAdapter({ defaultDocumentPath: documentPath, freecadCmdPath: resolveFreecadCmdPath() });
   return kind === "mock_simulation" ? createMockSimulationEnvironment() : createMockCadEnvironment();
 }
 

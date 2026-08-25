@@ -4,8 +4,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import type { Server } from "node:http";
 import { createServer } from "../src/server.js";
+import { candidateCommandPaths } from "../src/environmentDiscovery.js";
 
 /**
  * LEVEL 2 real integration test for the environment-platform's actual HTTP
@@ -24,8 +26,19 @@ const adaptersRoot = join(here, "..", "..", "..", "packages", "adapters");
 const fixtureBuilderPath = join(adaptersRoot, "freecad", "fixtures", "build_fixture.py");
 const runnerScriptPath = join(adaptersRoot, "freecad", "runner.py");
 
+/** AUDIT FIX: this used to be `process.env.NAQSH_FREECAD_CMD ?? "freecadcmd"`
+ * -- on a machine with a real FreeCAD install at the standard location but
+ * NO `NAQSH_FREECAD_CMD` set (confirmed live on this exact repo's own dev
+ * machine), that bare "freecadcmd" PATH-only fallback fails, `available`
+ * comes back false, and this ENTIRE suite silently skips -- meaning the
+ * one test file whose whole job is proving discovery+connect works over
+ * real HTTP never actually ran, even on hardware capable of running it.
+ * Reuses the SAME real auto-discovery `environmentDiscovery.ts`'s own
+ * `candidateCommandPaths()` performs, so this suite's availability check
+ * matches the real one production code uses instead of a strictly weaker,
+ * ad hoc copy of it. */
 function resolveFreecadCmdPath(): string {
-  return process.env.NAQSH_FREECAD_CMD ?? "freecadcmd";
+  return candidateCommandPaths().find((candidate) => !/[\\/]/.test(candidate) || existsSync(candidate)) ?? "freecadcmd";
 }
 
 /** Same sanctioned boundary every real FreeCAD call in this repository
@@ -136,5 +149,36 @@ describe("environment platform: real FreeCAD discovery + connection, over real H
     const reconnected = await json(`/projects/${projectId}/environment/connect`, { method: "POST" });
     assert.equal(reconnected.status, 200);
     assert.equal(reconnected.body.session.id, connected.body.session.id);
+  });
+
+  it("AUDIT FIX: connect succeeds WITHOUT NAQSH_FREECAD_CMD set -- auto-discovery of a real standard install, not just the env-var-forced path this suite's own before() hook otherwise relies on", async () => {
+    // The actual bug, reproduced live: environmentDiscovery.ts's own
+    // discovery correctly found and reported a real install, while the
+    // SEPARATE code path a real connect actually used
+    // (projectRuntime.ts's createEnvironmentAdapterFor) fell back to a
+    // bare "freecadcmd" PATH lookup and failed with "command not found",
+    // on a machine that had a real, working FreeCAD install the whole
+    // time. Every other test in this file runs with NAQSH_FREECAD_CMD
+    // forced by before() -- which would have passed even with the OLD
+    // buggy code -- so this is the one test that actually exercises the
+    // fix (createEnvironmentAdapterFor's own auto-discovery), not the
+    // env var override.
+    const previous = process.env.NAQSH_FREECAD_CMD;
+    delete process.env.NAQSH_FREECAD_CMD;
+    try {
+      const created = await json("/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Auto-Discovered FreeCAD Project", environmentKind: "freecad", documentPath: fixturePath })
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+
+      const connected = await json(`/projects/${created.body.id}/environment/connect`, { method: "POST" });
+      assert.equal(connected.status, 200, JSON.stringify(connected.body));
+      assert.equal(connected.body.status, "connected");
+      assert.ok(connected.body.session.id);
+    } finally {
+      if (previous !== undefined) process.env.NAQSH_FREECAD_CMD = previous;
+    }
   });
 });

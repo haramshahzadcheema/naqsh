@@ -58,8 +58,23 @@ let cached: { result: EnvironmentAvailability; expiresAt: number } | null = null
  * a filesystem walk. The Windows branch does exactly ONE non-recursive
  * `readdirSync` of the standard install root to find a version-suffixed
  * "FreeCAD <version>" directory (the real install layout on this
- * platform), never anything deeper. */
-function candidateCommandPaths(): string[] {
+ * platform), never anything deeper.
+ *
+ * Exported (not just used internally by `discoverFreecadUncached` below):
+ * `projectRuntime.ts`'s `createEnvironmentAdapterFor` reuses this SAME
+ * synchronous resolution when constructing the real adapter a connect
+ * action actually uses -- AUDIT FIX for a real, reproduced-live gap where
+ * this module's own discovery correctly found and reported a real
+ * `resolvedCommandPath`, while the actual connect attempt separately
+ * defaulted to the bare "freecadcmd" (PATH-only) fallback and failed with
+ * "command not found", even though a real, working install existed one
+ * scan away. Deliberately does NOT reuse the async health-probing half of
+ * discovery here -- that would require a much larger refactor of
+ * `createEnvironmentAdapterFor`'s (and its one caller's) synchronous
+ * signature; picking the first candidate that exists on disk is enough to
+ * fix the actual bug, and the adapter's own real `connect()`/health call
+ * still fails honestly if that candidate isn't genuinely FreeCAD. */
+export function candidateCommandPaths(): string[] {
   const candidates: string[] = [];
   const fromEnv = process.env.NAQSH_FREECAD_CMD;
   if (fromEnv) candidates.push(fromEnv);
