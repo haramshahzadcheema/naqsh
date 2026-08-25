@@ -27,19 +27,26 @@ export type ChatWorkflowEvent =
  * trigger *causes* (planning, proposal generation) is 100% real backend/
  * Gemini work, never fabricated.
  *
- * AUDIT FIX: a real multi-turn conversation was traced end-to-end (a user
- * answering several requirement-clarification questions, then closing
- * with "just make the best choices and generate") and NONE of it ever
- * matched this pattern -- every reply fell through to plain chat, so
- * Gemini narrated elaborate-sounding "I will submit these to the
- * workspace" prose without the real Plan/Proposal pipeline ever running.
- * Added the "generate"-based closing phrases a user naturally reaches
- * for once they're done answering questions and just want the design
- * produced -- verified against that same real transcript, plus every
- * pre-existing phrase (all still match) and non-trigger text like "no"/
- * "decide whatever is best" (still correctly does not match). */
+ * AUDIT FIX (round 1): a real multi-turn conversation was traced
+ * end-to-end (a user answering several requirement-clarification
+ * questions, then closing with "just make the best choices and
+ * generate") and NONE of it ever matched this pattern -- every reply fell
+ * through to plain chat, so Gemini narrated elaborate-sounding "I will
+ * submit these to the workspace" prose without the real Plan/Proposal
+ * pipeline ever running. Added the "generate"-based closing phrases a
+ * user naturally reaches for once they're done answering questions.
+ *
+ * AUDIT FIX (round 2): the SAME real conversation continued -- the user
+ * then typed a bare "generate" (no object after it) and it STILL didn't
+ * match, because round 1 only added "generate it"/"generate this"/
+ * "generate the design", never a standalone "generate". A bare
+ * `generate\b` closes that, guarded by a negative lookbehind so an
+ * explicit "don't generate"/"do not generate"/"never generate" is not
+ * misread as the opposite of what it says (the guard only covers the
+ * bare form, matching this codebase's existing risk tolerance -- none of
+ * the other trigger phrases here are negation-aware either). */
 const DESIGN_INTENT_PATTERN =
-  /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change|generate (it|this|the design)|go ahead and generate|just generate|make the best choices? and generate)\b/i;
+  /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change|generate (it|this|the design)|go ahead and generate|just generate|make the best choices? and generate)\b|(?<!don't |do not |doesn't |never |won't |not )\bgenerate\b/i;
 
 export function hasDesignIntent(text: string): boolean {
   return DESIGN_INTENT_PATTERN.test(text);

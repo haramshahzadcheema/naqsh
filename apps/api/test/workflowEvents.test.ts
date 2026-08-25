@@ -107,6 +107,21 @@ describe("hasDesignIntent: 'generate'-based closing phrases (AUDIT FIX)", () => 
     assert.equal(hasDesignIntent("decide whatever is best"), false);
     assert.equal(hasDesignIntent("proceed with capturing these as the official project requirements"), false);
   });
+
+  // AUDIT FIX (round 2): the SAME real conversation this describe block is
+  // named after continued past "make the best choices and generate" --
+  // the user's VERY NEXT message was a bare "generate", with no object
+  // after it, and it still fell through to plain chat under round 1's fix.
+  it("matches a bare 'generate' with nothing after it", () => {
+    assert.equal(hasDesignIntent("generate"), true);
+    assert.equal(hasDesignIntent("Generate"), true);
+    assert.equal(hasDesignIntent("Generate."), true);
+  });
+
+  it("a negated bare 'generate' is NOT read as the opposite of what it says", () => {
+    assert.equal(hasDesignIntent("do not generate yet"), false);
+    assert.equal(hasDesignIntent("never generate without approval"), false);
+  });
 });
 
 describe("parseExplorationCount: honest, bounded, defaulted", () => {
