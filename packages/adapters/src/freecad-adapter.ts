@@ -159,6 +159,31 @@ function resolveFreecadTypeId(type: string, genericType?: string): string | null
   return null;
 }
 
+/** FreeCAD's `Part::Box` names its three dimensions Length/Width/Height,
+ * but callers (and the model generating design specifications) naturally
+ * use ordinary engineering vocabulary -- "thickness", "depth", "height" --
+ * for the same physical dimension. Without this translation a perfectly
+ * valid specification carrying `Thickness: 20` is rejected as an
+ * unsupported property, which is a naming mismatch, not a real
+ * disagreement about what was asked for. Only maps synonyms onto the same
+ * three real properties runner.py's SUPPORTED_MUTATIONS already allows --
+ * it never widens what can be written. */
+const BOX_PROPERTY_SYNONYMS: Record<string, string> = {
+  length: "Length",
+  long: "Length",
+  width: "Width",
+  wide: "Width",
+  depth: "Width",
+  height: "Height",
+  tall: "Height",
+  thickness: "Height",
+  thick: "Height"
+};
+
+function resolveBoxPropertyKey(key: string): string {
+  return BOX_PROPERTY_SYNONYMS[key.toLowerCase()] ?? key;
+}
+
 const REJECTION_REASON_TO_ERROR_KIND: Record<string, EnvironmentErrorKind> = {
   unsupported_target_type: "invalid_operation",
   unsupported_property: "invalid_operation",
@@ -523,7 +548,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       // create-environment-object-tool.ts) -- flattened to a plain record
       // here because that is what runner.py's SUPPORTED_MUTATIONS-keyed
       // validation (identical to modify_object's) expects.
-      const properties = Object.fromEntries(input.properties?.map((property) => [property.key, property.value]) ?? []);
+      const properties = Object.fromEntries(input.properties?.map((property) => [resolveBoxPropertyKey(property.key), property.value]) ?? []);
       const result = await runOperation("create_object", {
         filePath: guard.filePath,
         type: freecadTypeId,
@@ -565,7 +590,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       const result = await runOperation("modify_object", {
         filePath: guard.filePath,
         objectId,
-        changes,
+        changes: Object.fromEntries(Object.entries(changes).map(([key, value]) => [resolveBoxPropertyKey(key), value])),
         expectedBefore: options?.expectedBefore ?? null
       });
       if (result.status === "error") return failure("modify_object", session.id, objectId, result.kind, result.message);

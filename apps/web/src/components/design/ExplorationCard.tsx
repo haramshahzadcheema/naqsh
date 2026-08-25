@@ -29,14 +29,18 @@ export function ExplorationCard({
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [decideError, setDecideError] = useState<string | null>(null);
 
   const allApproved = event.pendingApprovals.length > 0 && event.pendingApprovals.every((approval) => approval.status === "approved");
   const anyRejected = event.pendingApprovals.some((approval) => approval.status === "rejected" || approval.status === "revoked");
 
   async function decide(approvalId: string, decision: "approved" | "rejected"): Promise<void> {
     setPendingApprovalId(approvalId);
+    setDecideError(null);
     try {
       await onDecideApproval(approvalId, decision);
+    } catch (error) {
+      setDecideError(error instanceof Error ? error.message : "Could not record that decision.");
     } finally {
       setPendingApprovalId(null);
     }
@@ -120,6 +124,7 @@ export function ExplorationCard({
               ))}
             </ul>
           </div>
+          {decideError ? <ErrorLine message={decideError} /> : null}
 
           {anyRejected ? (
             <p className="exploration-card__failures">One or more actions were rejected — this exploration can no longer run as generated.</p>

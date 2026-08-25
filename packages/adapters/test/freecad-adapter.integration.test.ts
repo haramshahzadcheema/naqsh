@@ -279,6 +279,48 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     }
   });
 
+  it("AUDIT FIX: engineering vocabulary (\"Thickness\") genuinely maps onto Part::Box's own Height -- the real property-name mismatch that failed every live build", async () => {
+    // Reproduced live from a real failed build: a generated design
+    // specification described the envelope as
+    // {Length: 100, Width: 60, Thickness: 20}. "Thickness" is ordinary
+    // engineering vocabulary for exactly the dimension Part::Box calls
+    // "Height", but the adapter passed the caller's word through
+    // unchanged, runner.py's SUPPORTED_MUTATIONS allowlist correctly
+    // refused an unknown property, and the whole build failed -- over a
+    // naming mismatch, not a real disagreement about the geometry. This
+    // proves the translation is real, against a real FreeCAD subprocess,
+    // by reading back the resulting solid's actual Height.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const created = await adapter.createObject(session, {
+        type: "part",
+        name: "Vocabulary Envelope",
+        properties: [
+          { key: "Length", value: 100, readOnly: false },
+          { key: "Width", value: 60, readOnly: false },
+          { key: "Thickness", value: 20, readOnly: false }
+        ]
+      });
+      assert.equal(created.status, "success", JSON.stringify(created));
+
+      const object = created.data as EnvironmentObject;
+      const height = object.properties.find((property) => property.key === "Height");
+      assert.ok(height, "expected the created solid to carry a real Height property");
+      assert.equal((height!.value as { value: number }).value, 20, "\"Thickness: 20\" must land on the real Part::Box Height");
+
+      // The same translation must hold on the modify path, not just create.
+      const modified = await adapter.modifyObject(session, object.id, { Thickness: 12 });
+      assert.equal(modified.status, "success", JSON.stringify(modified));
+      const after = (modified.data as EnvironmentObject).properties.find((property) => property.key === "Height");
+      assert.equal((after!.value as { value: number }).value, 12);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
     const fixture = buildFixture();
     try {
