@@ -13,6 +13,7 @@ import {
   ApiError,
   apiApproveApproval,
   apiApproveProposal,
+  apiConnectEnvironment,
   apiCreateConversation,
   apiCreateProject,
   apiExecuteProposal,
@@ -215,6 +216,18 @@ export function useChatThreads(apiConnected: boolean): UseChatThreads {
 
   const connectFreecadProject = useCallback(async (name: string, documentPath: string) => {
     const project = await apiCreateProject(name || "FreeCAD project", `Connected to ${documentPath}`, "freecad", documentPath);
+    // AUDIT FIX: this used to create the project (real) and then print a
+    // hardcoded "Connected to the real FreeCAD document" message WITHOUT
+    // ever calling the real connect endpoint -- so the chat honestly
+    // looked successful even when FreeCAD wasn't reachable, the document
+    // path was wrong, or the subprocess failed, while the Environment
+    // tab's own badge (which DOES check real session state) correctly
+    // showed "disconnected". Reproduced live. `apiConnectEnvironment`
+    // throws a real ApiError on failure -- letting it propagate here
+    // means the caller's existing try/catch (ConnectFreecadForm) shows
+    // the genuine error instead of a thread ever being created for a
+    // connection that didn't actually happen.
+    const session = await apiConnectEnvironment(project.id);
     const conversation = await apiCreateConversation(project.id);
     const thread: ChatThread = {
       id: makeId("thread"),
@@ -222,7 +235,13 @@ export function useChatThreads(apiConnected: boolean): UseChatThreads {
       kind: "new",
       title: project.name,
       createdAt: new Date().toISOString(),
-      messages: [{ id: makeId("msg"), role: "naqsh", text: `Connected to the real FreeCAD document at ${documentPath}. Tell me what you're trying to build, or ask me what's in the document.` }],
+      messages: [
+        {
+          id: makeId("msg"),
+          role: "naqsh",
+          text: `Connected to the real FreeCAD document at ${session.session.documentName}. Tell me what you're trying to build, or ask me what's in the document.`
+        }
+      ],
       scriptStep: CONVERSATION_SCRIPT.length + 1,
       extractions: [],
       requirements: [],
