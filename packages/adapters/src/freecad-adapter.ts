@@ -42,18 +42,17 @@ import { runFreecadOperation, type FreeCadRuntimeConfig, type FreeCadRuntimeResu
  * separate, later concern (see README's P5/P12 notes) -- this file's job
  * ends at producing a trustworthy `EnvironmentOperationResult`.
  *
- * Scope, current through Phase 15: `capabilities` is `["save", "modify",
- * "checkpoint"]`. `create`/`delete` remain real, present methods (the
- * `EnvironmentAdapter` interface requires them unconditionally, see
- * environment-adapter.ts) but are still capability-gated to
- * `unsupported_capability` -- no phase through P15 needs to create or
- * delete FreeCAD objects, and adding either would be exactly the
- * "turn this into full CAD manipulation" scope creep P12/P13's own briefs
- * warned against. `modify` (Phase 14) is a deliberately narrow allowlisted
- * property-write path (see runner.py's `SUPPORTED_MUTATIONS`).
- * `checkpoint` (Phase 15) is a real file-copy snapshot/restore of the
- * live `.FCStd` document (see runner.py's `op_checkpoint`/`op_restore`) --
- * never a fabricated pointer.
+ * Scope: `capabilities` is `["save", "modify", "create", "checkpoint"]`.
+ * `delete` remains a real, present method (the `EnvironmentAdapter`
+ * interface requires it unconditionally, see environment-adapter.ts) but
+ * is still capability-gated to `unsupported_capability` -- no destructive
+ * operation is implemented yet. `modify` (Phase 14) and `create` (AUDIT
+ * FIX) are BOTH deliberately narrow allowlisted paths restricted to the
+ * exact same single TypeId, `Part::Box` (see runner.py's
+ * `SUPPORTED_MUTATIONS`) -- creating an object of any other type is
+ * rejected honestly rather than silently coerced. `checkpoint` (Phase 15)
+ * is a real file-copy snapshot/restore of the live `.FCStd` document (see
+ * runner.py's `op_checkpoint`/`op_restore`) -- never a fabricated pointer.
  *
  * Stateless-per-call design: each operation spawns a fresh
  * `freecadcmd` process (via freecad-runtime.ts) that opens the target
@@ -145,6 +144,21 @@ interface RawFreecadPropertyChange {
  * `in-memory-environment.ts`'s own precedent for `create_object` id
  * collision); every other reason is "the requested change doesn't apply
  * as specified", which is exactly "invalid_operation" already means. */
+/** Translates the GENERIC type vocabulary every `createObject` caller in
+ * this codebase actually uses (`EnvironmentObjectGenericType`, or a loose
+ * `type` string like "part"/"box") into the one concrete FreeCAD TypeId
+ * this adapter knows how to create safely: `Part::Box`. Returns `null`
+ * for anything it cannot confidently map -- a caller asking for a sketch,
+ * datum, or link gets an honest rejection, never a silently-wrong box. */
+function resolveFreecadTypeId(type: string, genericType?: string): string | null {
+  if (type === "Part::Box") return "Part::Box";
+  const normalizedType = type.toLowerCase();
+  if (normalizedType.includes("box")) return "Part::Box";
+  if (genericType === "solid" || genericType === "container") return "Part::Box";
+  if ((normalizedType === "part" || normalizedType === "solid") && (genericType === undefined || genericType === "unknown")) return "Part::Box";
+  return null;
+}
+
 const REJECTION_REASON_TO_ERROR_KIND: Record<string, EnvironmentErrorKind> = {
   unsupported_target_type: "invalid_operation",
   unsupported_property: "invalid_operation",
@@ -184,7 +198,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
     kind: "freecad",
     name: "FreeCAD",
     version: "1.0.0",
-    capabilities: ["save", "modify", "checkpoint"]
+    capabilities: ["save", "modify", "create", "checkpoint"]
   });
   const capabilities = new Set<EnvironmentCapability>(descriptor.capabilities);
 
@@ -472,17 +486,74 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       }
     },
 
-    async createObject(session) {
+    async createObject(session, input) {
       const guard = requireConnected(session, "create_object");
       if (guard.result) return guard.result;
       const capabilityGuard = requireCapability("create", "create_object", session.id, null);
       if (capabilityGuard) return capabilityGuard;
-      // Never reached in Phase 12: "create" is never in `capabilities`
-      // above, so requireCapability always short-circuits first. This
-      // line exists so the method still has a well-formed return if a
-      // later phase adds "create" to `capabilities` without also filling
-      // in the real logic.
-      return failure("create_object", session.id, null, "unsupported_capability", "create is not supported by the FreeCAD adapter in this phase");
+
+      // AUDIT FIX: reproduced live -- a real, connected FreeCAD document
+      // with no pre-existing geometry could never receive any, because
+      // this method always failed with "unsupported_capability" no matter
+      // what a caller asked for. Deliberately as narrow as
+      // modifyObject/runner.py's SUPPORTED_MUTATIONS: the only type this
+      // adapter creates is Part::Box, the one TypeId already fully
+      // validated for mutation.
+      //
+      // `input.type` arrives as a GENERIC label (e.g. "part"/"solid"), the
+      // same vocabulary every caller in this codebase already uses (model-
+      // generated proposals, `EnvironmentObjectGenericType`) -- never
+      // FreeCAD's own internal TypeId string, which no caller outside this
+      // adapter has any reason to know. `resolveFreecadTypeId` is the one
+      // place that translation happens; runner.py stays keyed on the real
+      // "Part::Box" TypeId, exactly like modify_object already is.
+      const freecadTypeId = resolveFreecadTypeId(input.type, input.genericType);
+      if (!freecadTypeId) {
+        return failure(
+          "create_object",
+          session.id,
+          null,
+          "invalid_operation",
+          `Cannot create an object of type "${input.type}"${input.genericType ? ` (genericType "${input.genericType}")` : ""} -- only a box/solid/container (Part::Box) is supported`
+        );
+      }
+
+      // `input.properties` arrives as the generic `EnvironmentPropertyInput[]`
+      // shape every adapter's createObject receives (see
+      // create-environment-object-tool.ts) -- flattened to a plain record
+      // here because that is what runner.py's SUPPORTED_MUTATIONS-keyed
+      // validation (identical to modify_object's) expects.
+      const properties = Object.fromEntries(input.properties?.map((property) => [property.key, property.value]) ?? []);
+      const result = await runOperation("create_object", {
+        filePath: guard.filePath,
+        type: freecadTypeId,
+        name: input.name,
+        properties
+      });
+      if (result.status === "error") return failure("create_object", session.id, null, result.kind, result.message);
+
+      const data = result.data as { rejected?: unknown; reason?: unknown; message?: unknown; object?: unknown; inspectionErrors?: unknown; warnings?: unknown };
+      if (data.rejected) {
+        // runner.py already validated type/property/value BEFORE ever
+        // calling doc.addObject() and rejected this request without
+        // creating anything -- same rejection vocabulary modifyObject's
+        // identical mapping already covers.
+        const reason = typeof data.reason === "string" ? data.reason : "invalid_operation";
+        const kind = REJECTION_REASON_TO_ERROR_KIND[reason] ?? "invalid_operation";
+        const message = typeof data.message === "string" ? data.message : "Object creation was rejected";
+        return failure("create_object", session.id, null, kind, message);
+      }
+
+      const object = tryBuildObject(data.object);
+      if ("message" in object) {
+        return failure("create_object", session.id, null, "environment_failure", `Malformed object from FreeCAD: ${object.message}`);
+      }
+      const inspectionErrors = tryBuildInspectionErrors(data.inspectionErrors);
+      const warnings = Array.isArray(data.warnings) ? (data.warnings as unknown[]).filter((entry): entry is string => typeof entry === "string") : [];
+      return success("create_object", session.id, object.id, object, {
+        ...(inspectionErrors.length > 0 ? { inspectionErrors } : {}),
+        ...(warnings.length > 0 ? { warnings } : {})
+      });
     },
 
     async modifyObject(session, objectId, changes, options) {

@@ -138,7 +138,7 @@ describe("environment platform: real FreeCAD discovery + connection, over real H
     assert.equal(status.status, 200);
     assert.equal(status.body.kind, "freecad");
     assert.equal(status.body.status, "connected");
-    assert.deepEqual(status.body.capabilities.sort(), ["checkpoint", "modify", "save"]);
+    assert.deepEqual(status.body.capabilities.sort(), ["checkpoint", "create", "modify", "save"]);
     // Real data from the actual connected FreeCAD document -- previously
     // computed server-side and then left out of this response entirely.
     assert.equal(status.body.documentName, connected.body.session.documentName);

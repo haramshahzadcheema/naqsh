@@ -979,22 +979,20 @@ describe("P12 FreeCAD adapter: isolation, single subprocess boundary, no arbitra
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter never claims create/delete capabilities -- no fabricated unbounded object lifecycle", () => {
+  it("FreeCAD's own EnvironmentAdapter never claims a delete capability -- no fabricated unbounded object lifecycle", () => {
     // Superseded from its original Phase 12 form ("exactly the save
-    // capability") once Phase 14 deliberately added "modify" and Phase 15
-    // deliberately added "checkpoint" -- this guard still proves the
-    // important thing Phase 12 established and neither phase touches:
-    // create/delete remain unsupported. See the dedicated P14/P15 guard
-    // blocks below for the modify/checkpoint-specific assertions.
+    // capability") once Phase 14 deliberately added "modify", Phase 15
+    // deliberately added "checkpoint", and a later audit fix deliberately
+    // added a narrow "create" (Part::Box only, see the AUDIT FIX guard
+    // block below) -- this guard still proves the one thing none of those
+    // phases touched: delete remains unsupported.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    for (const capability of ["create", "delete"]) {
-      assert.doesNotMatch(
-        contents,
-        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
-        `${relativePath} must not declare the "${capability}" capability`
-      );
-    }
+    assert.doesNotMatch(
+      contents,
+      /capabilities:\s*\[[^\]]*["'`]delete["'`]/,
+      `${relativePath} must not declare the "delete" capability`
+    );
   });
 
   it("apps/api never imports anything FreeCAD-specific or spawns a subprocess -- the application layer stays behind the adapter boundary too", () => {
@@ -1056,20 +1054,19 @@ describe("P13 FreeCAD document/object/parameter/relationship inspection: generic
     }
   });
 
-  it("FreeCAD's own EnvironmentAdapter still declares no create/delete capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
+  it("FreeCAD's own EnvironmentAdapter still declares no delete capability -- Phase 13 is inspection-only, no new mutation capability was granted", () => {
     // Superseded from its original Phase 13 form the same way the P12
-    // guard above was -- Phase 14 deliberately adds "modify" and Phase 15
-    // deliberately adds "checkpoint"; this guard still proves Phase 13
-    // itself granted nothing beyond inspection/save.
+    // guard above was -- Phase 14 deliberately adds "modify", Phase 15
+    // deliberately adds "checkpoint", and a later audit fix deliberately
+    // adds a narrow "create"; this guard still proves Phase 13 itself
+    // granted nothing beyond inspection/save, and delete remains unsupported.
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
-    for (const capability of ["create", "delete"]) {
-      assert.doesNotMatch(
-        contents,
-        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
-        `${relativePath} must not declare the "${capability}" capability`
-      );
-    }
+    assert.doesNotMatch(
+      contents,
+      /capabilities:\s*\[[^\]]*["'`]delete["'`]/,
+      `${relativePath} must not declare the "delete" capability`
+    );
   });
 });
 
@@ -1081,33 +1078,32 @@ describe("P14 safe real CAD modification: narrow allowlist, validated before mut
   // property" escape hatch. Every check below proves one specific way
   // this narrowness/safety could have been silently lost, structurally.
 
-  it("FreeCAD's own EnvironmentAdapter declares 'save' and 'modify' -- create/delete remain unsupported (checkpoint is Phase 15's own concern, see the P15 guard block below)", () => {
+  it("FreeCAD's own EnvironmentAdapter declares 'save' and 'modify' -- delete remains unsupported (checkpoint is Phase 15's own concern, create is a later audit fix's own concern, see the respective guard blocks below)", () => {
     const relativePath = "packages/adapters/src/freecad-adapter.ts";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
     assert.match(contents, /capabilities:\s*\[[^\]]*["'`]save["'`][^\]]*\]/, `${relativePath} must declare "save"`);
     assert.match(contents, /capabilities:\s*\[[^\]]*["'`]modify["'`][^\]]*\]/, `${relativePath} must declare "modify"`);
-    for (const capability of ["create", "delete"]) {
-      assert.doesNotMatch(
-        contents,
-        new RegExp(`capabilities:\\s*\\[[^\\]]*["'\`]${capability}["'\`]`),
-        `${relativePath} must not declare the "${capability}" capability`
-      );
-    }
+    assert.doesNotMatch(
+      contents,
+      /capabilities:\s*\[[^\]]*["'`]delete["'`]/,
+      `${relativePath} must not declare the "delete" capability`
+    );
   });
 
   it("runner.py's mutation allowlist (SUPPORTED_MUTATIONS) is the ONLY path to setattr() on a FreeCAD object -- no generic property-write primitive exists", () => {
     const relativePath = "packages/adapters/freecad/runner.py";
     const contents = readFileSync(join(repoRoot, relativePath), "utf8");
     assert.match(contents, /^SUPPORTED_MUTATIONS\s*=\s*\{/m, `${relativePath} must define an explicit SUPPORTED_MUTATIONS allowlist`);
-    // The only setattr(obj, ...) call site in this script must be inside
-    // op_modify_object, gated by that allowlist -- not a bare, unguarded
-    // "set any attribute the caller names" helper anywhere else. Matches
-    // the real call shape (`setattr(obj, key, value)`) specifically, not
-    // this file's own prose mentions of "setattr()" in comments (the exact
-    // "match code, not comments" precision-regex lesson this suite already
-    // applies everywhere else -- see the P8-P13 guard blocks above).
+    // The only setattr(obj, ...) call sites in this script must be inside
+    // op_modify_object and op_create_object, both gated by that same
+    // allowlist -- not a bare, unguarded "set any attribute the caller
+    // names" helper anywhere else. Matches the real call shape
+    // (`setattr(obj, key, value)`) specifically, not this file's own prose
+    // mentions of "setattr()" in comments (the exact "match code, not
+    // comments" precision-regex lesson this suite already applies
+    // everywhere else -- see the P8-P13 guard blocks above).
     const setattrCallSites = contents.match(/setattr\s*\(\s*obj\s*,/g) ?? [];
-    assert.equal(setattrCallSites.length, 1, `${relativePath} must contain exactly one real setattr(obj, ...) call site (inside op_modify_object's own validated loop)`);
+    assert.equal(setattrCallSites.length, 2, `${relativePath} must contain exactly two real setattr(obj, ...) call sites (inside op_modify_object's and op_create_object's own validated loops)`);
   });
 
   it("no source file anywhere in the repo defines executePython/executeFreeCADScript/runFreeCADCode or an equivalent arbitrary-execution tool name", () => {

@@ -824,6 +824,123 @@ def op_modify_object(params):
         _close(doc)
 
 
+def op_create_object(params):
+    """Real geometry creation -- deliberately as narrow as
+    op_modify_object's own SUPPORTED_MUTATIONS, and for the same reason:
+    the only type this runner knows how to create SAFELY is Part::Box, the
+    one TypeId already fully validated for mutation (same property bounds,
+    same recompute-then-verify-then-save discipline). A caller must name
+    that TypeId exactly, matching FreeCAD's own real type name -- never a
+    generic "part"/"solid" label this script would have to guess a mapping
+    for. Anything else is rejected honestly rather than silently coerced
+    into a box.
+
+    Mirrors op_modify_object's transaction-like safety exactly: every
+    validation happens before doc.addObject() is ever called, and the
+    document is never saved unless the resulting geometry actually
+    recomputes into a valid shape -- a rejected or invalid-shape request
+    leaves the on-disk file exactly as it was.
+    """
+    file_path = params["filePath"]
+    type_id = params.get("type")
+    name = params.get("name") or "Object"
+    properties = params.get("properties") or {}
+
+    allowed = SUPPORTED_MUTATIONS.get(type_id)
+    if allowed is None:
+        return _rejected(
+            "unsupported_target_type",
+            'Cannot create an object of type "%s" -- only %s is supported' % (type_id, ", ".join(SUPPORTED_MUTATIONS.keys())),
+        )
+
+    for key in properties:
+        if key not in allowed:
+            return _rejected("unsupported_property", 'Property "%s" is not supported when creating a "%s"' % (key, type_id))
+
+    for key, value in properties.items():
+        if not _is_finite_number(value):
+            return _rejected("invalid_value", 'Value for "%s" must be a finite number (got %r)' % (key, value))
+        constraints = allowed[key]
+        if value < constraints["min"] or value > constraints["max"]:
+            return _rejected(
+                "value_out_of_range",
+                '"%s" must be between %s and %s (got %s)' % (key, constraints["min"], constraints["max"], value),
+            )
+
+    doc = _open(file_path)
+    try:
+        # `addObject`'s second argument becomes the object's INTERNAL
+        # `Name` (a bare identifier -- FreeCAD sanitizes it, e.g. hyphens
+        # become underscores, confirmed empirically against a real
+        # FreeCAD 1.1.3 install). `Label` is the separate, human-readable
+        # field object_to_dict's own "name" mapping actually reports (see
+        # its `label = getattr(obj, "Label", None) or obj.Name`) -- set
+        # explicitly here so the caller's exact requested name is
+        # preserved even when it isn't a valid bare identifier.
+        obj = doc.addObject(type_id, name)
+        obj.Label = name
+        for key, value in properties.items():
+            setattr(obj, key, value)
+
+        doc.recompute()
+
+        # Do not assume addObject+setattr succeeded means creation
+        # succeeded (same discipline as op_modify_object) -- verify the
+        # RESULTING geometry before ever persisting it.
+        shape = getattr(obj, "Shape", None)
+        if shape is not None:
+            try:
+                shape_valid = bool(shape.isValid())
+            except Exception:
+                shape_valid = False
+            if not shape_valid:
+                # Never call doc.save() here -- remove the half-created
+                # object from the in-memory document (a no-op on the
+                # on-disk file, since it was never saved) so this function
+                # never reports success for geometry that doesn't
+                # genuinely, validly exist.
+                doc.removeObject(obj.Name)
+                return _rejected("invalid_resulting_geometry", "The requested object produced an invalid shape and was not saved")
+
+        doc.save()
+
+        # From here on the object has ALREADY been created and persisted --
+        # matching op_modify_object's identical "never let a post-success
+        # re-read failure erase proof of a real, saved, successful
+        # creation" discipline. Every step below degrades to a warning.
+        warnings = []
+        errors = []
+        try:
+            object_dict = object_to_dict(obj, errors=errors)
+        except Exception as error:
+            warnings.append("Could not fully inspect the object after a successful, saved creation -- falling back to a lighter inspection: %s" % str(error))
+            try:
+                object_dict = object_to_dict(obj, include_geometry=False, errors=errors)
+            except Exception as fallback_error:
+                warnings.append("Falling back to a minimal object record: %s" % str(fallback_error))
+                object_dict = {
+                    "id": obj.Name,
+                    "type": type_id,
+                    "name": name,
+                    "genericType": "unknown",
+                    "parentId": None,
+                    "visible": None,
+                    "geometry": dict(EMPTY_GEOMETRY),
+                    "properties": [],
+                    "relationships": [],
+                    "metadata": {},
+                }
+
+        return {
+            "rejected": False,
+            "object": object_dict,
+            "inspectionErrors": errors,
+            "warnings": warnings,
+        }
+    finally:
+        _close(doc)
+
+
 # The complete, fixed operation table -- see this module's docstring.
 OPERATIONS = {
     "health": op_health,
@@ -831,6 +948,7 @@ OPERATIONS = {
     "list_objects": op_list_objects,
     "inspect_object": op_inspect_object,
     "inspect_document": op_inspect_document,
+    "create_object": op_create_object,
     "modify_object": op_modify_object,
     "save": op_save,
     "checkpoint": op_checkpoint,

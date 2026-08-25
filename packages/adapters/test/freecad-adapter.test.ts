@@ -149,6 +149,35 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
           }
         };
       }
+      case "create_object": {
+        // A small, honest simulation of op_create_object's own contract
+        // (Part::Box-only, mirrors op_modify_object's fake above) -- not a
+        // reimplementation of FreeCAD's own geometry validation, which is
+        // only ever proven for real in freecad-adapter.integration.test.ts.
+        const typeId = params.type as string;
+        const name = (params.name as string) ?? "Object";
+        const properties = (params.properties as Record<string, unknown> | undefined) ?? {};
+        if (typeId !== "Part::Box") {
+          return { status: "success", data: { rejected: true, reason: "unsupported_target_type", message: `Cannot create an object of type "${typeId}"` } };
+        }
+        // Mirrors runner.py's SUPPORTED_MUTATIONS allowlist for Part::Box.
+        const allowedProperties = new Set(["Length", "Width", "Height"]);
+        for (const key of Object.keys(properties)) {
+          if (!allowedProperties.has(key)) {
+            return { status: "success", data: { rejected: true, reason: "unsupported_property", message: `Property "${key}" is not supported when creating a "${typeId}"` } };
+          }
+        }
+        const id = `FakeBox${objects.length + 1}`;
+        const created: FakeObjectFixture = {
+          id,
+          type: "Part::Box",
+          name,
+          properties: Object.entries(properties).map(([key, value]) => ({ key, value: { value, unit: "mm" }, readOnly: false })),
+          relationships: []
+        };
+        objects.push(created);
+        return { status: "success", data: { rejected: false, object: created } };
+      }
       case "save":
         return { status: "success", data: { saved: true } };
       case "checkpoint": {
@@ -203,16 +232,15 @@ async function connect(adapter: ReturnType<typeof createFreeCadAdapter>): Promis
 runEnvironmentAdapterContractTests("freecad (fake runtime)", () => buildAdapter().adapter);
 
 describe("createFreeCadAdapter: identity and capabilities", () => {
-  it("declares kind 'freecad' and exactly 'save'+'modify'+'checkpoint' -- create/delete remain unsupported through Phase 15", () => {
+  it("declares kind 'freecad' and exactly 'save'+'modify'+'create'+'checkpoint' -- delete remains unsupported", () => {
     const { adapter } = buildAdapter();
     const descriptor = adapter.describe();
     assert.equal(descriptor.kind, "freecad");
-    assert.deepEqual(descriptor.capabilities, ["save", "modify", "checkpoint"]);
-    for (const capability of ["create", "delete"] as const) {
-      assert.equal(supportsCapability(descriptor, capability), false);
-    }
+    assert.deepEqual(descriptor.capabilities, ["save", "modify", "create", "checkpoint"]);
+    assert.equal(supportsCapability(descriptor, "delete"), false);
     assert.equal(supportsCapability(descriptor, "save"), true);
     assert.equal(supportsCapability(descriptor, "modify"), true);
+    assert.equal(supportsCapability(descriptor, "create"), true);
     assert.equal(supportsCapability(descriptor, "checkpoint"), true);
   });
 
@@ -481,22 +509,62 @@ describe("createFreeCadAdapter: not_connected guard", () => {
 });
 
 describe("createFreeCadAdapter: capability-gated methods never reach the FreeCAD runtime", () => {
-  it("create/delete fail with unsupported_capability and never invoke runOperation -- Phase 15 grants save/modify/checkpoint, nothing else", async () => {
+  it("delete fails with unsupported_capability and never invokes runOperation -- create is real now, delete remains unimplemented", async () => {
     const { adapter, fake } = buildAdapter();
     const session = await connect(adapter);
     const callsBefore = fake.calls.length;
 
-    const createResult = await adapter.createObject(session, { type: "Part::Box", name: "x" });
     const deleteResult = await adapter.deleteObject(session, "Box");
 
-    for (const result of [createResult, deleteResult]) {
-      assert.equal(result.status, "error");
-      assert.equal(result.error?.kind, "unsupported_capability");
-    }
+    assert.equal(deleteResult.status, "error");
+    assert.equal(deleteResult.error?.kind, "unsupported_capability");
     // SECURITY: capability-gated methods must short-circuit BEFORE ever
     // spawning FreeCAD -- proves there is no hidden path where a
     // rejected-by-capability call still touches the real environment.
     assert.equal(fake.calls.length, callsBefore);
+  });
+});
+
+describe("createFreeCadAdapter: createObject (AUDIT FIX)", () => {
+  it("genuinely invokes the runtime and succeeds for a generic 'part' type, mapped to the one real FreeCAD type this adapter creates (Part::Box)", async () => {
+    const { adapter, fake } = buildAdapter();
+    const session = await connect(adapter);
+    const callsBefore = fake.calls.length;
+    const result = await adapter.createObject(session, { type: "part", name: "Envelope", properties: [{ key: "Length", value: 100, readOnly: false }] });
+    assert.equal(result.status, "success");
+    assert.ok(fake.calls.length > callsBefore, "createObject must genuinely invoke the runtime when the capability is supported");
+    const call = fake.calls.find((entry) => entry.operation === "create_object");
+    assert.ok(call);
+    assert.equal(call!.params.type, "Part::Box");
+    const created = result.data as EnvironmentObject;
+    assert.equal(created.name, "Envelope");
+    // The created object is genuinely, subsequently inspectable -- not
+    // just a one-off response object disconnected from the fixture's own
+    // state.
+    const reinspected = await adapter.inspectObject(session, created.id);
+    assert.equal(reinspected.status, "success");
+  });
+
+  it("rejects a type this adapter cannot map to a real FreeCAD type -- invalid_operation, never a silently-wrong box", async () => {
+    const { adapter, fake } = buildAdapter();
+    const session = await connect(adapter);
+    const callsBefore = fake.calls.length;
+    const result = await adapter.createObject(session, { type: "sketch", name: "x" });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
+    // Rejected by the TYPE-MAPPING layer, before ever reaching the
+    // runtime -- an unmappable type must never spawn FreeCAD at all.
+    assert.equal(fake.calls.length, callsBefore);
+  });
+
+  it("a runtime-level rejection (e.g. an out-of-range property) maps to invalid_operation, not a fabricated success", async () => {
+    const { adapter } = buildAdapter();
+    const session = await connect(adapter);
+    // "TypeId" is not in SUPPORTED_MUTATIONS' Part::Box property set, so
+    // the fake (mirroring runner.py) rejects it as unsupported.
+    const result = await adapter.createObject(session, { type: "Part::Box", name: "x", properties: [{ key: "TypeId", value: "SomethingElse", readOnly: false }] });
+    assert.equal(result.status, "error");
+    assert.equal(result.error?.kind, "invalid_operation");
   });
 });
 

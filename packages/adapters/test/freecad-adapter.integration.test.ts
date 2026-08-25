@@ -3,8 +3,9 @@ import { after, describe, it } from "node:test";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { platform } from "node:os";
 import type { EnvironmentObject, EnvironmentSession } from "@naqsh/schemas";
 import { runEnvironmentAdapterContractTests } from "@naqsh/core";
 import { createFreeCadAdapter } from "../src/freecad-adapter.js";
@@ -36,8 +37,44 @@ const relationshipFixtureBuilderPath = join(here, "..", "freecad", "fixtures", "
 const inspectionFixtureBuilderPath = join(here, "..", "freecad", "fixtures", "build_inspection_fixture.py");
 const emptyFixtureBuilderPath = join(here, "..", "freecad", "fixtures", "build_empty_fixture.py");
 
+/** AUDIT FIX: this used to be `process.env.NAQSH_FREECAD_CMD ?? "freecadcmd"`
+ * -- on a machine with a real FreeCAD install at the standard location but
+ * NO `NAQSH_FREECAD_CMD` set (confirmed live on this exact repo's own dev
+ * machine), that bare "freecadcmd" PATH-only fallback fails, `available`
+ * comes back false, and this ENTIRE suite silently skips -- meaning this
+ * LEVEL 2 real-FreeCAD test file never actually ran, even on hardware
+ * capable of running it. Mirrors the identical fix in
+ * apps/api/src/environmentDiscovery.ts's `candidateCommandPaths()` --
+ * duplicated here (not imported) because packages/adapters must never
+ * depend on apps/api (the opposite dependency direction from every other
+ * import in this monorepo). */
 function resolveFreecadCmdPath(): string {
-  return process.env.NAQSH_FREECAD_CMD ?? "freecadcmd";
+  const candidates: string[] = [];
+  const fromEnv = process.env.NAQSH_FREECAD_CMD;
+  if (fromEnv) candidates.push(fromEnv);
+
+  if (platform() === "win32") {
+    for (const root of [process.env["ProgramFiles"], process.env["ProgramFiles(x86)"]]) {
+      if (!root) continue;
+      let entries: string[];
+      try {
+        entries = readdirSync(root);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!/^freecad\b/i.test(entry)) continue;
+        candidates.push(join(root, entry, "bin", "freecadcmd.exe"));
+      }
+    }
+  } else if (platform() === "darwin") {
+    candidates.push("/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd");
+  } else {
+    candidates.push("/usr/bin/freecadcmd", "/usr/local/bin/freecadcmd", "/snap/bin/freecad.freecadcmd");
+  }
+
+  candidates.push("freecadcmd");
+  return candidates.find((candidate) => !/[\\/]/.test(candidate) || existsSync(candidate)) ?? "freecadcmd";
 }
 
 function probeFreecadAvailable(freecadCmdPath: string): { available: true } | { available: false; reason: string } {
@@ -175,28 +212,83 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     assert.equal(result.error?.kind, "environment_failure");
   });
 
-  it("create/delete remain genuinely unsupported against the real adapter -- Phase 15 grants ONLY modify+checkpoint, nothing else", async () => {
+  it("delete remains genuinely unsupported against the real adapter -- create was fixed live (see createObject tests below), delete is still unimplemented", async () => {
     const fixture = buildFixture();
     try {
       const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
       const connectResult = await adapter.connect();
       const session = connectResult.data as EnvironmentSession;
 
-      const results = await Promise.all([
-        adapter.createObject(session, { type: "Part::Box", name: "x" }),
-        adapter.deleteObject(session, "Box")
-      ]);
-      for (const result of results) {
-        assert.equal(result.status, "error");
-        assert.equal(result.error?.kind, "unsupported_capability");
-      }
+      const result = await adapter.deleteObject(session, "Box");
+      assert.equal(result.status, "error");
+      assert.equal(result.error?.kind, "unsupported_capability");
 
-      // Confirm the real document genuinely wasn't touched by any of the
-      // (rejected) attempts above -- re-inspect and compare.
+      // Confirm the real document genuinely wasn't touched by the
+      // (rejected) attempt above -- re-inspect and compare.
       const stillThere = await adapter.inspectObject(session, "Box");
       assert.equal(stillThere.status, "success");
       const lengthProperty = (stillThere.data as EnvironmentObject).properties.find((property) => property.key === "Length");
       assert.deepEqual(lengthProperty!.value, { value: 10, unit: "Unit: mm (1,0,0,0,0,0,0,0) [Length]" });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("AUDIT FIX: createObject genuinely creates a NEW Part::Box in a real FreeCAD document, saved to disk, subsequently inspectable, and modifiable afterward", async () => {
+    // Reproduced live: a real, freshly-connected FreeCAD document with no
+    // pre-existing geometry could never receive any -- createObject always
+    // failed with unsupported_capability regardless of what was asked.
+    // This is the real, end-to-end proof the fix works: no fake runtime,
+    // no injected fixture object, a real freecadcmd subprocess creating
+    // real geometry in a real .FCStd file on disk.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const created = await adapter.createObject(session, {
+        type: "part",
+        name: "Bracket Envelope",
+        properties: [
+          { key: "Length", value: 100, readOnly: false },
+          { key: "Width", value: 60, readOnly: false },
+          { key: "Height", value: 20, readOnly: false }
+        ]
+      });
+      assert.equal(created.status, "success", JSON.stringify(created));
+      const object = created.data as EnvironmentObject;
+      assert.equal(object.name, "Bracket Envelope");
+      assert.equal(object.type, "Part::Box");
+
+      // Reconnect (a fresh subprocess, fresh document open) to prove this
+      // was genuinely SAVED to disk, not just an in-memory response.
+      const reconnected = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const reconnectedSession = (await reconnected.connect()).data as EnvironmentSession;
+      const reinspected = await reconnected.inspectObject(reconnectedSession, object.id);
+      assert.equal(reinspected.status, "success");
+      const lengthProperty = (reinspected.data as EnvironmentObject).properties.find((property) => property.key === "Length");
+      assert.equal((lengthProperty!.value as { value: number }).value, 100);
+
+      // The created object is genuinely modifiable afterward -- the exact
+      // real-world sequence a demo actually needs: create, then refine.
+      const modified = await reconnected.modifyObject(reconnectedSession, object.id, { Length: 90 });
+      assert.equal(modified.status, "success", JSON.stringify(modified));
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const connectResult = await adapter.connect();
+      const session = connectResult.data as EnvironmentSession;
+
+      const result = await adapter.createObject(session, { type: "sketch", name: "x" });
+      assert.equal(result.status, "error");
+      assert.equal(result.error?.kind, "invalid_operation");
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
