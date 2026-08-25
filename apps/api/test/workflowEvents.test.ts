@@ -80,6 +80,35 @@ describe("hasExplorationIntent: Section 5's example phrases, deterministically m
   });
 });
 
+describe("hasDesignIntent: 'generate'-based closing phrases (AUDIT FIX)", () => {
+  // Traced from a REAL multi-turn conversation: a user answers several
+  // requirement-clarification questions, then closes with "just make the
+  // best choices and generate" -- and under the ORIGINAL pattern, none of
+  // it (including that closing line) ever matched, so the real Plan/
+  // Proposal pipeline never ran even once across the whole conversation.
+  const closingPhrases = [
+    "just make the best choices and generate",
+    "make the best choice and generate",
+    "generate it",
+    "generate the design",
+    "go ahead and generate",
+    "just generate"
+  ];
+
+  for (const text of closingPhrases) {
+    it(`matches: "${text}"`, () => {
+      assert.equal(hasDesignIntent(text), true);
+    });
+  }
+
+  it("does not false-positive on unrelated uses of 'generate' or on non-committal replies", () => {
+    assert.equal(hasDesignIntent("please don't generate anything yet"), false);
+    assert.equal(hasDesignIntent("no"), false);
+    assert.equal(hasDesignIntent("decide whatever is best"), false);
+    assert.equal(hasDesignIntent("proceed with capturing these as the official project requirements"), false);
+  });
+});
+
 describe("parseExplorationCount: honest, bounded, defaulted", () => {
   it("defaults to 3 when the text names no number", () => {
     assert.equal(parseExplorationCount("Make it lighter."), 3);

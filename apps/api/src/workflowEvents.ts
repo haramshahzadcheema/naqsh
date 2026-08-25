@@ -25,8 +25,21 @@ export type ChatWorkflowEvent =
  * same class of pattern-matching this codebase already uses for
  * extraction (`onboarding/extraction.ts` on the frontend); everything the
  * trigger *causes* (planning, proposal generation) is 100% real backend/
- * Gemini work, never fabricated. */
-const DESIGN_INTENT_PATTERN = /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change)\b/i;
+ * Gemini work, never fabricated.
+ *
+ * AUDIT FIX: a real multi-turn conversation was traced end-to-end (a user
+ * answering several requirement-clarification questions, then closing
+ * with "just make the best choices and generate") and NONE of it ever
+ * matched this pattern -- every reply fell through to plain chat, so
+ * Gemini narrated elaborate-sounding "I will submit these to the
+ * workspace" prose without the real Plan/Proposal pipeline ever running.
+ * Added the "generate"-based closing phrases a user naturally reaches
+ * for once they're done answering questions and just want the design
+ * produced -- verified against that same real transcript, plus every
+ * pre-existing phrase (all still match) and non-trigger text like "no"/
+ * "decide whatever is best" (still correctly does not match). */
+const DESIGN_INTENT_PATTERN =
+  /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change|generate (it|this|the design)|go ahead and generate|just generate|make the best choices? and generate)\b/i;
 
 export function hasDesignIntent(text: string): boolean {
   return DESIGN_INTENT_PATTERN.test(text);
