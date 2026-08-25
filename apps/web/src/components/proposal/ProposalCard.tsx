@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { EngineeringObject, Proposal } from "@naqsh/schemas";
 import { Badge } from "../common/StatusDot.js";
 
@@ -54,15 +54,27 @@ export function ProposalCard({
   onReject: (proposal: Proposal) => Promise<void>;
 }): JSX.Element {
   const [pending, setPending] = useState<"approve" | "reject" | null>(null);
+  // A plain ref, not just `pending` state: React batches/defers the
+  // re-render that flips the button's `disabled` attribute, so a fast
+  // double-click (or double `Enter`) can fire this handler TWICE before
+  // that re-render ever commits -- the second call would otherwise reach
+  // the server and get a real, honest, but confusing "already approved"
+  // error back. This ref is set synchronously, before any `await`, so the
+  // second invocation is rejected the instant it happens, independent of
+  // render timing.
+  const inFlightRef = useRef(false);
   const change = resolveChange(proposal, objects);
   const isDecided = proposal.status !== "proposed";
 
   const handle = async (action: "approve" | "reject") => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setPending(action);
     try {
       if (action === "approve") await onApprove(proposal);
       else await onReject(proposal);
     } finally {
+      inFlightRef.current = false;
       setPending(null);
     }
   };

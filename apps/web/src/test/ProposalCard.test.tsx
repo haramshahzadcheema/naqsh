@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createEngineeringObject, createProposal } from "@naqsh/schemas";
 import { ProposalCard } from "../components/proposal/ProposalCard.js";
@@ -35,6 +35,23 @@ describe("ProposalCard", () => {
     render(<ProposalCard proposal={buildProposal()} onApprove={onApprove} onReject={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Approve change" }));
     expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+
+  it("AUDIT FIX: a fast double-click on Approve only calls onApprove ONCE -- reproduces the real race a user hit live (React's re-render that disables the button lags one tick behind a real double-click, and the second click used to reach the server and come back with a confusing 'already approved' error)", async () => {
+    let resolveApprove!: () => void;
+    const onApprove = vi.fn(() => new Promise<void>((resolve) => (resolveApprove = resolve)));
+    render(<ProposalCard proposal={buildProposal()} onApprove={onApprove} onReject={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "Approve change" });
+    // fireEvent (not userEvent, which serializes interactions with its own
+    // awaits) fires both click events on the SAME tick, before React has
+    // any chance to re-render and flip `disabled` -- exactly the race a
+    // real fast double-click reproduces.
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveApprove();
+    });
   });
 
   it("calls onReject when Reject is clicked", async () => {
