@@ -46,11 +46,12 @@ import { runFreecadOperation, type FreeCadRuntimeConfig, type FreeCadRuntimeResu
  * `delete` remains a real, present method (the `EnvironmentAdapter`
  * interface requires it unconditionally, see environment-adapter.ts) but
  * is still capability-gated to `unsupported_capability` -- no destructive
- * operation is implemented yet. `modify` (Phase 14) and `create` (AUDIT
- * FIX) are BOTH deliberately narrow allowlisted paths restricted to the
- * exact same single TypeId, `Part::Box` (see runner.py's
- * `SUPPORTED_MUTATIONS`) -- creating an object of any other type is
- * rejected honestly rather than silently coerced. `checkpoint` (Phase 15)
+ * operation is implemented yet. `modify` and `create` are BOTH
+ * deliberately narrow allowlisted paths over the same closed table of
+ * types -- `Part::Box`, `Part::Cylinder`, `Part::Torus` and `Part::Wedge`
+ * (see runner.py's `SUPPORTED_MUTATIONS`), plus the boolean and fillet
+ * operations on the `FreeCadAdapter` interface below. Creating an object
+ * of any other type is rejected honestly rather than silently coerced. `checkpoint` (Phase 15)
  * is a real file-copy snapshot/restore of the live `.FCStd` document (see
  * runner.py's `op_checkpoint`/`op_restore`) -- never a fabricated pointer.
  *
@@ -146,13 +147,15 @@ interface RawFreecadPropertyChange {
  * as specified", which is exactly "invalid_operation" already means. */
 /** Translates the GENERIC type vocabulary every `createObject` caller in
  * this codebase actually uses (`EnvironmentObjectGenericType`, or a loose
- * `type` string like "part"/"box") into the one concrete FreeCAD TypeId
- * this adapter knows how to create safely: `Part::Box`. Returns `null`
- * for anything it cannot confidently map -- a caller asking for a sketch,
- * datum, or link gets an honest rejection, never a silently-wrong box. */
-/** Ordinary engineering words for the three primitives this adapter can
- * genuinely build. Ordered most-specific first: a "wheel rim" must resolve
- * to a cylinder, not fall through to the generic solid default. */
+ * `type` string like "part"/"wheel"/"tyre") into one of the concrete
+ * FreeCAD TypeIds this adapter can build safely. Returns `null` for
+ * anything it cannot confidently map -- a caller asking for a sketch,
+ * datum, or link gets an honest rejection, never a silently-wrong solid.
+ *
+ * Ordinary engineering words for the four primitives this adapter can
+ * genuinely build, ordered most-specific first: a "wheel rim" must
+ * resolve to a cylinder rather than falling through to the generic solid
+ * default, and a "tyre" to a torus rather than to a box. */
 const TYPE_KEYWORDS: ReadonlyArray<readonly [RegExp, string]> = [
   // A tyre IS a torus: the ring/donut primitive, not a box or a disc.
   [/\b(torus|tyre|tire|donut|doughnut|ring|o-ring|annulus)\b/, "Part::Torus"],
@@ -591,9 +594,9 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): FreeC
       // with no pre-existing geometry could never receive any, because
       // this method always failed with "unsupported_capability" no matter
       // what a caller asked for. Deliberately as narrow as
-      // modifyObject/runner.py's SUPPORTED_MUTATIONS: the only type this
-      // adapter creates is Part::Box, the one TypeId already fully
-      // validated for mutation.
+      // modifyObject/runner.py's SUPPORTED_MUTATIONS: the only types this
+      // adapter creates are the ones that allowlist already validates for
+      // mutation -- Part::Box, Part::Cylinder, Part::Torus, Part::Wedge.
       //
       // `input.type` arrives as a GENERIC label (e.g. "part"/"solid"), the
       // same vocabulary every caller in this codebase already uses (model-
@@ -609,7 +612,11 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): FreeC
           session.id,
           null,
           "invalid_operation",
-          `Cannot create an object of type "${input.type}"${input.genericType ? ` (genericType "${input.genericType}")` : ""} -- only a box/solid/container (Part::Box) is supported`
+          // Names what IS buildable. This message said "only a
+          // box/solid/container (Part::Box) is supported" long after
+          // cylinders, tori and wedges became real -- so a caller asking
+          // for a cylinder was told, incorrectly, that it was impossible.
+          `Cannot create an object of type "${input.type}"${input.genericType ? ` (genericType "${input.genericType}")` : ""}. Supported shapes: box (length/width/height), cylinder (radius/height), tyre or torus (radius1/radius2), wedge (a tapered block).`
         );
       }
 

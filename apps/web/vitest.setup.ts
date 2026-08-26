@@ -44,3 +44,26 @@ if (typeof URL.createObjectURL !== "function") {
 if (typeof URL.revokeObjectURL !== "function") {
   URL.revokeObjectURL = () => {};
 }
+
+// The suite must not depend on whether a dev server happens to be
+// listening on the API port.
+//
+// `ApiConnectionProvider` probes `GET /health` on mount through a real
+// `fetch`, and nothing stubbed it -- so with `npm run dev` running, that
+// probe SUCCEEDED and the app took its "connected to a real backend"
+// path instead of the offline/demo path several tests assert against.
+// Three tests failed for that reason alone, and only that reason:
+// verified by stopping the server and re-running (137/137).
+//
+// That is a real hazard for anyone evaluating this repo, who is very
+// likely to have the app running while they try `npm test`.
+//
+// Failing the default `fetch` makes "no server" the deterministic
+// baseline. Tests that genuinely exercise a connected backend (see
+// `OnlineChat.test.tsx`, `FreeCADConnect.test.tsx`) spy on the
+// `apiClient` functions directly and never reach this, so they are
+// unaffected -- and any test that DOES want real transport can still
+// override `global.fetch` itself.
+global.fetch = (async () => {
+  throw new TypeError("fetch is disabled in tests -- mock the apiClient function you need");
+}) as unknown as typeof fetch;

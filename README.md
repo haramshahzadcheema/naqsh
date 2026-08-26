@@ -981,16 +981,25 @@ records what actually happened. Gemini can propose a modification; it
 cannot execute one.
 
 **The allowlist, not a generic setter.** `SUPPORTED_MUTATIONS` in
-`runner.py` is a small, explicit, module-level dict — today exactly
-`Part::Box`'s `Length`/`Width`/`Height`, each with a `{min, max}` range.
-"If FreeCAD contains 500 writable properties, P14 might intentionally
-expose only 1–5. That is a feature, not a limitation." Structurally
-enforced by `repo-boundaries.test.ts`'s P14 guard block, which counts real
+`runner.py` is a small, explicit, module-level dict: four types
+(`Part::Box`, `Part::Cylinder`, `Part::Torus`, `Part::Wedge`), each with
+only its own geometric dimensions, plus seven placement numbers
+(`PositionX/Y/Z`, `RotationAngle`, `RotationAxisX/Y/Z`) — every one
+bounded by a `{min, max}` range. FreeCAD exposes hundreds of writable
+properties per object; this deliberately exposes a couple of dozen. That
+is a feature, not a limitation. Structurally enforced by
+`repo-boundaries.test.ts`'s P14 guard block, which counts real
 `setattr(obj, ...)` call sites in `runner.py`'s source (not prose in
-comments) and asserts there is exactly **one**, inside
-`op_modify_object`'s own validated loop — there is no other path to a
-FreeCAD property write anywhere in this repository, and no `eval`/`exec`/
-arbitrary-Python/arbitrary-shell primitive was added to reach it.
+comments) and asserts there are exactly **two** — one inside
+`op_modify_object`'s validated loop and one inside `op_create_object`'s,
+both gated by the same allowlist. There is no other path to a FreeCAD
+property write anywhere in this repository, and no `eval`/`exec`/
+arbitrary-Python/arbitrary-shell primitive exists to reach one.
+
+The boolean (`cut`/`fuse`/`common`) and fillet operations write no
+properties at all: they set typed `Base`/`Tool` references on a new
+FreeCAD object, so they add shaping power without widening that
+property-write surface by a single entry.
 
 **Validate → mutate → re-observe, never "hope it worked."**
 `op_modify_object`'s order: target exists → target type is allowlisted

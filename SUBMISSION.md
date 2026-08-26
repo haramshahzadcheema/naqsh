@@ -7,32 +7,28 @@ this file is the checklist, the Devpost text, and the shot-by-shot video script.
 
 ## 1. Pre-submission checklist (in order — each step depends on the one before)
 
-### Step 1 — Deploy to Google Cloud Run (~15 min)
+### Step 1 — No hosted URL, by design (0 min)
 
-Requires: a GCP project with billing enabled (the hackathon's $150 credit form is on
-the Devpost Resources tab), `gcloud` CLI authenticated.
+Naqsh's differentiator is that it drives a **real FreeCAD document** through a
+headless subprocess boundary. That only works on a machine with FreeCAD installed,
+so a hosted URL would demo the weaker half of the product. Judges run it locally.
 
-```bash
-# One-time: store the Gemini key as a secret (never in the image or repo)
-gcloud secrets create gemini-api-key --replication-policy=automatic
-printf '%s' "YOUR_GEMINI_API_KEY" | gcloud secrets versions add gemini-api-key --data-file=-
+`JUDGES.md` is the entry point and offers three paths by setup cost:
 
-# Build + push + deploy (cloudbuild.yaml handles Artifact Registry bootstrap itself)
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_REGION=us-central1,_SERVICE=naqsh-api
+1. **No credentials at all** — `npm install && npm run dev`, then pick the
+   **Deterministic (testing)** model. A real scripted provider that runs the whole
+   requirements → plan → proposal → approval → execute → verify loop offline.
+2. **Own free Gemini key** — `cp .env.example .env`, three minutes.
+3. **Real FreeCAD** — the actual differentiator.
 
-# Attach runtime config (the server REFUSES to start in production without the origin)
-gcloud run services update naqsh-api --region us-central1 \
-  --set-env-vars NAQSH_ALLOWED_ORIGIN=https://YOUR-FRONTEND-ORIGIN \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest
-```
+No API key ships with the submission. A key published in a submission gets scraped
+and revoked, and a shared free-tier quota dies the moment two judges use it at once.
+Path 1 removes the need for one entirely.
 
-Verify, and screenshot both for the video/README:
-
-```bash
-curl https://YOUR-CLOUD-RUN-URL/health
-# expect: {"status":"ok","geminiConfigured":true}
-```
+> The repo still contains a working `Dockerfile` and `cloudbuild.yaml`. If a hosted
+> URL is wanted later, `gcloud builds submit --config cloudbuild.yaml` deploys the
+> API to Cloud Run with the key in Secret Manager — but note the container has no
+> FreeCAD in it, so a hosted instance can only offer the mock environments.
 
 ### Step 2 — One live Gemini rehearsal BEFORE recording (~10 min)
 
@@ -54,10 +50,11 @@ the app labels it honestly and so should the narration.
 
 - Track: **The Collaborative Partner**
 - Paste the description from §2
-- Hosted URL: the Cloud Run URL
+- Hosted URL: none — say plainly that Naqsh runs locally because it drives real CAD (see `JUDGES.md`)
 - Repo: https://github.com/haramshahzadcheema/naqsh — grant access to
   **testing@devpost.com** and **cloudhackathons@google.com**
-- Upload the video; add the Cloud Run console screenshot to the gallery
+- Upload the video; add the FreeCAD screenshots (real geometry Naqsh built) to the gallery
+- Attach the architecture diagram (required field)
 
 ---
 
@@ -76,7 +73,7 @@ the app labels it honestly and so should the narration.
 > **The loop:** observe → plan → propose → human approval → authorized tool
 > execution → before/after discrepancy detection → deterministic verification →
 > long-term memory that measurably changes future reasoning. Every stage is real,
-> persisted, and covered by 2,500+ tests. Approval cannot be bypassed: mutating
+> persisted, and covered by 2,685 tests. Approval cannot be bypassed: mutating
 > tools pass through a single authorization choke point that validates input
 > schema, checks a real approval store (replay-protected), and only then invokes
 > the tool. If Gemini is unconfigured, every AI surface says so honestly — nothing
@@ -85,7 +82,9 @@ the app labels it honestly and so should the narration.
 > **Google technologies:** Gemini 3.5 Flash via the **GenAI SDK** (structured
 > output for plans/proposals/designs, streaming chat, and **multimodal viewport
 > analysis** — Naqsh captures the actual CAD window and has Gemini reason about
-> the geometry it sees). Deployed on **Cloud Run** (Cloud Build pipeline in-repo).
+> the geometry it sees). Runs locally by design — the FreeCAD subprocess boundary
+> is the point, and it needs FreeCAD on the machine (a Cloud Run pipeline ships in
+> the repo for the mock environments).
 > The agent loop is deliberately hand-rolled on the SDK rather than a framework:
 > in a system whose whole thesis is verifiable authorization, the approval
 > boundary must be first-party code we can test line by line — and it is.
@@ -99,8 +98,9 @@ the app labels it honestly and so should the narration.
 
 ## 3. Four-minute video script (shot-by-shot)
 
-**Setup before recording:** clean data dir, Gemini key set, FreeCAD connected,
-browser at the app, Cloud Run console tab open, terminal visible for one moment.
+**Setup before recording:** clean data dir, Gemini key set (and quota checked —
+the free tier 429s quickly), FreeCAD installed and a document connected, browser at
+the app, FreeCAD window ready to bring forward, terminal visible for one moment.
 
 | Time | Screen | Say |
 |---|---|---|
@@ -111,7 +111,7 @@ browser at the app, Cloud Run console tab open, terminal visible for one moment.
 | 2:10–2:50 | **The moment.** Click Approve. FreeCAD window visible beside the browser: geometry actually changes. Verification panel: deterministic check → PASS; consistency check line | "I approve — and the real FreeCAD document changes. Then Naqsh re-observes, diffs before and after, and runs a deterministic numeric check. That PASS came from comparison code, not from the model's opinion of itself." |
 | 2:50–3:15 | Environment tab → Live View → capture frame → Gemini's analysis of the actual viewport | "Gemini's multimodality earns its place: Naqsh captures the live CAD viewport and Gemini reasons about the geometry it can actually see." |
 | 3:15–3:40 | Kill the server in the terminal; restart; refresh — project, memory, history all intact. Ask a follow-up; reply visibly references the earlier decision | "Restart the server — nothing is lost, and memory isn't decoration: it re-enters Gemini's context and changes future answers." |
-| 3:40–4:00 | Cloud Run console + `curl /health` on the live URL → back to app | "Running on Cloud Run, built by the Cloud Build pipeline in the repo, 2,500 tests green. Naqsh: the engineering copilot that proves its work." |
+| 3:40–4:00 | Terminal: `npm run test --workspaces` scrolling green → back to app | "2,685 tests. The FreeCAD suite runs against a real install and skips honestly when there isn't one — it never passes vacuously. Naqsh: the engineering copilot that proves its work." |
 
 **Risk notes:** rehearse the full path twice; keep the deterministic model as an
 on-camera fallback ONLY with narration ("this is the offline test model — here's
