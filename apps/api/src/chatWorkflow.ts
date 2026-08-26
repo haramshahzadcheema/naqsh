@@ -6,6 +6,7 @@ import type { ModelProvider } from "@naqsh/core";
 import { generateChatReply, type AiStyle } from "./chatReply.js";
 import { generateProjectPlan, generateProjectProposal, prepareExploration } from "./engineeringWorkflow.js";
 import { hasDesignIntent, hasExplorationIntent, parseExplorationCount, type ChatWorkflowEvent } from "./workflowEvents.js";
+import { describeModelError } from "./modelErrors.js";
 
 /**
  * Part 32's "no business logic in routes" requirement, applied to the one
@@ -127,7 +128,7 @@ export async function sendChatMessage(input: SendChatMessageInput): Promise<Send
       .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
 
     const reply = await generateChatReply(provider, runtime.getState(), history, text || "(see attached file)", style, { modelId }, onChunk, runtime.memory.listForProject(runtime.projectId));
-    assistantText = reply.status === "success" ? reply.text || "…" : `I couldn't generate a reply (${reply.error?.message ?? "unknown error"}).`;
+    assistantText = reply.status === "success" ? reply.text || "…" : describeModelError(reply.error);
     assistantError = reply.status === "error" ? reply.error : undefined;
   }
 
@@ -192,7 +193,7 @@ export async function regenerateChatReply(input: RegenerateChatReplyInput): Prom
     .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
 
   const reply = await generateChatReply(provider, runtime.getState(), priorHistory, precedingUser.text || "(see attached file)", style, { modelId }, undefined, runtime.memory.listForProject(runtime.projectId));
-  const assistantText = reply.status === "success" ? reply.text || "…" : `I couldn't generate a reply (${reply.error?.message ?? "unknown error"}).`;
+  const assistantText = reply.status === "success" ? reply.text || "…" : describeModelError(reply.error);
   const assistantError = reply.status === "error" ? reply.error : undefined;
 
   const assistantMessage: MessageRecord = {

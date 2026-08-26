@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/start.ts",
     "start": "tsx src/start.ts",
-    "test": "node --import tsx --test test/repositories.test.ts test/modelProviderFactory.test.ts test/fileProcessing.test.ts test/server.test.ts test/engineeringWorkflow.test.ts test/workflowEvents.test.ts test/approvals.test.ts test/chatWorkflow.test.ts test/memoryContext.test.ts test/security.test.ts test/chatStream.test.ts test/researchWorkflow.test.ts test/jobsWorkflow.test.ts test/projectSnapshotRoutes.test.ts test/runtimeStatePersistence.test.ts test/runtimeCache.test.ts test/config.test.ts test/freecadEnvironment.integration.test.ts test/frameAnalysis.test.ts",
+    "test": "node --import tsx --test test/repositories.test.ts test/modelProviderFactory.test.ts test/fileProcessing.test.ts test/server.test.ts test/engineeringWorkflow.test.ts test/workflowEvents.test.ts test/approvals.test.ts test/chatWorkflow.test.ts test/memoryContext.test.ts test/security.test.ts test/chatStream.test.ts test/researchWorkflow.test.ts test/jobsWorkflow.test.ts test/projectSnapshotRoutes.test.ts test/runtimeStatePersistence.test.ts test/runtimeCache.test.ts test/config.test.ts test/freecadEnvironment.integration.test.ts test/frameAnalysis.test.ts test/modelErrors.test.ts test/testManifest.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

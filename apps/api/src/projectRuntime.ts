@@ -123,6 +123,7 @@ import {
 import { DEFAULT_ENVIRONMENT_KIND, type EnvironmentKind, type ProjectRepository, type RuntimeStateRecord, type RuntimeStateRepository } from "./db/repositories.js";
 import { existsSync } from "node:fs";
 import { candidateCommandPaths } from "./environmentDiscovery.js";
+import { describeModelError } from "./modelErrors.js";
 
 export type { EnvironmentKind };
 
@@ -922,7 +923,7 @@ export async function captureRequirementFromStatement(
   const interpretation = await interpretRequirementFromText(provider, runtime.getState(), statementText, { config: modelConfig });
 
   if (interpretation.status === "error") {
-    runtime.logActivity("note", "Interpretation failed", interpretation.error.message);
+    runtime.logActivity("note", "Interpretation failed", describeModelError(interpretation.error));
     return { kind: "interpretation_failed", message: interpretation.error.message };
   }
 
