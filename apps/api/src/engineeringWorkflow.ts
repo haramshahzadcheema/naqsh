@@ -169,16 +169,65 @@ export type ProposalOutcome = { status: "success"; proposal: Proposal; approvalI
  * keys it's allowed to target, via `GenerateProposalOptions.
  * additionalInstruction`. Never invents ids -- if the environment can't
  * be reached, says so plainly instead of fabricating a fixture. */
+/**
+ * What the connected environment can actually DO, in plain text.
+ *
+ * Observed live: without this, the planner had no idea the environment
+ * could build anything, so asked to "build an M3 saloon body" it produced
+ * plan steps like "Clarify relationship with fixture box" and proposals
+ * of memory_add and sync_environment_object -- documenting the request
+ * instead of executing it, through two full approve cycles. It was not
+ * being timid; it genuinely had not been told that creating geometry was
+ * an option.
+ *
+ * Every claim here is derived from the adapter's REAL declared
+ * capabilities, never a fixed string -- an environment that cannot create
+ * is described as one that cannot create.
+ */
+function describeEnvironmentCapabilitiesForModel(runtime: ProjectRuntime): string {
+  const capabilities = runtime.environmentAdapter.describe().capabilities;
+  const can = (capability: string): boolean => capabilities.includes(capability as never);
+
+  const lines: string[] = [];
+  if (can("create")) {
+    lines.push(
+      "You CAN create real geometry with create_environment_object. Prefer doing this over merely documenting or " +
+        "planning it: if the objective describes a physical part, build it.",
+      '  Shapes: a "box" (length/width/height), a "cylinder" (radius/height), a "tyre"/torus (radius1 = ring radius, ' +
+        'radius2 = tube radius), and a "wedge" (a tapered block: xmin/xmax/zmin/zmax is the bottom face, ' +
+        "x2min/x2max/z2min/z2max the top face, ymin/ymax the depth -- a smaller top face makes it lean in, which is " +
+        "how a car greenhouse, a raked screen or a sloped bonnet is made).",
+      "  Position every object with x/y/z, and turn it with angle plus axisX/axisY/axisZ. Objects default to the " +
+        "origin, so an assembly of several parts MUST set these or everything stacks in one place."
+    );
+  }
+  if (can("create")) {
+    lines.push(
+      "You CAN combine solids with boolean_environment_object: kind \"cut\" subtracts (this is how a wheel arch or a " +
+        'hole is made), "fuse" merges, "common" keeps the overlap.',
+      "You CAN round edges with fillet_environment_object (objectId + radius). Round a shape BEFORE cutting it -- a " +
+        "solid produced by cuts often cannot be filleted at any radius."
+    );
+  }
+  if (can("modify")) lines.push("You CAN change an existing object's dimensions with modify_environment_object.");
+  if (!can("create")) lines.push("You CANNOT create new objects in this environment -- do not propose create_environment_object.");
+  if (!can("delete")) lines.push("You CANNOT delete objects in this environment.");
+
+  return lines.length > 0 ? `What you can do in the connected environment:\n${lines.join("\n")}` : "";
+}
+
 async function describeEnvironmentForModel(runtime: ProjectRuntime): Promise<string> {
+  const capabilityText = describeEnvironmentCapabilitiesForModel(runtime);
+  const withCapabilities = (body: string): string => (capabilityText ? `${capabilityText}\n\n${body}` : body);
   try {
     const session = await ensureEnvironmentSession(runtime);
     const listed = await runtime.environmentAdapter.listObjects(session);
     if (listed.status !== "success") {
-      return "The connected environment could not be inspected right now -- do not propose modify_environment_object.";
+      return withCapabilities("The connected environment could not be inspected right now -- do not propose modify_environment_object.");
     }
     const objects = listed.data as EnvironmentObject[];
     if (objects.length === 0) {
-      return "The connected environment currently has no objects -- do not propose modify_environment_object.";
+      return withCapabilities("The connected environment currently has no objects yet -- so build the geometry the objective calls for, rather than proposing modify_environment_object.");
     }
     const lines = objects.map(
       (object) =>
