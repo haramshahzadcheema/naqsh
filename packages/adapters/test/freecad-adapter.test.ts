@@ -157,20 +157,26 @@ function buildFakeRuntime(options: { objects?: FakeObjectFixture[]; failConnectF
         const typeId = params.type as string;
         const name = (params.name as string) ?? "Object";
         const properties = (params.properties as Record<string, unknown> | undefined) ?? {};
-        if (typeId !== "Part::Box") {
+        // Mirrors runner.py's SUPPORTED_MUTATIONS allowlist exactly.
+        const allowedByType: Record<string, readonly string[]> = {
+          "Part::Box": ["Length", "Width", "Height"],
+          "Part::Cylinder": ["Radius", "Height"],
+          "Part::Torus": ["Radius1", "Radius2"]
+        };
+        const allowed = allowedByType[typeId];
+        if (!allowed) {
           return { status: "success", data: { rejected: true, reason: "unsupported_target_type", message: `Cannot create an object of type "${typeId}"` } };
         }
-        // Mirrors runner.py's SUPPORTED_MUTATIONS allowlist for Part::Box.
-        const allowedProperties = new Set(["Length", "Width", "Height"]);
+        const allowedProperties = new Set(allowed);
         for (const key of Object.keys(properties)) {
           if (!allowedProperties.has(key)) {
             return { status: "success", data: { rejected: true, reason: "unsupported_property", message: `Property "${key}" is not supported when creating a "${typeId}"` } };
           }
         }
-        const id = `FakeBox${objects.length + 1}`;
+        const id = `FakeSolid${objects.length + 1}`;
         const created: FakeObjectFixture = {
           id,
-          type: "Part::Box",
+          type: typeId,
           name,
           properties: Object.entries(properties).map(([key, value]) => ({ key, value: { value, unit: "mm" }, readOnly: false })),
           relationships: []

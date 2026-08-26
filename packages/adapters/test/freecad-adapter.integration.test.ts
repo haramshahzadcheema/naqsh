@@ -321,6 +321,77 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     }
   });
 
+  it("builds a real car tyre as a Part::Torus, from ordinary words -- \"tyre\", \"ringRadius\", \"thickness\"", async () => {
+    // A tyre is a torus, not a box: Radius1 is the ring radius (how big
+    // the wheel is) and Radius2 the tube radius (how fat the tyre is).
+    // Dimensions are a real 195/65 R15: ~635 mm overall diameter,
+    // ~127 mm section height.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const created = await adapter.createObject(session, {
+        type: "tyre",
+        name: "Front Tyre",
+        properties: [
+          { key: "ringRadius", value: 253, readOnly: false },
+          { key: "thickness", value: 64, readOnly: false }
+        ]
+      });
+      assert.equal(created.status, "success", JSON.stringify(created));
+      const object = created.data as EnvironmentObject;
+      assert.equal(object.type, "Part::Torus", "\"tyre\" must resolve to a torus, never fall through to the box default");
+
+      const ring = object.properties.find((property) => property.key === "Radius1");
+      const tube = object.properties.find((property) => property.key === "Radius2");
+      assert.equal((ring!.value as { value: number }).value, 253);
+      assert.equal((tube!.value as { value: number }).value, 64);
+
+      // Genuinely persisted, not just echoed back.
+      const reconnected = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const reconnectedSession = (await reconnected.connect()).data as EnvironmentSession;
+      const reinspected = await reconnected.inspectObject(reconnectedSession, object.id);
+      assert.equal(reinspected.status, "success");
+      assert.equal((reinspected.data as EnvironmentObject).type, "Part::Torus");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds a real wheel rim as a Part::Cylinder, and refuses the genuinely ambiguous \"width\"", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const rim = await adapter.createObject(session, {
+        type: "wheel rim",
+        name: "Front Rim",
+        properties: [
+          { key: "radius", value: 190, readOnly: false },
+          { key: "height", value: 160, readOnly: false }
+        ]
+      });
+      assert.equal(rim.status, "success", JSON.stringify(rim));
+      assert.equal((rim.data as EnvironmentObject).type, "Part::Cylinder");
+
+      // "width" on a cylinder could mean the diameter OR the axial
+      // length. Guessing either way would silently build the wrong part
+      // and report success, so it is refused instead -- the same reason
+      // "diameter" is deliberately not a synonym for "radius" anywhere.
+      const ambiguous = await adapter.createObject(session, {
+        type: "cylinder",
+        name: "Ambiguous",
+        properties: [{ key: "width", value: 50, readOnly: false }]
+      });
+      assert.equal(ambiguous.status, "error");
+      assert.equal(ambiguous.error?.kind, "invalid_operation");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
     const fixture = buildFixture();
     try {

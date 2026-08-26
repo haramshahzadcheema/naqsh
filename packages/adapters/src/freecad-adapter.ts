@@ -150,38 +150,76 @@ interface RawFreecadPropertyChange {
  * this adapter knows how to create safely: `Part::Box`. Returns `null`
  * for anything it cannot confidently map -- a caller asking for a sketch,
  * datum, or link gets an honest rejection, never a silently-wrong box. */
+/** Ordinary engineering words for the three primitives this adapter can
+ * genuinely build. Ordered most-specific first: a "wheel rim" must resolve
+ * to a cylinder, not fall through to the generic solid default. */
+const TYPE_KEYWORDS: ReadonlyArray<readonly [RegExp, string]> = [
+  // A tyre IS a torus: the ring/donut primitive, not a box or a disc.
+  [/\b(torus|tyre|tire|donut|doughnut|ring|o-ring|annulus)\b/, "Part::Torus"],
+  [/\b(cylinder|disc|disk|wheel|rim|hub|shaft|rod|pin|boss|axle|spool|roller)\b/, "Part::Cylinder"],
+  [/\b(box|block|plate|bracket|slab|bar|cube|panel|envelope)\b/, "Part::Box"]
+];
+
 function resolveFreecadTypeId(type: string, genericType?: string): string | null {
-  if (type === "Part::Box") return "Part::Box";
-  const normalizedType = type.toLowerCase();
-  if (normalizedType.includes("box")) return "Part::Box";
+  // An exact FreeCAD TypeId always wins -- never re-interpret a caller who
+  // already knows precisely what they want.
+  if (Object.prototype.hasOwnProperty.call(SUPPORTED_CREATE_TYPES, type)) return type;
+
+  const haystack = `${type} ${genericType ?? ""}`.toLowerCase();
+  for (const [pattern, typeId] of TYPE_KEYWORDS) {
+    if (pattern.test(haystack)) return typeId;
+  }
+
+  // Nothing named a shape. Fall back to a box ONLY for the generic
+  // "some solid thing" labels, which is what a design specification says
+  // when it is describing an envelope rather than a specific primitive.
   if (genericType === "solid" || genericType === "container") return "Part::Box";
+  const normalizedType = type.toLowerCase();
   if ((normalizedType === "part" || normalizedType === "solid") && (genericType === undefined || genericType === "unknown")) return "Part::Box";
   return null;
 }
 
-/** FreeCAD's `Part::Box` names its three dimensions Length/Width/Height,
- * but callers (and the model generating design specifications) naturally
- * use ordinary engineering vocabulary -- "thickness", "depth", "height" --
- * for the same physical dimension. Without this translation a perfectly
- * valid specification carrying `Thickness: 20` is rejected as an
- * unsupported property, which is a naming mismatch, not a real
- * disagreement about what was asked for. Only maps synonyms onto the same
- * three real properties runner.py's SUPPORTED_MUTATIONS already allows --
- * it never widens what can be written. */
-const BOX_PROPERTY_SYNONYMS: Record<string, string> = {
-  length: "Length",
-  long: "Length",
-  width: "Width",
-  wide: "Width",
-  depth: "Width",
-  height: "Height",
-  tall: "Height",
-  thickness: "Height",
-  thick: "Height"
+/**
+ * The properties this adapter can genuinely write, per FreeCAD type, and
+ * the ordinary engineering words that mean each one.
+ *
+ * This MUST stay in lockstep with runner.py's own SUPPORTED_MUTATIONS --
+ * that allowlist is the real enforcement boundary; this table only
+ * translates vocabulary before a request reaches it, and can never widen
+ * what the runner accepts.
+ *
+ * Synonyms are deliberately type-scoped rather than global. "Thickness"
+ * means Height on a box, but a torus has no Height at all, and mapping it
+ * there would turn a merely-imprecise request into a rejected one. Only
+ * genuine synonyms for the SAME physical dimension appear here -- notably
+ * "diameter" is absent everywhere, because silently treating a diameter
+ * as a radius would build the part at half size while reporting success.
+ */
+const SUPPORTED_CREATE_TYPES: Record<string, { properties: readonly string[]; synonyms: Record<string, string> }> = {
+  "Part::Box": {
+    properties: ["Length", "Width", "Height"],
+    synonyms: { length: "Length", long: "Length", width: "Width", wide: "Width", depth: "Width", height: "Height", tall: "Height", thickness: "Height", thick: "Height" }
+  },
+  "Part::Cylinder": {
+    properties: ["Radius", "Height"],
+    synonyms: { radius: "Radius", height: "Height", tall: "Height", length: "Height", thickness: "Height", thick: "Height", depth: "Height" }
+  },
+  "Part::Torus": {
+    // Radius1 is the ring radius (how big the wheel is); Radius2 is the
+    // tube radius (how fat the tyre is).
+    properties: ["Radius1", "Radius2"],
+    synonyms: { radius1: "Radius1", radius2: "Radius2", ringradius: "Radius1", tuberadius: "Radius2", thickness: "Radius2", thick: "Radius2", width: "Radius2", radius: "Radius1" }
+  }
 };
 
-function resolveBoxPropertyKey(key: string): string {
-  return BOX_PROPERTY_SYNONYMS[key.toLowerCase()] ?? key;
+/** Translates one caller-supplied property name into the real FreeCAD
+ * property for that type, leaving anything unrecognised untouched so the
+ * runner rejects it honestly rather than this layer guessing. */
+function resolvePropertyKey(typeId: string, key: string): string {
+  const spec = SUPPORTED_CREATE_TYPES[typeId];
+  if (!spec) return key;
+  if (spec.properties.includes(key)) return key;
+  return spec.synonyms[key.toLowerCase().replace(/[\s_-]/g, "")] ?? key;
 }
 
 const REJECTION_REASON_TO_ERROR_KIND: Record<string, EnvironmentErrorKind> = {
@@ -548,7 +586,7 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       // create-environment-object-tool.ts) -- flattened to a plain record
       // here because that is what runner.py's SUPPORTED_MUTATIONS-keyed
       // validation (identical to modify_object's) expects.
-      const properties = Object.fromEntries(input.properties?.map((property) => [resolveBoxPropertyKey(property.key), property.value]) ?? []);
+      const properties = Object.fromEntries(input.properties?.map((property) => [resolvePropertyKey(freecadTypeId, property.key), property.value]) ?? []);
       const result = await runOperation("create_object", {
         filePath: guard.filePath,
         type: freecadTypeId,
@@ -590,7 +628,10 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
       const result = await runOperation("modify_object", {
         filePath: guard.filePath,
         objectId,
-        changes: Object.fromEntries(Object.entries(changes).map(([key, value]) => [resolveBoxPropertyKey(key), value])),
+        // Property-name synonyms are resolved in runner.py, which is the
+        // only side that knows this object's real TypeId (see
+        // PROPERTY_SYNONYMS there) -- so raw keys are passed through.
+        changes,
         expectedBefore: options?.expectedBefore ?? null
       });
       if (result.status === "error") return failure("modify_object", session.id, objectId, result.kind, result.message);

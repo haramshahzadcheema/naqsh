@@ -616,8 +616,71 @@ SUPPORTED_MUTATIONS = {
         "Length": {"min": 0.001, "max": 100000.0},
         "Width": {"min": 0.001, "max": 100000.0},
         "Height": {"min": 0.001, "max": 100000.0},
-    }
+    },
+    # A solid of revolution -- wheels, hubs, shafts, bosses, pins.
+    "Part::Cylinder": {
+        "Radius": {"min": 0.001, "max": 100000.0},
+        "Height": {"min": 0.001, "max": 100000.0},
+    },
+    # The ring/donut primitive. This is what an actual tyre is: Radius1 is
+    # the distance from the axis out to the centre of the tube (so it sets
+    # the wheel size), and Radius2 is the tube's own cross-section radius
+    # (so it sets how fat the tyre is). Both are bounded exactly like every
+    # other allowlisted dimension -- no new class of write is introduced
+    # here, only two more named numeric properties on one more named type.
+    "Part::Torus": {
+        "Radius1": {"min": 0.001, "max": 100000.0},
+        "Radius2": {"min": 0.001, "max": 100000.0},
+    },
 }
+
+
+# Ordinary engineering vocabulary for the SAME physical dimension, scoped
+# per type. Lives here, immediately beside SUPPORTED_MUTATIONS, because
+# this is the only place that reliably knows an object's real TypeId --
+# on modify the caller supplies only an objectId, so the TypeScript layer
+# genuinely cannot resolve "Thickness" without another round trip.
+#
+# This translates names; it can never widen what may be written. Every
+# resolved name is still checked against SUPPORTED_MUTATIONS below, and a
+# word with no entry here is passed through untouched so it is rejected
+# honestly rather than guessed at.
+#
+# "Diameter" is deliberately absent: silently treating a diameter as a
+# radius would build the part at half the requested size and report
+# success, which is worse than an honest rejection.
+PROPERTY_SYNONYMS = {
+    "Part::Box": {
+        "length": "Length", "long": "Length",
+        "width": "Width", "wide": "Width", "depth": "Width",
+        "height": "Height", "tall": "Height", "thickness": "Height", "thick": "Height",
+    },
+    "Part::Cylinder": {
+        "radius": "Radius",
+        "height": "Height", "tall": "Height", "length": "Height",
+        "thickness": "Height", "thick": "Height", "depth": "Height",
+    },
+    "Part::Torus": {
+        # Radius1 = ring radius (wheel size); Radius2 = tube radius (tyre fatness).
+        "radius": "Radius1", "radius1": "Radius1", "ringradius": "Radius1",
+        "radius2": "Radius2", "tuberadius": "Radius2",
+        "thickness": "Radius2", "thick": "Radius2", "width": "Radius2",
+    },
+}
+
+
+def _normalize_property_key(type_id, key):
+    """Maps one caller-supplied property name onto the real FreeCAD
+    property for `type_id`, or returns it unchanged when nothing matches."""
+    allowed = SUPPORTED_MUTATIONS.get(type_id, {})
+    if key in allowed:
+        return key
+    flattened = "".join(ch for ch in str(key).lower() if ch.isalnum())
+    return PROPERTY_SYNONYMS.get(type_id, {}).get(flattened, key)
+
+
+def _normalize_properties(type_id, properties):
+    return {_normalize_property_key(type_id, key): value for key, value in properties.items()}
 
 
 def _is_finite_number(value):
@@ -677,6 +740,11 @@ def op_modify_object(params):
         allowed = SUPPORTED_MUTATIONS.get(type_id)
         if allowed is None:
             return _rejected("unsupported_target_type", 'Object type "%s" has no supported mutations in Phase 14' % (type_id,))
+
+        # Resolved against the object's REAL TypeId, which only this side
+        # of the boundary knows on a modify (the caller sends an objectId,
+        # not a type).
+        changes = _normalize_properties(type_id, changes)
 
         for key in changes:
             if key not in allowed:
@@ -827,13 +895,14 @@ def op_modify_object(params):
 def op_create_object(params):
     """Real geometry creation -- deliberately as narrow as
     op_modify_object's own SUPPORTED_MUTATIONS, and for the same reason:
-    the only type this runner knows how to create SAFELY is Part::Box, the
-    one TypeId already fully validated for mutation (same property bounds,
-    same recompute-then-verify-then-save discipline). A caller must name
-    that TypeId exactly, matching FreeCAD's own real type name -- never a
-    generic "part"/"solid" label this script would have to guess a mapping
-    for. Anything else is rejected honestly rather than silently coerced
-    into a box.
+    the only types this runner knows how to create SAFELY are the ones
+    already fully validated for mutation in that same allowlist (same
+    property bounds, same recompute-then-verify-then-save discipline) --
+    currently Part::Box, Part::Cylinder and Part::Torus. A caller must
+    name the TypeId exactly, matching FreeCAD's own real type name --
+    never a generic "part"/"solid" label this script would have to guess
+    a mapping for. Anything else is rejected honestly rather than
+    silently coerced into some default shape.
 
     Mirrors op_modify_object's transaction-like safety exactly: every
     validation happens before doc.addObject() is ever called, and the
@@ -852,6 +921,8 @@ def op_create_object(params):
             "unsupported_target_type",
             'Cannot create an object of type "%s" -- only %s is supported' % (type_id, ", ".join(SUPPORTED_MUTATIONS.keys())),
         )
+
+    properties = _normalize_properties(type_id, properties)
 
     for key in properties:
         if key not in allowed:
