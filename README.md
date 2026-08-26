@@ -4,6 +4,8 @@ NAQSH is a human-in-the-loop AI engineering assistant. It talks with you about a
 
 ## Quickstart
 
+**Judging this?** See **[JUDGES.md](JUDGES.md)** — a 2-minute walkthrough that needs no API key at all.
+
 ```bash
 npm install
 npm run dev
