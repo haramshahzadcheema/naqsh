@@ -669,13 +669,114 @@ PROPERTY_SYNONYMS = {
 }
 
 
+# Where a part sits, and how it is turned. EVERY FreeCAD object has a
+# Placement, so these apply to every supported type rather than living in
+# any one type's entry.
+#
+# They are exposed as plain bounded numbers -- PositionX/Y/Z in mm, a
+# rotation angle in degrees about a named axis -- rather than as FreeCAD's
+# own compound Placement object, so that the exact same "named property,
+# validated against explicit min/max, nothing else may be written"
+# discipline covers them. No caller can reach FreeCAD's Placement API
+# itself; they can only set these seven numbers.
+#
+# Without this, every object a caller creates lands at the origin stacked
+# on top of every other one, which makes any assembly of more than one
+# part impossible to express.
+PLACEMENT_PROPERTIES = {
+    "PositionX": {"min": -1000000.0, "max": 1000000.0},
+    "PositionY": {"min": -1000000.0, "max": 1000000.0},
+    "PositionZ": {"min": -1000000.0, "max": 1000000.0},
+    "RotationAngle": {"min": -360.0, "max": 360.0},
+    "RotationAxisX": {"min": -1.0, "max": 1.0},
+    "RotationAxisY": {"min": -1.0, "max": 1.0},
+    "RotationAxisZ": {"min": -1.0, "max": 1.0},
+}
+
+PLACEMENT_SYNONYMS = {
+    "x": "PositionX", "positionx": "PositionX", "px": "PositionX",
+    "y": "PositionY", "positiony": "PositionY", "py": "PositionY",
+    "z": "PositionZ", "positionz": "PositionZ", "pz": "PositionZ",
+    "angle": "RotationAngle", "rotation": "RotationAngle", "rotationangle": "RotationAngle",
+    "axisx": "RotationAxisX", "rotationaxisx": "RotationAxisX",
+    "axisy": "RotationAxisY", "rotationaxisy": "RotationAxisY",
+    "axisz": "RotationAxisZ", "rotationaxisz": "RotationAxisZ",
+}
+
+
+def _split_placement(properties):
+    """Separates placement numbers from shape dimensions. Returns
+    (shape_properties, placement_properties)."""
+    shape = {}
+    placement = {}
+    for key, value in properties.items():
+        if key in PLACEMENT_PROPERTIES:
+            placement[key] = value
+        else:
+            shape[key] = value
+    return shape, placement
+
+
+def _validate_placement(placement):
+    """Same bounds discipline as every shape property. Returns a rejection
+    dict, or None when every value is acceptable."""
+    for key, value in placement.items():
+        if not _is_finite_number(value):
+            return _rejected("invalid_value", 'Value for "%s" must be a finite number (got %r)' % (key, value))
+        constraints = PLACEMENT_PROPERTIES[key]
+        if value < constraints["min"] or value > constraints["max"]:
+            return _rejected(
+                "value_out_of_range",
+                '"%s" must be between %s and %s (got %s)' % (key, constraints["min"], constraints["max"], value),
+            )
+    return None
+
+
+def _apply_placement(obj, placement):
+    """Writes the validated numbers onto the object's real Placement.
+
+    Reads the object's CURRENT placement first so that setting only X
+    leaves Y, Z and the rotation exactly as they were -- a partial update
+    must never silently reset the parts it wasn't asked about.
+    """
+    if not placement:
+        return
+    import FreeCAD
+
+    current = obj.Placement
+    position = FreeCAD.Vector(
+        placement.get("PositionX", current.Base.x),
+        placement.get("PositionY", current.Base.y),
+        placement.get("PositionZ", current.Base.z),
+    )
+
+    has_rotation = any(key.startswith("Rotation") for key in placement)
+    if has_rotation:
+        axis = FreeCAD.Vector(
+            placement.get("RotationAxisX", 0.0),
+            placement.get("RotationAxisY", 0.0),
+            placement.get("RotationAxisZ", 0.0),
+        )
+        # An all-zero axis is not a rotation FreeCAD can represent; fall
+        # back to Z, the conventional default, rather than raising.
+        if axis.Length == 0:
+            axis = FreeCAD.Vector(0.0, 0.0, 1.0)
+        rotation = FreeCAD.Rotation(axis, placement.get("RotationAngle", 0.0))
+    else:
+        rotation = current.Rotation
+
+    obj.Placement = FreeCAD.Placement(position, rotation)
+
+
 def _normalize_property_key(type_id, key):
     """Maps one caller-supplied property name onto the real FreeCAD
     property for `type_id`, or returns it unchanged when nothing matches."""
     allowed = SUPPORTED_MUTATIONS.get(type_id, {})
-    if key in allowed:
+    if key in allowed or key in PLACEMENT_PROPERTIES:
         return key
     flattened = "".join(ch for ch in str(key).lower() if ch.isalnum())
+    if flattened in PLACEMENT_SYNONYMS:
+        return PLACEMENT_SYNONYMS[flattened]
     return PROPERTY_SYNONYMS.get(type_id, {}).get(flattened, key)
 
 
@@ -745,6 +846,10 @@ def op_modify_object(params):
         # of the boundary knows on a modify (the caller sends an objectId,
         # not a type).
         changes = _normalize_properties(type_id, changes)
+        changes, placement = _split_placement(changes)
+        placement_rejection = _validate_placement(placement)
+        if placement_rejection is not None:
+            return placement_rejection
 
         for key in changes:
             if key not in allowed:
@@ -792,7 +897,13 @@ def op_modify_object(params):
         # fall through all the way to an unconditional `doc.save()` with
         # nothing actually changed, reporting a "successful" mutation that
         # mutated nothing.
-        if all(before_values[key] == changes[key] for key in changes):
+        # `changes` alone is not the whole request: a placement-only
+        # modify (move this part, leave its dimensions) arrives with an
+        # EMPTY changes dict, and `all()` over an empty sequence is
+        # vacuously true -- which would report "nothing to do" and skip
+        # the move entirely. Caught by a real test that moved a box in x
+        # and found it still sitting at its original position.
+        if not placement and all(before_values[key] == changes[key] for key in changes):
             errors = []
             return {
                 "found": True,
@@ -817,6 +928,7 @@ def op_modify_object(params):
 
         for key, value in changes.items():
             setattr(obj, key, value)
+        _apply_placement(obj, placement)
 
         doc.recompute()
 
@@ -923,6 +1035,10 @@ def op_create_object(params):
         )
 
     properties = _normalize_properties(type_id, properties)
+    properties, placement = _split_placement(properties)
+    placement_rejection = _validate_placement(placement)
+    if placement_rejection is not None:
+        return placement_rejection
 
     for key in properties:
         if key not in allowed:
@@ -952,6 +1068,7 @@ def op_create_object(params):
         obj.Label = name
         for key, value in properties.items():
             setattr(obj, key, value)
+        _apply_placement(obj, placement)
 
         doc.recompute()
 

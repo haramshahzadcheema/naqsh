@@ -392,6 +392,97 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     }
   });
 
+  it("places parts at real coordinates, so an assembly of more than one part is actually possible", async () => {
+    // Without placement every created object lands at the origin, stacked
+    // on top of every other one -- which makes a car (or any assembly)
+    // impossible to express. Positions are plain bounded numbers under
+    // the same allowlist discipline as every dimension.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const wheel = await adapter.createObject(session, {
+        type: "tyre",
+        name: "Wheel FL",
+        properties: [
+          { key: "radius1", value: 320, readOnly: false },
+          { key: "radius2", value: 90, readOnly: false },
+          { key: "x", value: 1300, readOnly: false },
+          { key: "y", value: 750, readOnly: false },
+          { key: "z", value: 320, readOnly: false },
+          { key: "angle", value: 90, readOnly: false },
+          { key: "axisX", value: 1, readOnly: false }
+        ]
+      });
+      assert.equal(wheel.status, "success", JSON.stringify(wheel));
+
+      // Prove it persisted at that position, via a fresh subprocess.
+      const reconnected = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const reconnectedSession = (await reconnected.connect()).data as EnvironmentSession;
+      const reinspected = await reconnected.inspectObject(reconnectedSession, (wheel.data as EnvironmentObject).id);
+      assert.equal(reinspected.status, "success");
+      const placement = (reinspected.data as EnvironmentObject).properties.find((property) => property.key === "Placement");
+      assert.ok(placement, "a real placed object must report its Placement");
+      assert.ok(JSON.stringify(placement!.value).includes("1300"), `expected x=1300 in ${JSON.stringify(placement!.value)}`);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a partial placement update leaves the axes it was not asked about alone", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const created = await adapter.createObject(session, {
+        type: "box",
+        name: "Placed",
+        properties: [
+          { key: "length", value: 10, readOnly: false },
+          { key: "width", value: 10, readOnly: false },
+          { key: "height", value: 10, readOnly: false },
+          { key: "x", value: 100, readOnly: false },
+          { key: "y", value: 200, readOnly: false },
+          { key: "z", value: 300, readOnly: false }
+        ]
+      });
+      assert.equal(created.status, "success", JSON.stringify(created));
+      const id = (created.data as EnvironmentObject).id;
+
+      // Move ONLY x. y and z must survive untouched.
+      const moved = await adapter.modifyObject(session, id, { x: 999 });
+      assert.equal(moved.status, "success", JSON.stringify(moved));
+      const placement = (moved.data as EnvironmentObject).properties.find((property) => property.key === "Placement");
+      const serialized = JSON.stringify(placement!.value);
+      assert.ok(serialized.includes("999"), `expected the new x in ${serialized}`);
+      assert.ok(serialized.includes("200"), `y must be preserved, got ${serialized}`);
+      assert.ok(serialized.includes("300"), `z must be preserved, got ${serialized}`);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a placement value outside its bounds, exactly like any dimension", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+      const result = await adapter.createObject(session, {
+        type: "box",
+        name: "TooFar",
+        properties: [
+          { key: "length", value: 10, readOnly: false },
+          { key: "x", value: 9e9, readOnly: false }
+        ]
+      });
+      assert.equal(result.status, "error");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
     const fixture = buildFixture();
     try {
