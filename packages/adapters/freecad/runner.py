@@ -887,7 +887,18 @@ def op_modify_object(params):
 
         for key in changes:
             if key not in allowed:
-                return _rejected("unsupported_property", 'Property "%s" is not a supported mutation for "%s"' % (key, type_id))
+                # Names what IS writable, not just what isn't. Observed
+                # live: a model proposed FreeCAD's own compound property
+                # "Placement" (a reasonable guess -- it is the real
+                # property name), got a flat refusal that listed no
+                # alternative, and had no way to discover that position is
+                # exposed here as the plain numbers PositionX/Y/Z. A
+                # rejection the caller cannot act on just stalls the work.
+                writable = sorted(list(allowed.keys()) + list(PLACEMENT_PROPERTIES.keys()))
+                return _rejected(
+                    "unsupported_property",
+                    'Property "%s" is not writable on a "%s". Writable properties are: %s' % (key, type_id, ", ".join(writable)),
+                )
             try:
                 editor_mode = set(obj.getEditorMode(key))
             except Exception:
@@ -1076,7 +1087,11 @@ def op_create_object(params):
 
     for key in properties:
         if key not in allowed:
-            return _rejected("unsupported_property", 'Property "%s" is not supported when creating a "%s"' % (key, type_id))
+            writable = sorted(list(allowed.keys()) + list(PLACEMENT_PROPERTIES.keys()))
+            return _rejected(
+                "unsupported_property",
+                'Property "%s" is not supported when creating a "%s". Supported properties are: %s' % (key, type_id, ", ".join(writable)),
+            )
 
     for key, value in properties.items():
         if not _is_finite_number(value):
