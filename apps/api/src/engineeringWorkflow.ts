@@ -209,7 +209,15 @@ function describeEnvironmentCapabilitiesForModel(runtime: ProjectRuntime): strin
         "solid produced by cuts often cannot be filleted at any radius."
     );
   }
-  if (can("modify")) lines.push("You CAN change an existing object's dimensions with modify_environment_object.");
+  if (can("modify")) {
+    lines.push(
+      "You CAN change an existing object with modify_environment_object, one propertyKey at a time.",
+      "  To MOVE an object, set PositionX, PositionY or PositionZ (plain numbers, in mm). To TURN it, set " +
+        "RotationAngle in degrees together with RotationAxisX/RotationAxisY/RotationAxisZ.",
+      '  There is NO writable "Placement" property -- it is a compound value this boundary deliberately does not ' +
+        "expose. Proposing it will be rejected; use the individual numbers above instead."
+    );
+  }
   if (!can("create")) lines.push("You CANNOT create new objects in this environment -- do not propose create_environment_object.");
   if (!can("delete")) lines.push("You CANNOT delete objects in this environment.");
 
