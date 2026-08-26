@@ -22,6 +22,8 @@ import {
   createCreateCheckTool,
   createCreateCheckpointTool,
   createCreateEnvironmentObjectTool,
+  createBooleanEnvironmentObjectTool,
+  createFilletEnvironmentObjectTool,
   createCreateOptimizationProblemTool,
   createDesignSpecificationStore,
   createDismissClarificationTool,
@@ -638,6 +640,18 @@ export function getOrCreateProjectRuntime(
   // the entire P20/P22/P25 build pipeline for its default case.
   const createEnvironmentObjectTool = createCreateEnvironmentObjectTool(getSession, environmentAdapter);
   registry.register(createEnvironmentObjectTool.tool, createEnvironmentObjectTool.handler);
+
+  // The SHAPING tools. Without these the agent can only place primitives:
+  // it could position a box and a cylinder but never subtract one from the
+  // other, so a wheel arch (or any genuinely shaped body) was unreachable
+  // from inside Naqsh -- only by driving the adapter directly from
+  // outside, which is not the product. Both report an honest
+  // "does not support" when the connected environment lacks them.
+  const booleanEnvironmentObjectTool = createBooleanEnvironmentObjectTool(getSession, environmentAdapter);
+  registry.register(booleanEnvironmentObjectTool.tool, booleanEnvironmentObjectTool.handler);
+
+  const filletEnvironmentObjectTool = createFilletEnvironmentObjectTool(getSession, environmentAdapter);
+  registry.register(filletEnvironmentObjectTool.tool, filletEnvironmentObjectTool.handler);
 
   const createCheckpointToolPair = createCreateCheckpointTool(getState, history, getSession, environmentAdapter, checkpointStore, artifactStore);
   registry.register(createCheckpointToolPair.tool, createCheckpointToolPair.handler);

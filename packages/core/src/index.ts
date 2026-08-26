@@ -22,6 +22,7 @@ export * from "./design-generator.js";
 export * from "./design-specification-store.js";
 export * from "./save-design-specification-tool.js";
 export * from "./create-environment-object-tool.js";
+export * from "./shape-environment-object-tool.js";
 export * from "./build-operations.js";
 export * from "./build-result-store.js";
 export * from "./build-executor.js";
