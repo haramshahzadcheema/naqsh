@@ -1130,6 +1130,176 @@ def op_create_object(params):
 
 
 # The complete, fixed operation table -- see this module's docstring.
+SUPPORTED_BOOLEANS = {
+    "cut": "Part::Cut",
+    "fuse": "Part::Fuse",
+    "common": "Part::Common",
+}
+
+FILLET_RADIUS_BOUNDS = {"min": 0.001, "max": 10000.0}
+
+
+def op_boolean_object(params):
+    """Combines two existing solids into one, by subtraction, union or
+    intersection.
+
+    This is the operation that makes real shapes possible rather than only
+    piles of primitives: a wheel arch is a cylinder CUT out of a body, a
+    one-piece hull is a set of boxes FUSED together. Without it every
+    assembly stays a loose collection of intersecting blocks.
+
+    Deliberately as narrow as every other write here: the kind must be one
+    of three named booleans, both operands must already exist in the
+    document, and the result is only saved if it recomputes into a valid
+    solid. Nothing about this lets a caller name an arbitrary FreeCAD
+    type -- SUPPORTED_BOOLEANS is a closed table, exactly like
+    SUPPORTED_MUTATIONS.
+
+    FreeCAD consumes both operands: after a Cut, Base and Tool become
+    children of the result and are no longer independently visible. That
+    is FreeCAD's own model, not something this script chooses.
+    """
+    file_path = params["filePath"]
+    kind = params.get("kind")
+    base_id = params.get("baseId")
+    tool_id = params.get("toolId")
+    name = params.get("name") or "Boolean"
+
+    type_id = SUPPORTED_BOOLEANS.get(kind)
+    if type_id is None:
+        return _rejected(
+            "unsupported_target_type",
+            'Unknown boolean "%s" -- only %s are supported' % (kind, ", ".join(sorted(SUPPORTED_BOOLEANS.keys()))),
+        )
+
+    doc = _open(file_path)
+    try:
+        base = doc.getObject(base_id)
+        tool = doc.getObject(tool_id)
+        if base is None:
+            return {"found": False, "missing": base_id}
+        if tool is None:
+            return {"found": False, "missing": tool_id}
+
+        obj = doc.addObject(type_id, name)
+        obj.Label = name
+        obj.Base = base
+        obj.Tool = tool
+
+        doc.recompute()
+
+        shape = getattr(obj, "Shape", None)
+        shape_valid = False
+        if shape is not None:
+            try:
+                shape_valid = bool(shape.isValid())
+            except Exception:
+                shape_valid = False
+
+        if not shape_valid:
+            # Never persist a broken boolean -- a Cut that produces an
+            # empty or self-intersecting solid leaves the file untouched.
+            try:
+                doc.removeObject(obj.Name)
+                doc.recompute()
+            except Exception:
+                pass
+            return _rejected("invalid_geometry", 'The "%s" produced no valid solid -- the document was not modified' % (kind,))
+
+        doc.save()
+        return {"found": True, "rejected": False, "object": object_to_dict(obj)}
+    finally:
+        _close(doc)
+
+
+def op_fillet_object(params):
+    """Rounds every edge of one solid by a single radius.
+
+    Rounded edges are the single biggest difference between something that
+    reads as a stack of blocks and something that reads as a designed
+    object, which is why this exists as its own operation.
+
+    Every edge is filleted by the same radius rather than exposing edge
+    selection: naming individual edges would mean handing a caller
+    FreeCAD's internal topological indices, which are unstable across
+    recomputes and would be a far wider (and far less honest) interface
+    than this script's allowlist model allows.
+
+    A radius larger than the geometry can absorb makes FreeCAD produce an
+    invalid shape; that is detected and rejected rather than saved.
+    """
+    file_path = params["filePath"]
+    object_id = params.get("objectId")
+    radius = params.get("radius")
+    name = params.get("name") or "Fillet"
+
+    if not _is_finite_number(radius):
+        return _rejected("invalid_value", 'Fillet radius must be a finite number (got %r)' % (radius,))
+    if radius < FILLET_RADIUS_BOUNDS["min"] or radius > FILLET_RADIUS_BOUNDS["max"]:
+        return _rejected(
+            "value_out_of_range",
+            '"radius" must be between %s and %s (got %s)' % (FILLET_RADIUS_BOUNDS["min"], FILLET_RADIUS_BOUNDS["max"], radius),
+        )
+
+    doc = _open(file_path)
+    try:
+        base = doc.getObject(object_id)
+        if base is None:
+            return {"found": False, "missing": object_id}
+
+        base_shape = getattr(base, "Shape", None)
+        if base_shape is None:
+            return _rejected("invalid_operation", "That object has no shape to fillet")
+
+        edge_count = len(base_shape.Edges)
+        if edge_count == 0:
+            return _rejected("invalid_operation", "That object has no edges to fillet")
+
+        obj = doc.addObject("Part::Fillet", name)
+        obj.Label = name
+        obj.Base = base
+        # Edge indices here are 1-based and refer to the base shape as it
+        # exists right now, which is why they are computed from that shape
+        # rather than accepted from the caller.
+        obj.Edges = [(index + 1, radius, radius) for index in range(edge_count)]
+
+        doc.recompute()
+
+        shape = getattr(obj, "Shape", None)
+        shape_valid = False
+        if shape is not None:
+            try:
+                shape_valid = bool(shape.isValid())
+            except Exception:
+                shape_valid = False
+
+        if not shape_valid:
+            try:
+                doc.removeObject(obj.Name)
+                doc.recompute()
+            except Exception:
+                pass
+            # Deliberately does NOT blame the radius alone. Verified
+            # empirically against real FreeCAD 1.1.3: a 20 mm fillet
+            # succeeds on a plain box, while even 8 mm fails on a solid
+            # produced by boolean cuts, because some of its edges (the
+            # curved intersections a cut leaves behind) cannot all be
+            # rounded at once. Saying "too large" there sent the caller
+            # off shrinking the radius forever, which is exactly the kind
+            # of confidently-wrong diagnosis this codebase avoids.
+            return _rejected(
+                "invalid_geometry",
+                "Could not fillet every edge of that shape at %s mm -- the document was not modified. "
+                "A smaller radius may work; on a solid produced by boolean cuts some edges cannot be "
+                "filleted at any radius, so rounding it before cutting usually does." % (radius,),
+            )
+
+        doc.save()
+        return {"found": True, "rejected": False, "object": object_to_dict(obj)}
+    finally:
+        _close(doc)
+
+
 OPERATIONS = {
     "health": op_health,
     "connect": op_connect,
@@ -1138,6 +1308,8 @@ OPERATIONS = {
     "inspect_document": op_inspect_document,
     "create_object": op_create_object,
     "modify_object": op_modify_object,
+    "boolean_object": op_boolean_object,
+    "fillet_object": op_fillet_object,
     "save": op_save,
     "checkpoint": op_checkpoint,
     "restore": op_restore,

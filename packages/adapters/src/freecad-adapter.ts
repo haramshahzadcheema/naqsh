@@ -233,7 +233,26 @@ const REJECTION_REASON_TO_ERROR_KIND: Record<string, EnvironmentErrorKind> = {
   stale_state: "conflict"
 };
 
-export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): EnvironmentAdapter {
+/**
+ * Shape-combining operations that are real in FreeCAD but have no place
+ * in the shared `EnvironmentAdapter` contract, because they are not
+ * meaningful for every environment (a simulation has no solids to
+ * subtract). Exposed on the FreeCAD adapter specifically rather than
+ * widened into the core interface, so no other adapter is forced to
+ * pretend it can do this.
+ */
+export interface FreeCadAdapter extends EnvironmentAdapter {
+  /** Subtracts, unions or intersects two existing solids. FreeCAD
+   * consumes both operands into the result -- that is its own model. */
+  booleanObject(
+    session: EnvironmentSession,
+    input: { kind: "cut" | "fuse" | "common"; baseId: string; toolId: string; name?: string }
+  ): Promise<EnvironmentOperationResult>;
+  /** Rounds EVERY edge of one solid by a single radius. */
+  filletObject(session: EnvironmentSession, input: { objectId: string; radius: number; name?: string }): Promise<EnvironmentOperationResult>;
+}
+
+export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): FreeCadAdapter {
   const generateId = options.generateId ?? ((prefix: string) => createId(prefix));
   const now = options.now ?? (() => toIsoTimestamp());
 
@@ -617,6 +636,61 @@ export function createFreeCadAdapter(options: FreeCadAdapterOptions = {}): Envir
         ...(inspectionErrors.length > 0 ? { inspectionErrors } : {}),
         ...(warnings.length > 0 ? { warnings } : {})
       });
+    },
+
+    async booleanObject(session, input) {
+      const guard = requireConnected(session, "create_object");
+      if (guard.result) return guard.result;
+      const capabilityGuard = requireCapability("create", "create_object", session.id, null);
+      if (capabilityGuard) return capabilityGuard;
+
+      const result = await runOperation("boolean_object", {
+        filePath: guard.filePath,
+        kind: input.kind,
+        baseId: input.baseId,
+        toolId: input.toolId,
+        name: input.name ?? "Boolean"
+      });
+      if (result.status === "error") return failure("create_object", session.id, null, result.kind, result.message);
+
+      const data = result.data as { found?: unknown; missing?: unknown; rejected?: unknown; reason?: unknown; message?: unknown; object?: unknown };
+      if (data.found === false) {
+        return failure("create_object", session.id, null, "object_not_found", `No object with id "${String(data.missing)}" in the connected document`);
+      }
+      if (data.rejected === true) {
+        const kind = REJECTION_REASON_TO_ERROR_KIND[String(data.reason)] ?? "invalid_operation";
+        return failure("create_object", session.id, null, kind, String(data.message ?? "The boolean was rejected"));
+      }
+      const object = tryBuildObject(data.object);
+      if ("message" in object) return failure("create_object", session.id, null, "environment_failure", object.message);
+      return success("create_object", session.id, object.id, object, {});
+    },
+
+    async filletObject(session, input) {
+      const guard = requireConnected(session, "create_object");
+      if (guard.result) return guard.result;
+      const capabilityGuard = requireCapability("create", "create_object", session.id, null);
+      if (capabilityGuard) return capabilityGuard;
+
+      const result = await runOperation("fillet_object", {
+        filePath: guard.filePath,
+        objectId: input.objectId,
+        radius: input.radius,
+        name: input.name ?? "Fillet"
+      });
+      if (result.status === "error") return failure("create_object", session.id, null, result.kind, result.message);
+
+      const data = result.data as { found?: unknown; missing?: unknown; rejected?: unknown; reason?: unknown; message?: unknown; object?: unknown };
+      if (data.found === false) {
+        return failure("create_object", session.id, null, "object_not_found", `No object with id "${String(data.missing)}" in the connected document`);
+      }
+      if (data.rejected === true) {
+        const kind = REJECTION_REASON_TO_ERROR_KIND[String(data.reason)] ?? "invalid_operation";
+        return failure("create_object", session.id, null, kind, String(data.message ?? "The fillet was rejected"));
+      }
+      const object = tryBuildObject(data.object);
+      if ("message" in object) return failure("create_object", session.id, null, "environment_failure", object.message);
+      return success("create_object", session.id, object.id, object, {});
     },
 
     async modifyObject(session, objectId, changes, options) {

@@ -483,6 +483,110 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     }
   });
 
+  it("cuts one real solid out of another -- the operation that makes a wheel arch possible", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const body = await adapter.createObject(session, {
+        type: "box",
+        name: "Body",
+        properties: [
+          { key: "length", value: 400, readOnly: false },
+          { key: "width", value: 200, readOnly: false },
+          { key: "height", value: 100, readOnly: false }
+        ]
+      });
+      assert.equal(body.status, "success", JSON.stringify(body));
+
+      const cutter = await adapter.createObject(session, {
+        type: "cylinder",
+        name: "Arch",
+        properties: [
+          { key: "radius", value: 60, readOnly: false },
+          { key: "height", value: 400, readOnly: false },
+          { key: "x", value: 200, readOnly: false },
+          { key: "angle", value: 90, readOnly: false },
+          { key: "axisX", value: 1, readOnly: false }
+        ]
+      });
+      assert.equal(cutter.status, "success", JSON.stringify(cutter));
+
+      const cut = await adapter.booleanObject(session, {
+        kind: "cut",
+        baseId: (body.data as EnvironmentObject).id,
+        toolId: (cutter.data as EnvironmentObject).id,
+        name: "BodyWithArch"
+      });
+      assert.equal(cut.status, "success", JSON.stringify(cut));
+      assert.equal((cut.data as EnvironmentObject).type, "Part::Cut");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fuses two solids into one", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+      const a = await adapter.createObject(session, { type: "box", name: "A", properties: [{ key: "length", value: 100, readOnly: false }] });
+      const b = await adapter.createObject(session, { type: "box", name: "B", properties: [{ key: "length", value: 100, readOnly: false }, { key: "z", value: 5, readOnly: false }] });
+      const fused = await adapter.booleanObject(session, {
+        kind: "fuse",
+        baseId: (a.data as EnvironmentObject).id,
+        toolId: (b.data as EnvironmentObject).id,
+        name: "Fused"
+      });
+      assert.equal(fused.status, "success", JSON.stringify(fused));
+      assert.equal((fused.data as EnvironmentObject).type, "Part::Fuse");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rounds every edge of a solid, and refuses an unknown boolean or a missing operand", async () => {
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const box = await adapter.createObject(session, {
+        type: "box",
+        name: "Plain",
+        properties: [
+          { key: "length", value: 400, readOnly: false },
+          { key: "width", value: 200, readOnly: false },
+          { key: "height", value: 100, readOnly: false }
+        ]
+      });
+      const filleted = await adapter.filletObject(session, { objectId: (box.data as EnvironmentObject).id, radius: 20, name: "Rounded" });
+      assert.equal(filleted.status, "success", JSON.stringify(filleted));
+      assert.equal((filleted.data as EnvironmentObject).type, "Part::Fillet");
+
+      // A radius nothing can absorb is rejected, and the document is left alone.
+      const tooBig = await adapter.filletObject(session, { objectId: (box.data as EnvironmentObject).id, radius: 9000, name: "TooBig" });
+      assert.equal(tooBig.status, "error");
+
+      // The boolean table is closed, exactly like SUPPORTED_MUTATIONS.
+      const unknown = await adapter.booleanObject(session, {
+        kind: "explode" as unknown as "cut",
+        baseId: (box.data as EnvironmentObject).id,
+        toolId: (box.data as EnvironmentObject).id,
+        name: "Nope"
+      });
+      assert.equal(unknown.status, "error");
+      assert.equal(unknown.error?.kind, "invalid_operation");
+
+      const missing = await adapter.booleanObject(session, { kind: "cut", baseId: (box.data as EnvironmentObject).id, toolId: "DoesNotExist", name: "Nope2" });
+      assert.equal(missing.status, "error");
+      assert.equal(missing.error?.kind, "object_not_found");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
     const fixture = buildFixture();
     try {
