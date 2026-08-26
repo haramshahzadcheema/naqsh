@@ -124,7 +124,19 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
   const decideProposal = useCallback(
     async (proposalId: string, decision: "approved" | "rejected") => {
       const updated = await dataSource.decideProposal(proposalId, decision);
+      // Patch the decided proposal immediately so the card stops offering
+      // an action it has already taken, THEN reload everything.
+      //
+      // The surgical patch alone (all this used to do) was the single
+      // biggest source of "I clicked Approve and nothing happened":
+      // approving a proposal server-side also creates a checkpoint,
+      // executes the tool, advances the plan step, writes the world
+      // model, records activity, and can produce build results -- none of
+      // which live on the returned Proposal. The rest of the UI kept
+      // rendering pre-approval state, so the only visible feedback was a
+      // second click failing with "already approved".
       setSnapshot((prev) => (prev.status === "ready" ? { status: "ready", data: { ...prev.data, proposals: prev.data.proposals.map((p) => (p.id === proposalId ? updated : p)) } } : prev));
+      setGeneration((g) => g + 1);
       return updated;
     },
     [dataSource]
@@ -148,6 +160,9 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
       setSnapshot((prev) =>
         prev.status === "ready" ? { status: "ready", data: { ...prev.data, backgroundJobs: prev.data.backgroundJobs.map((j) => (j.id === jobId ? updated : j)) } } : prev
       );
+      // Cancelling also stops mid-flight candidate builds and writes real
+      // activity -- same reason decideProposal reloads above.
+      setGeneration((g) => g + 1);
     },
     [dataSource, effectiveProjectId]
   );

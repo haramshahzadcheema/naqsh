@@ -1894,3 +1894,90 @@
     border-top: 1px solid var(--border-subtle);
   }
 }
+
+/* ---- Next step ------------------------------------------------------
+   One always-visible, real-state-derived answer to "what do I do next",
+   rendered above every workspace tab. Tone maps to the same restrained
+   semantic palette every other status surface in the app already uses --
+   never a new accent colour invented for emphasis. */
+
+.nextstep {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  max-width: 880px;
+}
+
+.nextstep--blocked {
+  border-left-color: var(--status-warning);
+  background: var(--status-warning-bg);
+}
+.nextstep--todo {
+  border-left-color: var(--ink);
+}
+.nextstep--done {
+  border-left-color: var(--status-success);
+}
+
+.nextstep__body {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.nextstep__eyebrow {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+
+.nextstep--blocked .nextstep__eyebrow {
+  color: var(--status-warning);
+}
+.nextstep--done .nextstep__eyebrow {
+  color: var(--status-success);
+}
+
+.nextstep__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.nextstep__detail {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  max-width: 68ch;
+}
+
+.nextstep__hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.nextstep__hint code {
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+.nextstep__error {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--status-danger);
+}
+
+.nextstep__action {
+  flex: 0 0 auto;
+}

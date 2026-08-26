@@ -20,11 +20,20 @@ import { MemoryPage } from "../../routes/MemoryPage.js";
 import { HistoryPage } from "../../routes/HistoryPage.js";
 import { EnvironmentPage } from "../../routes/EnvironmentPage.js";
 import { GlobalSearch } from "../search/GlobalSearch.js";
+import { NextStepBar } from "../nextstep/NextStepBar.js";
 
 function RoutePage({ children }: { children: ReactNode }): JSX.Element {
+  // NextStepBar sits above every tab, not inside any one of them: the
+  // thing blocking you is frequently on a DIFFERENT tab than the one
+  // you're looking at (a clarification under Requirements blocking a
+  // proposal under Design, a dropped session blocking both), so a
+  // per-page banner would hide exactly the cases that matter most.
   return (
     <div className="route-page">
-      <div className="route-page__scroll">{children}</div>
+      <div className="route-page__scroll">
+        <NextStepBar />
+        {children}
+      </div>
       <AgentPanel />
     </div>
   );
