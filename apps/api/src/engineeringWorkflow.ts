@@ -542,6 +542,36 @@ export type ExecuteOutcome = { status: "success"; report: ExecutionReport } | { 
  * NOTHING is mutated -- the environment/World Model are never touched
  * before every earlier step already succeeded.
  */
+/**
+ * Marks the plan step a just-executed proposal was realizing as done.
+ *
+ * Nothing in this codebase ever did this, which meant
+ * `selectFirstPendingPlanStep` returned step 1 forever: approving a
+ * proposal executed real work, but the plan never advanced, so the next
+ * "generate" re-proposed the same first step. Observed live -- a plan
+ * whose step 2 was "Create LowerBody Box" could never reach step 2, so
+ * geometry was unreachable through chat no matter how many times you
+ * approved.
+ *
+ * Deliberately tolerant: a proposal that cites a plan or step this
+ * runtime no longer holds is simply not marked, never an error. Execution
+ * has already happened by this point and must not be reported as failed
+ * over bookkeeping.
+ */
+function markPlanStepCompleted(runtime: ProjectRuntime, planId: string, planStepId: string): void {
+  const plan = runtime.plans.get(planId);
+  if (!plan) return;
+  const step = plan.steps.find((candidate) => candidate.id === planStepId);
+  if (!step || step.status === "complete") return;
+  const updated: Plan = {
+    ...plan,
+    steps: plan.steps.map((candidate) => (candidate.id === planStepId ? { ...candidate, status: "complete" as const } : candidate))
+  };
+  runtime.plans.set(planId, updated);
+  const remaining = updated.steps.filter((candidate) => candidate.status !== "complete").length;
+  runtime.logActivity("note", "Plan step complete", `"${step.title}" -- ${remaining} step${remaining === 1 ? "" : "s"} remaining.`);
+}
+
 export async function executeProposal(runtime: ProjectRuntime, proposalId: string): Promise<ExecuteOutcome> {
   const tracked = runtime.proposals.get(proposalId);
   if (!tracked) return { status: "error", error: { kind: "proposal_not_found", message: `No proposal "${proposalId}" in this project.` } };
@@ -708,6 +738,7 @@ export async function executeProposal(runtime: ProjectRuntime, proposalId: strin
   // only ever set from a real ToolResult, never assumed).
   const output = (run.executionResult?.toolResult?.output as { propertyChanges?: unknown[] } | undefined) ?? {};
   runtime.logActivity("recommendation", "Executed", `"${proposal.toolName}" applied successfully.`);
+  markPlanStepCompleted(runtime, proposal.planId, proposal.planStepId);
   if (run.discrepancy?.detected) {
     runtime.logActivity("note", "Discrepancy detected", run.discrepancy.description);
   }

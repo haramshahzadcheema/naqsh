@@ -17,6 +17,19 @@ import { describeModelError } from "./modelErrors.js";
  * decision tree, extracted -- server.ts's handler is now parse request ->
  * load records -> call this -> persist + respond, nothing else.
  */
+/**
+ * The most recent plan that still has unfinished work, or null.
+ *
+ * "Resumable" means it has at least one step that is still pending --
+ * a fully completed plan is finished, and a genuinely new objective
+ * should get a new plan rather than resurrecting an old one.
+ */
+function findResumablePlan(runtime: ProjectRuntime) {
+  const plans = [...runtime.plans.values()].filter((plan) => plan.steps.some((step) => step.status === "pending"));
+  if (plans.length === 0) return null;
+  return plans.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+}
+
 export interface SendChatMessageInput {
   conversation: ConversationRecord;
   project: ProjectRecord;
@@ -103,19 +116,46 @@ export async function sendChatMessage(input: SendChatMessageInput): Promise<Send
     if (runtime.getState().project.requirements.length === 0) {
       assistantText = "I don't have enough information yet -- tell me the requirements (load, dimensions, material, etc.) before I design anything.";
     } else {
-      const planOutcome = await generateProjectPlan(runtime, provider, { modelId });
-      if (planOutcome.status === "error") {
-        workflowEvents.push({ kind: "workflow_failed", stage: "planning", message: planOutcome.error.message });
-        assistantText = `I couldn't generate a plan (${planOutcome.error.message}).`;
+      // CONTINUE an existing plan rather than replacing it.
+      //
+      // This branch used to call generateProjectPlan unconditionally, so
+      // every design-intent message threw away the plan in progress and
+      // built a fresh one -- and since a proposal always realizes the
+      // FIRST pending step, step 2 was unreachable. Observed live: a plan
+      // whose step 2 was "Create LowerBody Box" re-proposed its step-1
+      // verification forever, so no geometry could ever be built through
+      // chat regardless of how many approvals were given.
+      //
+      // Combined with executeProposal now marking a step complete, saying
+      // "generate" again genuinely advances: step 1, then 2, then 3.
+      const existingPlan = findResumablePlan(runtime);
+      let planId: string | null = null;
+
+      if (existingPlan) {
+        planId = existingPlan.id;
+        workflowEvents.push({ kind: "plan_created", plan: existingPlan });
       } else {
-        workflowEvents.push({ kind: "plan_created", plan: planOutcome.plan });
-        const proposalOutcome = await generateProjectProposal(runtime, provider, planOutcome.plan.id, { modelId });
+        const planOutcome = await generateProjectPlan(runtime, provider, { modelId });
+        if (planOutcome.status === "error") {
+          workflowEvents.push({ kind: "workflow_failed", stage: "planning", message: planOutcome.error.message });
+          assistantText = `I couldn't generate a plan (${planOutcome.error.message}).`;
+        } else {
+          planId = planOutcome.plan.id;
+          workflowEvents.push({ kind: "plan_created", plan: planOutcome.plan });
+        }
+      }
+
+      if (planId !== null) {
+        const proposalOutcome = await generateProjectProposal(runtime, provider, planId, { modelId });
         if (proposalOutcome.status === "error") {
           workflowEvents.push({ kind: "workflow_failed", stage: "proposal", message: proposalOutcome.error.message });
           assistantText = `I planned this, but couldn't prepare a concrete proposal (${proposalOutcome.error.message}).`;
         } else {
           workflowEvents.push({ kind: "proposal_created", proposal: proposalOutcome.proposal, approvalId: proposalOutcome.approvalId });
-          assistantText = "I have enough information. I've prepared a design proposal -- take a look below.";
+          const step = (existingPlan ?? null)?.steps.find((candidate) => candidate.id === proposalOutcome.proposal.planStepId);
+          assistantText = step
+            ? `Next step: "${step.title}". I've prepared the change below -- approve it and say "generate" again to continue.`
+            : "I have enough information. I've prepared a design proposal -- take a look below.";
         }
       }
     }
