@@ -632,6 +632,31 @@ SUPPORTED_MUTATIONS = {
         "Radius1": {"min": 0.001, "max": 100000.0},
         "Radius2": {"min": 0.001, "max": 100000.0},
     },
+    # A tapered block. The bottom face is the X/Z rectangle, the top face
+    # is the X2/Z2 one, and Y is the extrusion depth -- so making X2
+    # narrower than X produces a shape that leans inward as it rises.
+    #
+    # This is the primitive that lets a body have RAKE: a car greenhouse
+    # narrows toward the roof and slopes at the screens, and a bonnet
+    # falls away toward the nose. Neither is expressible with boxes,
+    # cylinders and tori, which is why every body built before this read
+    # as a slab with a box on top.
+    #
+    # Bounds are symmetric about zero (unlike every dimension above)
+    # because these are corner COORDINATES, not lengths -- a wedge
+    # straddling the origin is entirely normal.
+    "Part::Wedge": {
+        "Xmin": {"min": -1000000.0, "max": 1000000.0},
+        "Xmax": {"min": -1000000.0, "max": 1000000.0},
+        "Ymin": {"min": -1000000.0, "max": 1000000.0},
+        "Ymax": {"min": -1000000.0, "max": 1000000.0},
+        "Zmin": {"min": -1000000.0, "max": 1000000.0},
+        "Zmax": {"min": -1000000.0, "max": 1000000.0},
+        "X2min": {"min": -1000000.0, "max": 1000000.0},
+        "X2max": {"min": -1000000.0, "max": 1000000.0},
+        "Z2min": {"min": -1000000.0, "max": 1000000.0},
+        "Z2max": {"min": -1000000.0, "max": 1000000.0},
+    },
 }
 
 
@@ -665,6 +690,15 @@ PROPERTY_SYNONYMS = {
         "radius": "Radius1", "radius1": "Radius1", "ringradius": "Radius1",
         "radius2": "Radius2", "tuberadius": "Radius2",
         "thickness": "Radius2", "thick": "Radius2", "width": "Radius2",
+    },
+    "Part::Wedge": {
+        "xmin": "Xmin", "xmax": "Xmax",
+        "ymin": "Ymin", "ymax": "Ymax",
+        "zmin": "Zmin", "zmax": "Zmax",
+        "x2min": "X2min", "x2max": "X2max",
+        "z2min": "Z2min", "z2max": "Z2max",
+        "topxmin": "X2min", "topxmax": "X2max",
+        "topzmin": "Z2min", "topzmax": "Z2max",
     },
 }
 

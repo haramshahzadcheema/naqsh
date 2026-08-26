@@ -157,6 +157,9 @@ const TYPE_KEYWORDS: ReadonlyArray<readonly [RegExp, string]> = [
   // A tyre IS a torus: the ring/donut primitive, not a box or a disc.
   [/\b(torus|tyre|tire|donut|doughnut|ring|o-ring|annulus)\b/, "Part::Torus"],
   [/\b(cylinder|disc|disk|wheel|rim|hub|shaft|rod|pin|boss|axle|spool|roller)\b/, "Part::Cylinder"],
+  // Anything that leans, narrows or slopes -- a car greenhouse tapering
+  // toward the roof, a bonnet falling toward the nose.
+  [/\b(wedge|taper|tapered|ramp|windscreen|windshield|slope|sloped|raked|rake|greenhouse)\b/, "Part::Wedge"],
   [/\b(box|block|plate|bracket|slab|bar|cube|panel|envelope)\b/, "Part::Box"]
 ];
 
@@ -203,6 +206,16 @@ const SUPPORTED_CREATE_TYPES: Record<string, { properties: readonly string[]; sy
   "Part::Cylinder": {
     properties: ["Radius", "Height"],
     synonyms: { radius: "Radius", height: "Height", tall: "Height", length: "Height", thickness: "Height", thick: "Height", depth: "Height" }
+  },
+  "Part::Wedge": {
+    // Bottom face is the X/Z rectangle, top face is X2/Z2, Y is depth.
+    // A narrower X2 than X makes the shape lean inward as it rises.
+    properties: ["Xmin", "Xmax", "Ymin", "Ymax", "Zmin", "Zmax", "X2min", "X2max", "Z2min", "Z2max"],
+    synonyms: {
+      xmin: "Xmin", xmax: "Xmax", ymin: "Ymin", ymax: "Ymax", zmin: "Zmin", zmax: "Zmax",
+      x2min: "X2min", x2max: "X2max", z2min: "Z2min", z2max: "Z2max",
+      topxmin: "X2min", topxmax: "X2max", topzmin: "Z2min", topzmax: "Z2max"
+    }
   },
   "Part::Torus": {
     // Radius1 is the ring radius (how big the wheel is); Radius2 is the

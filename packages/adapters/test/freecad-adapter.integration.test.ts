@@ -587,6 +587,53 @@ describe("FreeCAD adapter: LEVEL 2 real integration", { skip }, () => {
     }
   });
 
+  it("builds a genuinely TAPERED wedge -- the primitive that gives a body rake, not another box", async () => {
+    // Boxes, cylinders and tori can only ever produce a slab with a box
+    // on top. A car greenhouse narrows toward the roof and rakes at the
+    // screens; that needs a top face smaller than the bottom one.
+    const fixture = buildFixture();
+    try {
+      const adapter = createFreeCadAdapter({ freecadCmdPath, runnerScriptPath, defaultDocumentPath: fixture.path });
+      const session = (await adapter.connect()).data as EnvironmentSession;
+
+      const created = await adapter.createObject(session, {
+        type: "greenhouse",
+        name: "Greenhouse",
+        properties: [
+          { key: "xmin", value: -1000, readOnly: false },
+          { key: "xmax", value: 1000, readOnly: false },
+          { key: "x2min", value: -600, readOnly: false },
+          { key: "x2max", value: 300, readOnly: false },
+          { key: "zmin", value: -800, readOnly: false },
+          { key: "zmax", value: 800, readOnly: false },
+          { key: "z2min", value: -600, readOnly: false },
+          { key: "z2max", value: 600, readOnly: false },
+          { key: "ymin", value: 0, readOnly: false },
+          { key: "ymax", value: 500, readOnly: false }
+        ]
+      });
+      assert.equal(created.status, "success", JSON.stringify(created));
+      const object = created.data as EnvironmentObject;
+      assert.equal(object.type, "Part::Wedge", '"greenhouse" must resolve to a wedge, not fall through to a box');
+
+      const value = (key: string): number => {
+        const property = object.properties.find((entry) => entry.key === key);
+        return (property!.value as { value: number }).value;
+      };
+
+      // The top face must genuinely be SMALLER than the bottom one --
+      // otherwise this is a box wearing a wedge's type name.
+      const bottomLength = value("Xmax") - value("Xmin");
+      const topLength = value("X2max") - value("X2min");
+      const bottomWidth = value("Zmax") - value("Zmin");
+      const topWidth = value("Z2max") - value("Z2min");
+      assert.ok(topLength < bottomLength, `roof (${topLength}) must be shorter than sill (${bottomLength})`);
+      assert.ok(topWidth < bottomWidth, `roof (${topWidth}) must be narrower than sill (${bottomWidth})`);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("AUDIT FIX: createObject rejects a type it cannot map to a real FreeCAD type -- honest failure, never a silently-wrong object", async () => {
     const fixture = buildFixture();
     try {
