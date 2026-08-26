@@ -1,5 +1,7 @@
-import type { Clarification, Proposal } from "@naqsh/schemas";
+import type {
+  BuildResult, Clarification, Proposal } from "@naqsh/schemas";
 import {
+  apiGetBuildResults,
   ApiError,
   apiAnalyzeFrame,
   apiAnswerClarification,
@@ -84,7 +86,7 @@ export function createHttpDataSource(): NaqshDataSource {
     },
 
     async getProjectSnapshot(projectId: string): Promise<ProjectSnapshot> {
-      const [record, plans, proposalEntries, checks, verificationResults, memoryRecords, backgroundJobs, fileRecords, candidates, designSpecifications, clarifications, objectiveSatisfactionResults] =
+      const [record, plans, proposalEntries, checks, verificationResults, memoryRecords, backgroundJobs, fileRecords, candidates, designSpecifications, clarifications, objectiveSatisfactionResults, buildResults] =
         await Promise.all([
           apiGetProject(projectId),
           apiGetPlans(projectId),
@@ -97,7 +99,16 @@ export function createHttpDataSource(): NaqshDataSource {
           apiGetCandidates(projectId),
           apiGetDesignSpecifications(projectId),
           apiGetClarifications(projectId),
-          apiGetObjectiveSatisfactionResults(projectId)
+          apiGetObjectiveSatisfactionResults(projectId),
+          // Supplementary, and deliberately fault-tolerant: build results
+          // explain a failure but are not required to render the
+          // workspace. Inside Promise.all a single rejection would fail
+          // the ENTIRE snapshot -- so an API server without this route
+          // (or a transient error on it) would black out every tab
+          // rather than degrade one panel. Failing soft to [] is honest
+          // here: the UI then shows no failures because it genuinely
+          // could not read any, and every other panel still works.
+          apiGetBuildResults(projectId).catch(() => [] as BuildResult[])
         ]);
       const files: ProjectFile[] = fileRecords.map((f) => ({
         id: f.id,
@@ -135,6 +146,7 @@ export function createHttpDataSource(): NaqshDataSource {
         proposals: proposalEntries.map((entry) => entry.proposal),
         decisions: project.decisions,
         memoryRecords,
+        buildResults,
         backgroundJobs,
         jobEvents: jobEventLists.flat(),
         files

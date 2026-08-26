@@ -452,6 +452,27 @@ export function createServer(options: CreateServerOptions) {
     })
   );
 
+  /**
+   * Real build results for the project.
+   *
+   * AUDIT FIX: these were persisted by `projectRuntime` from the very
+   * beginning but exposed through NO endpoint, so a failed build was
+   * completely invisible in the UI. Reproduced live: three consecutive
+   * candidate builds failed with `"freecad" does not support "create"`
+   * and the workspace showed nothing at all -- no error, no badge, no
+   * activity entry the user could act on. The whole exploration simply
+   * appeared to do nothing.
+   */
+  app.get(
+    "/projects/:projectId/build-results",
+    asyncHandler(async (req, res) => {
+      const record = getOwnedProject(req, res);
+      if (!record) return;
+      const runtime = getOrCreateProjectRuntime(record.id, projects, record.environmentKind, runtimeStates);
+      res.json(runtime.buildResultStore.list());
+    })
+  );
+
   app.get(
     "/projects/:projectId/design-specifications",
     asyncHandler(async (req, res) => {

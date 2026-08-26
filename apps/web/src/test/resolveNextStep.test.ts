@@ -29,6 +29,7 @@ function snapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
     proposals: [],
     decisions: [],
     memoryRecords: [],
+    buildResults: [],
     backgroundJobs: [],
     jobEvents: [],
     files: [],
@@ -128,6 +129,37 @@ describe("resolveNextStep", () => {
   it("a passing verification does not raise a failure step", () => {
     const step = resolveNextStep(snapshot({ requirements: [requirement], plan, verificationResults: [{ id: "vr_1", status: "pass" } as never] }), connected, true);
     expect(step.id).not.toBe("verification_failed");
+  });
+
+  it("AUDIT FIX: a genuinely failed build is surfaced with its REAL adapter error, not silence", () => {
+    // Reproduced live before the fix: three consecutive builds failed
+    // with a real adapter error and the workspace showed nothing at all.
+    const failedBuild = {
+      id: "build_1",
+      status: "failed",
+      operations: [{ id: "op_1", toolName: "create_environment_object", status: "failed", error: { kind: "execution_failure", message: '"freecad" does not support "create"' } }]
+    } as never;
+    const step = resolveNextStep(snapshot({ requirements: [requirement], plan, buildResults: [failedBuild] }), connected, true);
+    expect(step.id).toBe("build_failed");
+    expect(step.tone).toBe("blocked");
+    expect(step.detail).toContain('does not support "create"');
+    expect(step.action).toEqual({ kind: "navigate", to: "/experiments" });
+  });
+
+  it("a completed build is never reported as a failure", () => {
+    const okBuild = { id: "build_2", status: "completed", operations: [{ id: "op_2", toolName: "create_environment_object", status: "succeeded", error: null }] } as never;
+    const step = resolveNextStep(snapshot({ requirements: [requirement], plan, buildResults: [okBuild] }), connected, true);
+    expect(step.id).not.toBe("build_failed");
+  });
+
+  it("a failed build outranks unbuilt candidates -- fix what broke before generating more", () => {
+    const failedBuild = { id: "build_3", status: "failed", operations: [] } as never;
+    const step = resolveNextStep(
+      snapshot({ requirements: [requirement], plan, buildResults: [failedBuild], candidates: [{ id: "cand_1", status: "proposed" } as never] }),
+      connected,
+      true
+    );
+    expect(step.id).toBe("build_failed");
   });
 
   it("surfaces unbuilt candidates and points at Experiments, where they can actually be run", () => {

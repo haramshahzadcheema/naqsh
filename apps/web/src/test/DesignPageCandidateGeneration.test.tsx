@@ -77,7 +77,14 @@ async function getToDesignTabOnRealProject(user: ReturnType<typeof userEvent.set
   await user.click(screen.getByRole("button", { name: "Send" }));
   await screen.findByText("Ok.");
 
-  await user.click(screen.getByRole("link", { name: "Design" }));
+  // Matched by href, not by exact accessible name: the Design tab's name
+  // legitimately gains a live pending-proposal count ("Design 1 pending")
+  // as soon as this test's own "Design this." message produces a real
+  // proposal, so an exact-name query was racing that badge rather than
+  // asserting anything about candidate generation.
+  const designTab = screen.getAllByRole("link").find((link) => link.getAttribute("href") === "/design");
+  if (!designTab) throw new Error("expected a Design tab link");
+  await user.click(designTab);
   await screen.findByText("Generate candidate designs");
 }
 

@@ -22,6 +22,7 @@
  * domain model.
  */
 import type {
+  BuildResult,
   BackgroundJob,
   Candidate,
   Check,
@@ -87,6 +88,11 @@ export interface ProjectSnapshot {
   proposals: Proposal[];
   decisions: Decision[];
   memoryRecords: MemoryRecord[];
+  /** Real build results, including FAILED ones. Persisted server-side
+   * from the start but exposed through no endpoint until an audit found
+   * that three consecutive real build failures produced no visible UI at
+   * all -- see `apiGetBuildResults`. */
+  buildResults: BuildResult[];
   backgroundJobs: BackgroundJob[];
   jobEvents: JobEvent[];
   files: ProjectFile[];

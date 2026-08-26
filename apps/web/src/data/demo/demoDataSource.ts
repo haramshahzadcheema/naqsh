@@ -101,6 +101,7 @@ export function createDemoDataSource(): NaqshDataSource {
           proposals,
           decisions: demo.decisions,
           memoryRecords,
+          buildResults: [],
           backgroundJobs: [backgroundJob],
           jobEvents: demo.jobEvents,
           // Phase D: the seeded demo was never given a modeled file

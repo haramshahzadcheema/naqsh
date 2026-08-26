@@ -1085,3 +1085,48 @@
     display: none;
   }
 }
+
+/* ---- Chat suggestions -----------------------------------------------
+   Real, verbatim trigger phrases the deterministic intent patterns in
+   apps/api/src/workflowEvents.ts actually match. Before the audit these
+   were undiscoverable: the only way to advance the workflow was to guess
+   the wording. Clicking one fills the composer -- it never sends. */
+
+.chat-suggestions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: 0 var(--space-1) var(--space-2);
+}
+
+.chat-suggestions__label {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-weight: var(--weight-semibold);
+}
+
+.chat-suggestions__chip {
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-radius: 20px;
+  padding: 3px 11px;
+  font-size: var(--text-sm);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-suggestions__chip:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.chat-suggestions__chip:disabled {
+  opacity: 0.45;
+}

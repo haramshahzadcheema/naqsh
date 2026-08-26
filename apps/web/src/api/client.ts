@@ -1,4 +1,5 @@
 import type {
+  BuildResult,
   Approval,
   AutonomyLevel,
   BackgroundJob,
@@ -438,6 +439,13 @@ export function apiGetProposalsForProject(projectId: string): Promise<Array<{ pr
 
 export function apiGetCandidates(projectId: string): Promise<Candidate[]> {
   return request(`/projects/${projectId}/candidates`);
+}
+
+/** AUDIT FIX: build results were persisted server-side but had no
+ * endpoint and never reached the UI, so a failed candidate build was
+ * silently invisible. */
+export function apiGetBuildResults(projectId: string): Promise<BuildResult[]> {
+  return request(`/projects/${projectId}/build-results`);
 }
 
 export function apiGetDesignSpecifications(projectId: string): Promise<DesignSpecification[]> {

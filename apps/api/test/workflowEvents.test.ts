@@ -147,3 +147,28 @@ describe("parseExplorationCount: honest, bounded, defaulted", () => {
     assert.equal(parseExplorationCount("Give me 0 alternatives."), 1);
   });
 });
+
+describe("AUDIT FIX: the phrases the UI suggests must actually trigger the workflow", () => {
+  // apps/web/src/components/chat/ChatSuggestions.tsx offers these to the
+  // user as clickable chips, verbatim. They exist because the intent
+  // patterns are deliberately deterministic regexes with no UI anywhere
+  // naming what they match -- observed live, the only way to advance the
+  // workflow was to guess the wording, and a user repeatedly reported
+  // "nothing is happening" while sending phrasings that never matched.
+  //
+  // If someone tightens a pattern and a suggested chip silently stops
+  // working, the UI would be actively lying. This is the guard.
+  it('"generate" really does trigger design intent', () => {
+    assert.equal(hasDesignIntent("generate"), true);
+  });
+
+  it('"explore alternatives" really does trigger exploration intent', () => {
+    assert.equal(hasExplorationIntent("explore alternatives"), true);
+  });
+
+  it("the example requirement chip is deliberately NOT an intent trigger -- it is captured as a requirement instead", () => {
+    const example = "The part must be no more than 100mm long.";
+    assert.equal(hasDesignIntent(example), false);
+    assert.equal(hasExplorationIntent(example), false);
+  });
+});

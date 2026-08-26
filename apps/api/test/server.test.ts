@@ -190,6 +190,22 @@ describe("apps/api HTTP server: real endpoints, real end-to-end behavior", () =>
     assert.deepEqual(designs.body, []);
   });
 
+  it("AUDIT FIX: build results are reachable over HTTP at all, and stay scoped to their owner", async () => {
+    // These were persisted by projectRuntime from the beginning but had
+    // NO route, so a failed build could never reach the UI. Reproduced
+    // live: three consecutive real build failures produced no visible
+    // feedback anywhere in the workspace.
+    const project = (await json("/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Build Results Project" }) })).body;
+
+    const builds = await json(`/projects/${project.id}/build-results`);
+    assert.equal(builds.status, 200, "the build-results route must exist");
+    assert.ok(Array.isArray(builds.body), "it must return a real array, honestly empty when nothing has been built");
+
+    // Another identity must not be able to read this project's builds.
+    const otherIdentity = await json(`/projects/${project.id}/build-results`, { headers: { "x-naqsh-user": "someone-else" } });
+    assert.equal(otherIdentity.status, 404);
+  });
+
   it("Phase 19: clarification routes are real -- honest empty listing, 404 for an unknown clarification, and 503 for an unconfigured model", async () => {
     const project = (await json("/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Clarification Route Project" }) })).body;
 

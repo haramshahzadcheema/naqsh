@@ -126,6 +126,32 @@ export function resolveNextStep(snapshot: ProjectSnapshot, environment: Environm
     };
   }
 
+  // --- 6b. A build that actually FAILED outranks anything optional. ---
+  // This is the case that produced no UI whatsoever before the audit:
+  // real builds failing with a real adapter error, three times in a row,
+  // while the workspace showed nothing and the exploration simply looked
+  // like it had done nothing at all.
+  // `?? []` on purpose: resolveNextStep runs on EVERY render of the
+  // workspace and the chat, so a snapshot from a source that predates
+  // this field must degrade to "no failures known", never throw and take
+  // the whole page down with it.
+  const failedBuilds = (snapshot.buildResults ?? []).filter((build) => build.status === "failed");
+  if (failedBuilds.length > 0) {
+    const firstError = failedBuilds
+      .flatMap((build) => build.operations)
+      .find((operation) => operation.error)?.error?.message;
+    return {
+      id: "build_failed",
+      title: failedBuilds.length === 1 ? "1 build failed" : `${failedBuilds.length} builds failed`,
+      detail: firstError
+        ? `Naqsh could not apply a change to the document: ${firstError}`
+        : "Naqsh could not apply a change to the connected document. Open Experiments for the full result.",
+      action: { kind: "navigate", to: "/experiments" },
+      actionLabel: "See the failure",
+      tone: "blocked"
+    };
+  }
+
   // --- 7. Candidates generated but never actually built. ---
   const unbuiltCandidates = snapshot.candidates.filter((candidate) => candidate.status === "proposed");
   if (unbuiltCandidates.length > 0) {

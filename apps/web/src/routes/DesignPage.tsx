@@ -68,9 +68,18 @@ function GenerateCandidatesPanel({ plan }: { plan: Plan }): JSX.Element {
         </button>
       </div>
       {status.kind === "done" ? (
+        // Composed into ONE string, not two adjacent expressions: this is
+        // a role="status" live region, and adjacent text nodes get
+        // announced as separate fragments by screen readers rather than
+        // one sentence. (It also made the node unqueryable as a whole,
+        // which is how the split was noticed.)
         <p className="state-message" role="status">
-          {status.generatedCount > 0 ? `Generated ${status.generatedCount} candidate${status.generatedCount === 1 ? "" : "s"}.` : "No candidates were generated."}
-          {status.failedCount > 0 ? ` ${status.failedCount} variation${status.failedCount === 1 ? "" : "s"} failed.` : ""}
+          {[
+            status.generatedCount > 0 ? `Generated ${status.generatedCount} candidate${status.generatedCount === 1 ? "" : "s"}.` : "No candidates were generated.",
+            status.failedCount > 0 ? `${status.failedCount} variation${status.failedCount === 1 ? "" : "s"} failed.` : null
+          ]
+            .filter(Boolean)
+            .join(" ")}
         </p>
       ) : null}
       {status.kind === "error" ? (
@@ -90,26 +99,20 @@ export function DesignPage(): JSX.Element {
 
   const { data } = snapshot;
 
-  const generatePanel = isRealProject && data.plan && data.plan.steps.length > 0 ? <GenerateCandidatesPanel plan={data.plan} /> : null;
+  const generatePanel = isRealProject && data.plan && data.plan.steps.length > 0 ? <GenerateCandidatesPanel key="generate-candidates" plan={data.plan} /> : null;
 
-  if (data.candidates.length === 0) {
-    return (
-      <div className="view-stack">
-        <EmptyState
-          title="No design yet"
-          message={
-            isRealProject && (!data.plan || data.plan.steps.length === 0)
-              ? "Naqsh needs a plan before it can propose candidate designs -- capture requirements in chat first."
-              : "Once Naqsh proposes candidate designs, you'll be able to compare and approve them here."
-          }
-        />
-        {generatePanel}
-      </div>
-    );
-  }
+  const hasCandidates = data.candidates.length > 0;
+  const recommendedCandidateId = hasCandidates ? deriveRecommendedCandidateId(data.candidates, data.experiments) : null;
 
-  const recommendedCandidateId = deriveRecommendedCandidateId(data.candidates, data.experiments);
-
+  // AUDIT FIX: this used to be TWO separate `return`s -- one for the
+  // empty state, one for the populated state -- each rendering
+  // `generatePanel` at a different position in the tree. Generating your
+  // FIRST candidate flips between them, so React unmounted and remounted
+  // GenerateCandidatesPanel, discarding its local status state and wiping
+  // the "Generated 1 candidate." confirmation the instant it appeared.
+  // A successful generation therefore looked like nothing had happened,
+  // which is the single most damaging thing this screen could do. One
+  // return, one stable tree position, state survives the reload.
   return (
     <div className="view-stack">
       {data.proposals.map((proposal) => (
@@ -126,14 +129,25 @@ export function DesignPage(): JSX.Element {
         />
       ))}
 
-      <section>
-        <h2 className="view-section-title">Candidate designs</h2>
-        <CandidateComparison candidates={data.candidates} experiments={data.experiments} verificationResults={data.verificationResults} recommendedCandidateId={recommendedCandidateId} />
-      </section>
+      {hasCandidates ? (
+        <section>
+          <h2 className="view-section-title">Candidate designs</h2>
+          <CandidateComparison candidates={data.candidates} experiments={data.experiments} verificationResults={data.verificationResults} recommendedCandidateId={recommendedCandidateId} />
+        </section>
+      ) : (
+        <EmptyState
+          title="No design yet"
+          message={
+            isRealProject && (!data.plan || data.plan.steps.length === 0)
+              ? "Naqsh needs a plan before it can propose candidate designs -- capture requirements in chat first."
+              : "Once Naqsh proposes candidate designs, you'll be able to compare and approve them here."
+          }
+        />
+      )}
 
       {generatePanel}
 
-      <VerificationPanel checks={data.checks} results={data.verificationResults} objectiveSatisfaction={data.objectiveSatisfaction} />
+      {hasCandidates ? <VerificationPanel checks={data.checks} results={data.verificationResults} objectiveSatisfaction={data.objectiveSatisfaction} /> : null}
     </div>
   );
 }

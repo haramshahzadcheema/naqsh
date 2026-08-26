@@ -18,6 +18,7 @@ import { PlanCard } from "../plan/PlanCard.js";
 import { ProposalCard } from "../proposal/ProposalCard.js";
 import { ExecutionStatus } from "../execution/ExecutionStatus.js";
 import { ExplorationCard } from "../design/ExplorationCard.js";
+import { ChatSuggestions } from "./ChatSuggestions.js";
 
 /** Real availability, not decoration -- a Gemini option is only ever
  * marked "Available" once the SERVER has confirmed `GEMINI_API_KEY` is
@@ -373,6 +374,8 @@ export function ChatMainView({
             ))}
           </div>
         ) : null}
+
+        <ChatSuggestions onPick={(text) => { setDraft(text); textareaRef.current?.focus(); }} disabled={sending} />
 
         <div className="chat-main__composer-row">
           <label className="visually-hidden" htmlFor="chat-composer">

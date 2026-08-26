@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Clarification, MemoryRecord, Proposal } from "@naqsh/schemas";
 import type { AgentEvent, EnvironmentStatus, NaqshDataSource, ProjectSnapshot, ProjectSummary } from "./NaqshDataSource.js";
 import { createDemoDataSource } from "./demo/demoDataSource.js";
@@ -74,13 +74,40 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
   const dataSource = isRealProject ? httpDataSource : demoDataSource;
   const effectiveProjectId = isRealProject ? activeProjectId! : DEMO_PROJECT.id;
 
+  /**
+   * Which project the CURRENTLY displayed data belongs to.
+   *
+   * AUDIT FIX -- this exists to distinguish a first load from a refresh.
+   * Every one of these effects used to call `setState({status:"loading"})`
+   * unconditionally, including on a mere `reload()`. Because each page
+   * returns an early `<LoadingState/>` while loading, that meant EVERY
+   * mutation -- approving a proposal, generating candidates, answering a
+   * clarification, connecting an environment -- blanked the whole
+   * workspace to a spinner and unmounted the page, destroying any local
+   * component state with it.
+   *
+   * The most visible casualty was confirmation: `GenerateCandidatesPanel`
+   * would report "Generated 1 candidate." and have it wiped in the same
+   * tick by the reload that generation itself triggered, so a SUCCESSFUL
+   * action looked like nothing had happened.
+   *
+   * Refreshes now revalidate in place and keep the last good data on
+   * screen; only a genuine first load (or a switch to a different
+   * project) shows a loading state.
+   */
+  const loadedProjectRef = useRef<string | null>(null);
+  const agentEventsProjectRef = useRef<string | null>(null);
+  const environmentProjectRef = useRef<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
-    setSnapshot({ status: "loading" });
+    setSnapshot((prev) => (prev.status === "ready" && loadedProjectRef.current === effectiveProjectId ? prev : { status: "loading" }));
     dataSource
       .getProjectSnapshot(effectiveProjectId)
       .then((data) => {
-        if (!cancelled) setSnapshot({ status: "ready", data });
+        if (cancelled) return;
+        loadedProjectRef.current = effectiveProjectId;
+        setSnapshot({ status: "ready", data });
       })
       .catch((error: unknown) => {
         if (!cancelled) setSnapshot({ status: "error", message: error instanceof Error ? error.message : "Failed to load project." });
@@ -92,11 +119,13 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
 
   useEffect(() => {
     let cancelled = false;
-    setAgentEvents({ status: "loading" });
+    setAgentEvents((prev) => (prev.status === "ready" && agentEventsProjectRef.current === effectiveProjectId ? prev : { status: "loading" }));
     dataSource
       .getAgentEvents(effectiveProjectId)
       .then((data) => {
-        if (!cancelled) setAgentEvents({ status: "ready", data });
+        if (cancelled) return;
+        agentEventsProjectRef.current = effectiveProjectId;
+        setAgentEvents({ status: "ready", data });
       })
       .catch((error: unknown) => {
         if (!cancelled) setAgentEvents({ status: "error", message: error instanceof Error ? error.message : "Failed to load agent activity." });
@@ -111,7 +140,9 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
     dataSource
       .getEnvironmentStatus(effectiveProjectId)
       .then((data) => {
-        if (!cancelled) setEnvironment({ status: "ready", data });
+        if (cancelled) return;
+        environmentProjectRef.current = effectiveProjectId;
+        setEnvironment({ status: "ready", data });
       })
       .catch((error: unknown) => {
         if (!cancelled) setEnvironment({ status: "error", message: error instanceof Error ? error.message : "Environment status unavailable." });
