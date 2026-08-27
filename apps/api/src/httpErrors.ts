@@ -36,6 +36,21 @@ export function writeErrorResponse(err: unknown, res: Response): void {
     return;
   }
 
+  // A malformed JSON body is the CLIENT's mistake, not the server's.
+  // express.json() throws a SyntaxError carrying `status: 400` and the
+  // raw body; without this branch it fell through to the generic 500
+  // below and told the caller "An unexpected error occurred", which is
+  // both the wrong status and actively unhelpful -- observed while
+  // hand-testing an endpoint with a mis-escaped path in the payload.
+  //
+  // The parser's own message ("Unexpected token ... in JSON at position
+  // 65") is safe to return: it describes what the caller sent, not
+  // anything about the server. `err.body` is deliberately NOT echoed.
+  if (err instanceof SyntaxError && "body" in err && (err as unknown as { status?: unknown }).status === 400) {
+    res.status(400).json({ error: { kind: "malformed_json", message: `Request body is not valid JSON: ${err.message}` } });
+    return;
+  }
+
   // Only the genuinely unrecognized/unexpected path is logged at error
   // level -- a recognized domain error above (422) is normal, expected
   // control flow (a rejected proposal, a stale approval, an invalid

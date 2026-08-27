@@ -321,3 +321,21 @@ describe("typed error mapping at the HTTP boundary (httpErrors.ts)", () => {
     assert.equal(body.error.requestId, "req_correlation_test");
   });
 });
+
+describe("malformed request bodies", () => {
+  it("a body that is not valid JSON is a 400 the caller can act on, never a generic 500", async () => {
+    // Observed while hand-testing: a mis-escaped Windows path in a JSON
+    // payload produced 500 "An unexpected error occurred" -- the wrong
+    // status, and it told the caller nothing about what was wrong with
+    // what THEY sent.
+    const res = await fetch(`${baseUrl}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"name":"broken","path":"C:\bad\escape"'
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error?: { kind?: string; message?: string } };
+    assert.equal(body.error?.kind, "malformed_json");
+    assert.match(String(body.error?.message), /not valid JSON/i);
+  });
+});
