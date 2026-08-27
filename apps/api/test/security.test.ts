@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -337,5 +337,68 @@ describe("malformed request bodies", () => {
     const body = (await res.json()) as { error?: { kind?: string; message?: string } };
     assert.equal(body.error?.kind, "malformed_json");
     assert.match(String(body.error?.message), /not valid JSON/i);
+  });
+});
+
+describe("documentPath is not an arbitrary file-read primitive", () => {
+  // FOUND BY EXPLOITING IT, not by reading the code: documentPath was
+  // accepted as any absolute path that merely existed, and the document
+  // download endpoint streams that path back. A project pointed at a
+  // secrets file returned its contents verbatim. On a hosted deployment
+  // that is the Gemini key, /etc/passwd, or source.
+  it("refuses a non-.FCStd documentPath at project creation", async () => {
+    const secret = join(tmpdir(), `naqsh-sec-${Date.now()}.env`);
+    writeFileSync(secret, "GEMINI_API_KEY=super-secret-value");
+    try {
+      const res = await fetch(`${baseUrl}/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "exfil", environmentKind: "freecad", documentPath: secret })
+      });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { error?: { message?: string } };
+      assert.match(String(body.error?.message), /\.FCStd/i);
+
+      // And the refusal must not echo the file's contents back.
+      assert.ok(!JSON.stringify(body).includes("super-secret-value"));
+    } finally {
+      rmSync(secret, { force: true });
+    }
+  });
+
+  it("refuses a traversal-shaped path that dresses itself up as a document", async () => {
+    const res = await fetch(`${baseUrl}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "traversal", environmentKind: "freecad", documentPath: "/etc/passwd" })
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("honours NAQSH_DOCUMENT_ROOT when set, so a hosted deployment can confine reads", async () => {
+    // Local use leaves this unset -- opening any document on your own
+    // machine is the feature. A hosted server should set it, because
+    // there "any file on the server" is not the user's machine at all.
+    const previous = process.env.NAQSH_DOCUMENT_ROOT;
+    process.env.NAQSH_DOCUMENT_ROOT = join(tmpdir(), "naqsh-allowed-root");
+    try {
+      const outside = join(tmpdir(), `naqsh-outside-${Date.now()}.FCStd`);
+      writeFileSync(outside, "not really a document");
+      try {
+        const res = await fetch(`${baseUrl}/projects`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "outside root", environmentKind: "freecad", documentPath: outside })
+        });
+        assert.equal(res.status, 400);
+        const body = (await res.json()) as { error?: { message?: string } };
+        assert.match(String(body.error?.message), /outside the directory/i);
+      } finally {
+        rmSync(outside, { force: true });
+      }
+    } finally {
+      if (previous === undefined) delete process.env.NAQSH_DOCUMENT_ROOT;
+      else process.env.NAQSH_DOCUMENT_ROOT = previous;
+    }
   });
 });

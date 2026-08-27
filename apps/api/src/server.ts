@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 import cors from "cors";
 import multer from "multer";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, createReadStream } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, resolve, relative, isAbsolute } from "node:path";
 import { createId, AuthorizationError, type Approval } from "@naqsh/schemas";
 import { initializeWorldModel } from "@naqsh/core";
 import {
@@ -162,6 +162,49 @@ export function createServer(options: CreateServerOptions) {
    * post-response runtime-state persistence hook (below) needs to know
    * which project's runtime might have just changed, without threading a
    * projectId through every individual route handler. */
+  /**
+   * Guards the ONE place a caller names a server filesystem path.
+   *
+   * SECURITY (critical, found by exploiting it): `documentPath` was
+   * accepted as any absolute path that merely existed, and
+   * `GET /projects/:id/document/download` streams that path back. Pointing
+   * a project at a secrets file and downloading it returned its contents
+   * verbatim -- arbitrary file read, and on a hosted deployment that means
+   * the Gemini key, /etc/passwd, or source.
+   *
+   * Two independent restrictions, because either alone is weaker than it
+   * looks:
+   *
+   *  1. The path must end in `.FCStd`. That is the only file type this
+   *     product has any business opening, and it excludes essentially
+   *     everything worth stealing.
+   *  2. When `NAQSH_DOCUMENT_ROOT` is set, the resolved path must sit
+   *     inside it. Local use leaves it unset -- pointing at any document
+   *     on your own machine is the entire feature -- but a hosted
+   *     deployment should set it, because there "any file on the server"
+   *     is not the user's own machine at all.
+   *
+   * Returns a message when the path must be refused, or `null` when it is
+   * acceptable.
+   */
+  function rejectUnsafeDocumentPath(candidate: string): string | null {
+    const resolved = resolve(candidate);
+    if (!resolved.toLowerCase().endsWith(".fcstd")) {
+      return "documentPath must be a .FCStd file.";
+    }
+    const root = process.env.NAQSH_DOCUMENT_ROOT?.trim();
+    if (root) {
+      const resolvedRoot = resolve(root);
+      // `relative` rather than startsWith: a plain prefix test treats
+      // /data-other as inside /data.
+      const rel = relative(resolvedRoot, resolved);
+      if (rel.startsWith("..") || isAbsolute(rel)) {
+        return "documentPath is outside the directory this server is allowed to open documents from.";
+      }
+    }
+    return null;
+  }
+
   function getOwnedProject(req: Request, res: Response): ProjectRecord | null {
     const projectId = param(req, "projectId");
     const record = isOwnedProject(projects.get(projectId), getAuthContext(req));
@@ -324,10 +367,12 @@ export function createServer(options: CreateServerOptions) {
           return badRequest(res, "documentPath is required when environmentKind is \"freecad\" -- the absolute path to a .FCStd file on the machine running the Naqsh server.");
         }
         const requestedDocumentPath: string = req.body.documentPath.trim();
+        const pathRejection = rejectUnsafeDocumentPath(requestedDocumentPath);
+        if (pathRejection) return badRequest(res, pathRejection);
         if (!existsSync(requestedDocumentPath)) {
           return badRequest(res, `No file exists at documentPath "${requestedDocumentPath}".`);
         }
-        documentPath = requestedDocumentPath;
+        documentPath = resolve(requestedDocumentPath);
         // Never take "FreeCAD is selectable" as "FreeCAD is HERE" -- the
         // same real, bounded health check the Environment Center itself
         // uses, not a weaker "trust the client" shortcut for this one path.
@@ -486,6 +531,11 @@ export function createServer(options: CreateServerOptions) {
       if (record.environmentKind !== "freecad" || !record.documentPath) {
         return badRequest(res, "This project is not backed by a FreeCAD document, so there is no file to download.");
       }
+      // Re-checked here, not just at creation: a project record persisted
+      // BEFORE this guard existed would otherwise still be downloadable,
+      // and this endpoint is the one that actually returns bytes.
+      const downloadRejection = rejectUnsafeDocumentPath(record.documentPath);
+      if (downloadRejection) return badRequest(res, downloadRejection);
       if (!existsSync(record.documentPath)) {
         return notFound(res, `The document for this project no longer exists at "${record.documentPath}".`);
       }
