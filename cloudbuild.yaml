@@ -1,33 +1,41 @@
-# Cloud Build pipeline for deploying @naqsh/api to Cloud Run.
+# Cloud Build pipeline: deploys BOTH Naqsh services to Cloud Run.
+#
+#   naqsh-api  -- the real API server, with FreeCAD installed in the image
+#                 so hosted builds produce genuine .FCStd geometry.
+#   naqsh-web  -- the static frontend, served by `serve`.
 #
 # WHY THIS FILE EXISTS rather than a one-line `gcloud run deploy --source .`:
 # `gcloud run deploy --source` has no `--dockerfile` flag and only detects a
 # Dockerfile at the ROOT of the source directory it is given. Naqsh's
-# Dockerfile lives at `apps/api/Dockerfile` but genuinely needs the
-# MONOREPO ROOT as its build context (it copies every sibling workspace
-# package the API imports -- @naqsh/core, @naqsh/schemas, @naqsh/adapters,
-# @naqsh/model-providers -- so esbuild can bundle them). Those two facts
-# are irreconcilable with `--source`: pointing it at `apps/api` finds the
-# Dockerfile but loses the sibling packages; pointing it at the repo root
-# keeps the packages but finds no Dockerfile and silently falls back to
-# buildpacks. An explicit `docker build -f <path> <context>` is the only
-# correct way to express "this Dockerfile, that context," which is exactly
-# what this pipeline does.
+# Dockerfiles live at `apps/*/Dockerfile` but genuinely need the MONOREPO
+# ROOT as their build context (each copies every sibling workspace package
+# it imports). Those two facts are irreconcilable with `--source`: pointing
+# it at `apps/api` finds the Dockerfile but loses the sibling packages;
+# pointing it at the repo root keeps the packages but finds no Dockerfile
+# and silently falls back to buildpacks. An explicit
+# `docker build -f <path> <context>` is the only correct way to express
+# "this Dockerfile, that context," which is exactly what this pipeline does.
+#
+# ORDERING IS LOAD-BEARING. Vite inlines `import.meta.env.VITE_API_BASE_URL`
+# at BUILD time, so the web image cannot be built until the API's real URL
+# exists. Hence: deploy the API, read its URL back, then build the web
+# against it, then tell the API to trust the web origin for CORS.
 #
 # Run it with:
 #
-#   gcloud builds submit --config cloudbuild.yaml \
-#     --substitutions=_REGION=us-central1,_SERVICE=naqsh-api
+#   gcloud builds submit --config cloudbuild.yaml --substitutions=_REGION=us-central1
 #
-# Then set the secret ONCE (never bake a key into the image or this file):
+# Create the secret ONCE first (never bake a key into an image or this file):
 #
+#   gcloud secrets create gemini-api-key --replication-policy=automatic
+#   printf '%s' "YOUR_KEY" | gcloud secrets versions add gemini-api-key --data-file=-
 #   gcloud run services update naqsh-api --region us-central1 \
-#     --set-env-vars NAQSH_ALLOWED_ORIGIN=https://your-frontend-origin \
 #     --update-secrets GEMINI_API_KEY=gemini-api-key:latest
 
 substitutions:
   _REGION: us-central1
-  _SERVICE: naqsh-api
+  _API_SERVICE: naqsh-api
+  _WEB_SERVICE: naqsh-web
   _REPO: naqsh
 
 steps:
@@ -47,48 +55,122 @@ steps:
           --location="${_REGION}" \
           --description="Naqsh container images"
 
-  # The real build: apps/api/Dockerfile, monorepo root as context.
-  - id: build
+  # ---- API ----------------------------------------------------------
+  - id: build-api
     name: gcr.io/cloud-builders/docker
     args:
       - build
       - -f
       - apps/api/Dockerfile
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}:$COMMIT_SHA
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}:latest
       - .
 
-  - id: push
+  - id: push-api
     name: gcr.io/cloud-builders/docker
     args:
       - push
       - --all-tags
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}
 
-  # Deploy the image that was just built, pinned by commit SHA rather than
-  # `:latest`, so a revision always names the exact artifact it runs.
-  # NAQSH_ALLOWED_ORIGIN is intentionally NOT set here: the server refuses
-  # to start in production without it (see config.ts's resolveCorsConfig),
-  # and it belongs to the deployment, not the build.
-  - id: deploy
+  # Pinned by commit SHA rather than `:latest`, so a revision always names
+  # the exact artifact it runs.
+  #
+  # --memory/--cpu are raised above the defaults because each FreeCAD call
+  # spawns a real freecadcmd subprocess; --timeout covers a cold start that
+  # includes pulling a FreeCAD-sized image.
+  #
+  # NAQSH_ALLOWED_ORIGIN is set in the LAST step, once the web URL exists.
+  - id: deploy-api
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
       - run
       - deploy
-      - ${_SERVICE}
-      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - ${_API_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}:$COMMIT_SHA
       - --region=${_REGION}
       - --platform=managed
       - --allow-unauthenticated
       - --port=8080
+      - --memory=2Gi
+      - --cpu=2
+      - --timeout=300
       - --set-env-vars=NODE_ENV=production
 
+  # ---- WEB (needs the API's real URL, so it runs after deploy-api) ----
+  - id: build-web
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        API_URL="$(gcloud run services describe ${_API_SERVICE} \
+          --region ${_REGION} --format 'value(status.url)')"
+        echo "Building web against API: $$API_URL"
+        docker build \
+          -f apps/web/Dockerfile \
+          --build-arg VITE_API_BASE_URL="$$API_URL" \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}:$COMMIT_SHA \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}:latest \
+          .
+
+  - id: push-web
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}
+
+  - id: deploy-web
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_WEB_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+
+  # ---- Let the API trust the web origin -------------------------------
+  # The server REFUSES to start in production without NAQSH_ALLOWED_ORIGIN
+  # (see config.ts's resolveCorsConfig) -- it will not silently allow `*`.
+  # This is the earliest point at which the web URL actually exists.
+  - id: allow-web-origin
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        WEB_URL="$(gcloud run services describe ${_WEB_SERVICE} \
+          --region ${_REGION} --format 'value(status.url)')"
+        gcloud run services update ${_API_SERVICE} --region ${_REGION} \
+          --update-env-vars NAQSH_ALLOWED_ORIGIN="$$WEB_URL"
+        echo ""
+        echo "==================================================="
+        echo " Naqsh is live:  $$WEB_URL"
+        echo "==================================================="
+        echo ""
+        echo "If Gemini is not yet configured, run once:"
+        echo "  gcloud run services update ${_API_SERVICE} --region ${_REGION} \\"
+        echo "    --update-secrets GEMINI_API_KEY=gemini-api-key:latest"
+
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_API_SERVICE}:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WEB_SERVICE}:latest
 
 options:
   logging: CLOUD_LOGGING_ONLY
+  # A FreeCAD-sized image build needs more than the default worker.
+  machineType: E2_HIGHCPU_8
+
+timeout: 3600s

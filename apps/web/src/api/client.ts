@@ -444,6 +444,15 @@ export function apiGetCandidates(projectId: string): Promise<Candidate[]> {
 /** AUDIT FIX: build results were persisted server-side but had no
  * endpoint and never reached the UI, so a failed candidate build was
  * silently invisible. */
+/** The URL a browser can hit to download the project's real .FCStd.
+ *
+ * Deliberately a URL rather than a fetch: letting the browser navigate to
+ * it gives a native download with the server's own filename, instead of
+ * buffering the whole file into memory to rebuild a Blob by hand. */
+export function apiDocumentDownloadUrl(projectId: string): string {
+  return `${API_BASE}/projects/${projectId}/document/download`;
+}
+
 export function apiGetBuildResults(projectId: string): Promise<BuildResult[]> {
   return request(`/projects/${projectId}/build-results`);
 }

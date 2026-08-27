@@ -19,6 +19,11 @@ interface ProjectDataContextValue {
    * showing, never implying every project is "real" when the API is
    * unreachable or no real project is selected yet. */
   isRealProject: boolean;
+  /** The real backend project currently in view, or `null` when none is
+   * (a not-yet-backed thread, or the API is unreachable). Exposed so a
+   * view can build a real per-project URL -- e.g. the document download
+   * link -- without threading the id down by hand. */
+  activeProjectId: string | null;
   decideProposal: (proposalId: string, decision: "approved" | "rejected") => Promise<Proposal>;
   answerClarification: (clarificationId: string, answerText: string) => Promise<Clarification>;
   cancelBackgroundJob: (jobId: string) => Promise<void>;
@@ -235,6 +240,7 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
       agentEvents,
       environment,
       isRealProject,
+      activeProjectId,
       decideProposal,
       answerClarification,
       cancelBackgroundJob,
@@ -251,6 +257,7 @@ export function ProjectDataProvider({ children }: { children: ReactNode }): JSX.
       agentEvents,
       environment,
       isRealProject,
+      activeProjectId,
       decideProposal,
       answerClarification,
       cancelBackgroundJob,

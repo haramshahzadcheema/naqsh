@@ -2043,3 +2043,23 @@
   line-height: 1.55;
   color: var(--text-primary);
 }
+
+/* ---- Engineering context actions ------------------------------------
+   The download link for the real .FCStd. Only rendered for a FreeCAD-
+   backed project -- a mock environment has no file behind it. */
+
+.engineering-context__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.engineering-context__actions .btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}

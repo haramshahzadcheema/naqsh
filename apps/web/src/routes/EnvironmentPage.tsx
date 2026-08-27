@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiDiscoverEnvironments, ApiError, type ApiEnvironmentAvailability } from "../api/client.js";
+import { apiDiscoverEnvironments, apiDocumentDownloadUrl, ApiError, type ApiEnvironmentAvailability } from "../api/client.js";
 import { Badge } from "../components/common/StatusDot.js";
 import { LoadingState, ErrorState } from "../components/common/States.js";
 import { LiveViewPanel } from "../components/environment/LiveViewPanel.js";
@@ -29,7 +29,7 @@ const CAPABILITY_LABEL: Record<string, string> = {
  * rule exists to prevent.
  */
 function EngineeringContext(): JSX.Element | null {
-  const { environment } = useProjectData();
+  const { environment, isRealProject, activeProjectId } = useProjectData();
   if (environment.status !== "ready") return null;
   const env = environment.data;
 
@@ -53,6 +53,18 @@ function EngineeringContext(): JSX.Element | null {
             </dd>
           </div>
         </dl>
+        {/* Only for a real CAD document -- a mock environment has no file
+            behind it, and offering a download that would 400 is worse
+            than not offering one. Rendered as a plain link so the browser
+            performs a native download with the server's own filename. */}
+        {isRealProject && env.kind === "freecad" && activeProjectId ? (
+          <div className="engineering-context__actions">
+            <a className="btn btn--primary" href={apiDocumentDownloadUrl(activeProjectId)} download>
+              Download .FCStd
+            </a>
+            <span className="state-message">Opens directly in FreeCAD — this is the real document Naqsh has been building.</span>
+          </div>
+        ) : null}
       </div>
     </section>
   );
