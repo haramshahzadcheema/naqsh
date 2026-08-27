@@ -6,6 +6,8 @@ NAQSH is a human-in-the-loop AI engineering assistant. It talks with you about a
 
 **Judging this?** See **[JUDGES.md](JUDGES.md)** — a 2-minute walkthrough that needs no API key at all.
 
+**Looking for a hosted URL?** There isn't one, and **[DEPLOYMENT.md](DEPLOYMENT.md)** says exactly why: the two-service Cloud Run pipeline is complete and reviewable in this repo, but running it requires a billing account, and creating one places a hold on a payment card we were not willing to place.
+
 ```bash
 npm install
 npm run dev

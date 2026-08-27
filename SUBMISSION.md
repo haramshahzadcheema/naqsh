@@ -7,7 +7,7 @@ this file is the checklist, the Devpost text, and the shot-by-shot video script.
 
 ## 1. Pre-submission checklist (in order — each step depends on the one before)
 
-### Step 1 — No hosted URL, by design (0 min)
+### Step 1 — No hosted URL (see DEPLOYMENT.md)
 
 Naqsh's differentiator is that it drives a **real FreeCAD document** through a
 headless subprocess boundary. That only works on a machine with FreeCAD installed,
@@ -25,10 +25,14 @@ No API key ships with the submission. A key published in a submission gets scrap
 and revoked, and a shared free-tier quota dies the moment two judges use it at once.
 Path 1 removes the need for one entirely.
 
-> The repo still contains a working `Dockerfile` and `cloudbuild.yaml`. If a hosted
-> URL is wanted later, `gcloud builds submit --config cloudbuild.yaml` deploys the
-> API to Cloud Run with the key in Secret Manager — but note the container has no
-> FreeCAD in it, so a hosted instance can only offer the mock environments.
+> The repo contains a COMPLETE two-service Cloud Run pipeline — `apps/api/Dockerfile`
+> (with FreeCAD installed, so a hosted instance builds real geometry),
+> `apps/web/Dockerfile`, and a `cloudbuild.yaml` that deploys both and wires CORS
+> between them. It has never been run: Cloud Run needs a billing account, and
+> creating one places a temporary US$50 authorisation hold on a payment card. The
+> only card available belongs to a family member, and we were not willing to place a
+> hold on someone else's card for a deadline. `DEPLOYMENT.md` states this plainly,
+> along with exactly what is and is not verified.
 
 ### Step 2 — One live Gemini rehearsal BEFORE recording (~10 min)
 
