@@ -8,6 +8,8 @@ cannot show you.
 
 Two paths below. The first needs nothing but Node.
 
+**Short on time?** The [demo video](https://www.youtube.com/watch?v=uQXj_l76ppc) shows the whole loop, including real geometry appearing in FreeCAD.
+
 ---
 
 ## Path 1 — Full walkthrough, no credentials (2 minutes)

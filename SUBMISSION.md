@@ -50,6 +50,8 @@ the app labels it honestly and so should the narration.
 
 ### Step 4 — Record the video (script in §3)
 
+**Done:** https://www.youtube.com/watch?v=uQXj_l76ppc
+
 ### Step 5 — Devpost form
 
 - Track: **The Collaborative Partner**
