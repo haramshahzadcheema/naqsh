@@ -39,6 +39,27 @@ RUN node apps/api/scripts/build-container-bundle.mjs
 
 FROM node:20-slim AS runtime
 WORKDIR /app
+
+# FreeCAD, so a HOSTED Naqsh can build real geometry rather than only
+# offering the mock environments. Without this the container has no
+# `freecadcmd`, environmentDiscovery.ts reports FreeCAD unavailable
+# (correctly), and the deployed app can only demo the in-memory CAD.
+#
+# `freecad-python3` is the headless Python-scriptable package -- NOT the
+# `freecad` GUI metapackage, which drags in X11 and Qt for a display this
+# container will never have.
+#
+# Debian bookworm ships FreeCAD 0.20.2 rather than the 1.1.x commonly
+# installed locally. Every TypeId this adapter uses (Part::Box,
+# Part::Cylinder, Part::Torus, Part::Wedge), plus Placement, the boolean
+# features and Part::Fillet, all exist in 0.20 -- but that is a real
+# version difference, so the deployed image should be smoke-tested with
+# runner.py's own `health` operation rather than assumed equivalent.
+#
+# This is a ~460MB download and dominates both build time and image size.
+# It is the price of the hosted instance producing genuine .FCStd files.
+RUN apt-get update  && apt-get install -y --no-install-recommends freecad-python3  && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 # Cloud Run injects PORT at deploy time; 8080 matches its default so a
 # local `docker run` without -e PORT behaves the same way.
@@ -52,6 +73,11 @@ ENV PORT=8080
 ENV NAQSH_DATA_DIR=/app/data
 
 COPY --from=builder /app/apps/api/dist/bundle.mjs ./bundle.mjs
+# runner.py is DATA, not code esbuild can bundle: the adapter passes its
+# path to a freecadcmd subprocess. Without it the bundle would resolve a
+# path that does not exist inside the image.
+COPY packages/adapters/freecad ./packages/adapters/freecad
+ENV NAQSH_FREECAD_RUNNER=/app/packages/adapters/freecad/runner.py
 
 RUN mkdir -p /app/data && chown -R node:node /app/data /app/bundle.mjs
 USER node

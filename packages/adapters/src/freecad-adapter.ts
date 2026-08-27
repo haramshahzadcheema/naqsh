@@ -106,7 +106,24 @@ export interface FreeCadAdapterOptions {
   runOperation?: (operation: string, params: Record<string, unknown>) => Promise<FreeCadRuntimeResult>;
 }
 
+/**
+ * Where runner.py lives.
+ *
+ * `NAQSH_FREECAD_RUNNER` wins when set, because the module-relative
+ * fallback below is wrong for a BUNDLED deployment: esbuild collapses the
+ * whole API into one file, so `import.meta.url` points at that bundle
+ * rather than at packages/adapters/src, and `../freecad/runner.py`
+ * resolves to a path that does not exist in the image. runner.py is data
+ * a subprocess reads, not code a bundler can inline, so the container
+ * copies it in and names it through this variable.
+ *
+ * The fallback stays correct for every non-bundled caller -- running from
+ * src/ under tsx, or from dist/ after a normal build, both sit one
+ * directory below packages/adapters/.
+ */
 function defaultRunnerScriptPath(): string {
+  const fromEnv = typeof process !== "undefined" ? process.env?.NAQSH_FREECAD_RUNNER : undefined;
+  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
   const here = dirname(fileURLToPath(import.meta.url));
   return join(here, "..", "freecad", "runner.py");
 }

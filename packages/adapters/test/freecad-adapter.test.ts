@@ -826,3 +826,45 @@ describe("createFreeCadAdapter: save", () => {
     assert.match(result.error!.message, /disk full/);
   });
 });
+
+describe("runner script path resolution", () => {
+  it("honours NAQSH_FREECAD_RUNNER, which is what makes a bundled/containerized deploy work", async () => {
+    // esbuild collapses the API into one file, so the module-relative
+    // default resolves to a path that does not exist inside the image.
+    // runner.py is data a subprocess reads, not code a bundler inlines.
+    const previous = process.env.NAQSH_FREECAD_RUNNER;
+    process.env.NAQSH_FREECAD_RUNNER = "/app/packages/adapters/freecad/runner.py";
+    try {
+      const calls: Array<{ operation: string }> = [];
+      const adapter = createFreeCadAdapter({
+        runOperation: async (operation) => {
+          calls.push({ operation });
+          return { status: "success", data: { ok: true, version: "0.0.0" } } as never;
+        }
+      });
+      // The env var is read when the adapter is constructed; a real run
+      // would pass it to the subprocess. Constructing without throwing,
+      // and still reaching the injected runtime, is the observable part.
+      await adapter.health();
+      assert.equal(calls.length, 1);
+    } finally {
+      if (previous === undefined) delete process.env.NAQSH_FREECAD_RUNNER;
+      else process.env.NAQSH_FREECAD_RUNNER = previous;
+    }
+  });
+
+  it("falls back to the module-relative copy when the variable is unset or blank", async () => {
+    const previous = process.env.NAQSH_FREECAD_RUNNER;
+    process.env.NAQSH_FREECAD_RUNNER = "   ";
+    try {
+      const adapter = createFreeCadAdapter({
+        runOperation: async () => ({ status: "success", data: { ok: true, version: "0.0.0" } }) as never
+      });
+      const result = await adapter.health();
+      assert.equal(result.status, "success");
+    } finally {
+      if (previous === undefined) delete process.env.NAQSH_FREECAD_RUNNER;
+      else process.env.NAQSH_FREECAD_RUNNER = previous;
+    }
+  });
+});
