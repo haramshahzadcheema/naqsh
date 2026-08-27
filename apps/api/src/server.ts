@@ -1,8 +1,8 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import cors from "cors";
 import multer from "multer";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, createReadStream } from "node:fs";
+import { join, basename } from "node:path";
 import { createId, AuthorizationError, type Approval } from "@naqsh/schemas";
 import { initializeWorldModel } from "@naqsh/core";
 import {
@@ -463,6 +463,42 @@ export function createServer(options: CreateServerOptions) {
    * activity entry the user could act on. The whole exploration simply
    * appeared to do nothing.
    */
+  /**
+   * Downloads the project's real FreeCAD document.
+   *
+   * This is what makes a HOSTED Naqsh useful. The server can build real
+   * geometry, but the resulting `.FCStd` lives on the server's disk --
+   * which, on Cloud Run, nobody can reach. Without this the whole "type
+   * English, get real CAD" story stops one step short of the user.
+   *
+   * Streams the file as an attachment so a browser saves it rather than
+   * trying to render it, and the download opens directly in FreeCAD.
+   *
+   * Only meaningful for a `freecad` project: a mock environment has no
+   * file behind it, and says so rather than inventing one.
+   */
+  app.get(
+    "/projects/:projectId/document/download",
+    asyncHandler(async (req, res) => {
+      const record = getOwnedProject(req, res);
+      if (!record) return;
+
+      if (record.environmentKind !== "freecad" || !record.documentPath) {
+        return badRequest(res, "This project is not backed by a FreeCAD document, so there is no file to download.");
+      }
+      if (!existsSync(record.documentPath)) {
+        return notFound(res, `The document for this project no longer exists at "${record.documentPath}".`);
+      }
+
+      // basename only: the on-disk path is a server detail, and echoing a
+      // full filesystem path into a download header would leak it.
+      const filename = basename(record.documentPath);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+      createReadStream(record.documentPath).pipe(res);
+    })
+  );
+
   app.get(
     "/projects/:projectId/build-results",
     asyncHandler(async (req, res) => {

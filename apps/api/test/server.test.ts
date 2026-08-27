@@ -190,6 +190,27 @@ describe("apps/api HTTP server: real endpoints, real end-to-end behavior", () =>
     assert.deepEqual(designs.body, []);
   });
 
+  it("the FreeCAD document is downloadable -- what makes a hosted Naqsh useful, plus its honest refusals", async () => {
+    // Naqsh can build real geometry server-side, but on a hosted
+    // deployment the resulting .FCStd sits on a disk nobody can reach.
+    // Without this route the "type English, get real CAD" story stops one
+    // step short of the user.
+    const mockProject = (await json("/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Mock Project" }) })).body;
+
+    // A mock-backed project has no file behind it, and says so.
+    const noFile = await json(`/projects/${mockProject.id}/document/download`);
+    assert.equal(noFile.status, 400);
+
+    // Another identity cannot reach someone else's document.
+    const otherIdentity = await json(`/projects/${mockProject.id}/document/download`, { headers: { "x-naqsh-user": "someone-else" } });
+    assert.equal(otherIdentity.status, 404);
+
+    // And an unknown project is a 404, never a path-shaped error that
+    // leaks whether a file exists on the server.
+    const unknown = await json("/projects/proj_does_not_exist/document/download");
+    assert.equal(unknown.status, 404);
+  });
+
   it("AUDIT FIX: build results are reachable over HTTP at all, and stay scoped to their owner", async () => {
     // These were persisted by projectRuntime from the beginning but had
     // NO route, so a failed build could never reach the UI. Reproduced
