@@ -199,6 +199,80 @@ describe("analyzeRequirementCandidateCompleteness: Test 8 -- conflicting require
     assert.equal(state.project.requirements.length, 1);
   });
 
+  it("does NOT flag length vs width as a conflict -- they are different axes, not a contradiction", () => {
+    // Observed live: stating a car's overall length, then its width, made
+    // Naqsh reply "appears to conflict with the existing requirement".
+    // Both land in category "dimension" with unit "mm", and two EXACT
+    // values are trivially disjoint as intervals -- so the check compared
+    // two numbers that were never comparable in the first place. A user
+    // stating ordinary dimensions was told their design contradicted
+    // itself.
+    let state = buildState({ objectCount: 1 });
+    state = addRequirement(state, {
+      category: "dimension",
+      value: 4671,
+      unit: "mm",
+      operator: "eq",
+      description: "The car body must have an overall length of 4671mm."
+    });
+    const candidate = specificCandidate({
+      statementText: "The car must be 1877mm wide.",
+      description: "The overall width of the car must be 1877 mm.",
+      category: "dimension",
+      operator: "eq",
+      value: 1877,
+      unit: "mm"
+    });
+
+    const result = analyzeRequirementCandidateCompleteness(candidate, state);
+    assert.equal(
+      result.drafts.some((d) => d.category === "conflicting_constraints"),
+      false,
+      "a width requirement must not be reported as conflicting with a length requirement"
+    );
+  });
+
+  it("STILL flags a genuine contradiction on the SAME dimension", () => {
+    // The narrowing above must not silence real conflicts: two
+    // incompatible lengths are still a contradiction worth raising.
+    let state = buildState({ objectCount: 1 });
+    state = addRequirement(state, {
+      category: "dimension",
+      value: 100,
+      unit: "mm",
+      operator: "lt",
+      description: "The bracket length must be under 100 mm."
+    });
+    const candidate = specificCandidate({
+      statementText: "The bracket must be longer than 250mm.",
+      description: "Length must exceed 250 mm.",
+      category: "dimension",
+      operator: "gt",
+      value: 250,
+      unit: "mm"
+    });
+
+    const result = analyzeRequirementCandidateCompleteness(candidate, state);
+    assert.equal(result.drafts.some((d) => d.category === "conflicting_constraints"), true);
+  });
+
+  it("still compares when NEITHER side names a dimension -- absence of a noun is not permission to ignore a clash", () => {
+    // Two mass limits name no length/width/height, so the dimension
+    // narrowing must not apply and the existing disjoint check stands.
+    let state = buildState({ objectCount: 1 });
+    state = addRequirement(state, { category: "load", value: 1, unit: "kN", operator: "lt", description: "must be under 1 kN" });
+    const candidate = specificCandidate({
+      statementText: "It must carry more than 8 kN.",
+      description: "Must exceed 8 kN.",
+      category: "load",
+      operator: "gt",
+      value: 8,
+      unit: "kN"
+    });
+    const result = analyzeRequirementCandidateCompleteness(candidate, state);
+    assert.equal(result.drafts.some((d) => d.category === "conflicting_constraints"), true);
+  });
+
   it("does NOT flag a conflict when ranges genuinely overlap", () => {
     let state = buildState({ objectCount: 1 });
     state = addRequirement(state, { category: "mass", value: 10, unit: "kg", operator: "lt", description: "mass must be under 10 kg" });

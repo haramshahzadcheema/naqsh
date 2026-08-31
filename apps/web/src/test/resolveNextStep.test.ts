@@ -111,6 +111,43 @@ describe("resolveNextStep", () => {
     expect(step.action).toEqual({ kind: "chat", suggestedMessage: "generate" });
   });
 
+  it("UX FIX: a part-finished plan names the next step, instead of leaving you to guess the magic word", () => {
+    // The loop was invisible: after approving a step you had to KNOW to
+    // retype "generate". Nothing said a plan was mid-flight, which step
+    // came next, or how many remained.
+    const partPlan = {
+      id: "plan_1",
+      steps: [
+        { id: "s1", title: "Verify connection", status: "complete" },
+        { id: "s2", title: "Create LowerBody Box", status: "pending" },
+        { id: "s3", title: "Set dimensions", status: "pending" }
+      ]
+    } as never;
+    const step = resolveNextStep(snapshot({ requirements: [requirement], plan: partPlan }), connected, true);
+    expect(step.id).toBe("continue_plan");
+    expect(step.title).toContain("Create LowerBody Box");
+    expect(step.detail).toContain("2 of 3");
+    expect(step.action).toEqual({ kind: "chat", suggestedMessage: "continue" });
+  });
+
+  it("does not claim a plan is mid-flight when nothing has been done yet", () => {
+    const freshPlan = { id: "plan_2", steps: [{ id: "s1", title: "First", status: "pending" }] } as never;
+    const step = resolveNextStep(snapshot({ requirements: [requirement], plan: freshPlan }), connected, true);
+    expect(step.id).not.toBe("continue_plan");
+  });
+
+  it("a pending proposal still outranks continuing -- decide what is in front of you first", () => {
+    const partPlan = {
+      id: "plan_3",
+      steps: [
+        { id: "s1", title: "Done", status: "complete" },
+        { id: "s2", title: "Next thing", status: "pending" }
+      ]
+    } as never;
+    const step = resolveNextStep(snapshot({ requirements: [requirement], plan: partPlan, proposals: [pendingProposal] }), connected, true);
+    expect(step.id).toBe("decide_proposal");
+  });
+
   it("a real verification failure outranks generating more candidates", () => {
     const step = resolveNextStep(
       snapshot({

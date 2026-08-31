@@ -113,6 +113,24 @@ export function resolveNextStep(snapshot: ProjectSnapshot, environment: Environm
     };
   }
 
+  // --- 5b. A plan with work left should say so, and say what's next. ---
+  // Until this existed the loop was invisible: after approving a step you
+  // had to know to retype "generate" to get the next one. Nothing on
+  // screen said a plan was mid-flight, which step was next, or how many
+  // remained.
+  const pendingSteps = snapshot.plan.steps.filter((step) => step.status === "pending");
+  if (pendingSteps.length > 0 && pendingSteps.length < snapshot.plan.steps.length) {
+    const nextStep = pendingSteps[0]!;
+    return {
+      id: "continue_plan",
+      title: `Next: ${nextStep.title}`,
+      detail: `${pendingSteps.length} of ${snapshot.plan.steps.length} steps remain. Naqsh prepares one change at a time so each is approved on its own.`,
+      action: { kind: "chat", suggestedMessage: "continue" },
+      actionLabel: "Continue the plan",
+      tone: "todo"
+    };
+  }
+
   // --- 6. A real verification failure outranks generating more options. ---
   const failedChecks = snapshot.verificationResults.filter((result) => result.status === "fail");
   if (failedChecks.length > 0) {

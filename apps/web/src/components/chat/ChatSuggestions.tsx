@@ -29,6 +29,7 @@ export function ChatSuggestions({ onPick, disabled }: { onPick: (text: string) =
   const suggestions: string[] = [];
   if (step.action.kind === "chat" && step.action.suggestedMessage) suggestions.push(step.action.suggestedMessage);
   if (step.id === "capture_requirements") suggestions.push("The part must be no more than 100mm long.");
+  if (step.id === "decide_proposal") suggestions.push("continue");
   if (!suggestions.includes("explore alternatives") && (step.id === "up_to_date" || step.id === "run_candidates")) suggestions.push("explore alternatives");
 
   if (suggestions.length === 0) return null;

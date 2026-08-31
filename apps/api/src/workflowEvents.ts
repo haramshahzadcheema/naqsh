@@ -46,7 +46,7 @@ export type ChatWorkflowEvent =
  * bare form, matching this codebase's existing risk tolerance -- none of
  * the other trigger phrases here are negation-aware either). */
 const DESIGN_INTENT_PATTERN =
-  /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change|generate (it|this|the design)|go ahead and generate|just generate|make the best choices? and generate)\b|(?<!don't |do not |doesn't |never |won't |not )\bgenerate\b/i;
+  /\b(design (it|this)|prepare a (design )?proposal|create a proposal|plan (it|this)|propose a change|generate (it|this|the design)|go ahead and generate|just generate|make the best choices? and generate|continue|carry on|keep going|next step)\b|(?<!don't |do not |doesn't |never |won't |not )\bgenerate\b/i;
 
 export function hasDesignIntent(text: string): boolean {
   return DESIGN_INTENT_PATTERN.test(text);

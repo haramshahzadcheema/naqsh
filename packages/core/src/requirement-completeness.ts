@@ -189,6 +189,38 @@ function intervalsDisjoint(a: { lo: Bound | null; hi: Bound | null }, b: { lo: B
   return false;
 }
 
+/** The physical dimension a statement constrains, when it names one.
+ *
+ * `category` is not enough to compare two numbers safely: the interpreter
+ * files "length of 4671mm" and "width of 1877mm" BOTH under
+ * `category: "dimension"` with unit `mm`, so an exact-value pair looks
+ * numerically disjoint and gets reported as a contradiction. Observed
+ * live: stating a car's length and then its width produced
+ * "appears to conflict", which is nonsense -- they are different axes and
+ * were never comparable in the first place.
+ *
+ * Returns `null` when no dimension is named, which callers must treat as
+ * "cannot confirm", never as "same dimension". */
+function namedDimension(...texts: Array<string | null | undefined>): string | null {
+  const haystack = texts.filter((text): text is string => typeof text === "string").join(" ").toLowerCase();
+  // Ordered longest-first so "wall thickness" is not shadowed by a
+  // shorter token appearing later in the same sentence.
+  const dimensions: ReadonlyArray<readonly [string, RegExp]> = [
+    ["diameter", /\b(diameter|dia)\b/],
+    ["radius", /\bradius\b/],
+    ["thickness", /\b(thickness|thick)\b/],
+    ["length", /\b(length|long)\b/],
+    ["width", /\b(width|wide)\b/],
+    ["height", /\b(height|tall|high)\b/],
+    ["depth", /\b(depth|deep)\b/],
+    ["mass", /\b(mass|weight|weighs|weighing)\b/]
+  ];
+  for (const [name, pattern] of dimensions) {
+    if (pattern.test(haystack)) return name;
+  }
+  return null;
+}
+
 /** Detects an OBVIOUS numeric contradiction between this candidate and an
  * ALREADY-ACCEPTED `Requirement` in the current project (same category,
  * both quantitative, comparable units). Never decides which one is
@@ -207,6 +239,18 @@ function draftForConflict(candidate: RequirementCandidate, state: WorldModelStat
     if (requirement.unit !== null && candidate.unit !== null && requirement.unit !== candidate.unit) continue;
     const requirementInterval = toInterval(requirementOperator, requirement.value);
     if (requirementInterval === null) continue;
+
+    // Two numbers are only comparable if they constrain the SAME physical
+    // dimension. When both sides name one and they differ, there is
+    // nothing to contradict -- a 4671mm length and an 1877mm width are
+    // not in tension, they are different axes. When either side names
+    // none, fall through to the existing check rather than assuming: this
+    // narrows a false positive without silencing genuine contradictions
+    // (two load limits, say, name no dimension and are still compared).
+    const candidateDimension = namedDimension(candidate.statementText, candidate.description);
+    const requirementDimension = namedDimension(requirement.description);
+    if (candidateDimension !== null && requirementDimension !== null && candidateDimension !== requirementDimension) continue;
+
     if (intervalsDisjoint(candidateInterval, requirementInterval)) {
       return draftFor(
         candidate,

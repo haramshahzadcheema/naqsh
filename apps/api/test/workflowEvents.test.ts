@@ -172,3 +172,31 @@ describe("AUDIT FIX: the phrases the UI suggests must actually trigger the workf
     assert.equal(hasExplorationIntent(example), false);
   });
 });
+
+describe("UX FIX: continuing a plan should not require remembering a magic word", () => {
+  // A plan advances one step per approval, and the only way to ask for
+  // the next one was to retype "generate" -- neither obvious nor how
+  // anyone actually speaks. These are the natural phrasings.
+  for (const phrase of ["continue", "carry on", "keep going", "next step"]) {
+    it(`"${phrase}" advances the plan`, () => {
+      assert.equal(hasDesignIntent(phrase), true);
+    });
+  }
+
+  it("still does not fire on an unrelated sentence that merely contains a similar word", () => {
+    assert.equal(hasDesignIntent("the bracket sits next to the motor"), false);
+    assert.equal(hasDesignIntent("aluminium is a continuous casting product"), false);
+  });
+
+  it("does NOT treat 'proceed'/'go on' as build intent -- too broad", () => {
+    // An existing test rightly asserts that "proceed with capturing these
+    // as the official project requirements" means capture requirements,
+    // not build geometry. Both verbs were tried here and removed.
+    assert.equal(hasDesignIntent("proceed with capturing these as the official project requirements"), false);
+    assert.equal(hasDesignIntent("go on, tell me more about the material"), false);
+  });
+
+  it("the negation guard still holds", () => {
+    assert.equal(hasDesignIntent("do not generate anything yet"), false);
+  });
+});
